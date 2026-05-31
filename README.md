@@ -144,6 +144,12 @@ graph TB
 |------|------|--------|------|
 | [PocketBase](baas/pocketbase/) | Go | 开源 BaaS 引擎，单二进制集成 SQLite + 认证 + 文件存储 + 实时订阅 | [GitHub](https://github.com/pocketbase/pocketbase) |
 
+### [RAG / 知识管理](rag/)
+
+| 项目 | 语言 | 一句话 | 仓库 |
+|------|------|--------|------|
+| [WeKnora](rag/weknora/) | Go | 企业级 RAG 与知识推理框架，集成 Agent、Wiki 模式、多租户 RBAC | [GitHub](https://github.com/Tencent/WeKnora) |
+
 ### 存储
 
 *待补充*

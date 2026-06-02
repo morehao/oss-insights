@@ -132,6 +132,12 @@ graph TB
 
 ## 分类索引
 
+### [社区 / 问答平台](community/)
+
+| 项目 | 语言 | 一句话 | 仓库 |
+|------|------|--------|------|
+| [Apache Answer](community/answer/) | Go | 开源 Q&A 知识管理平台，支持社区问答、插件系统、AI 集成 | [GitHub](https://github.com/apache/answer) |
+
 ### [认证授权](auth/)
 
 | 项目 | 语言 | 一句话 | 仓库 |

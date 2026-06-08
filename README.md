@@ -143,6 +143,7 @@ graph TB
 | 项目 | 语言 | 一句话 | 仓库 |
 |------|------|--------|------|
 | [Tinyauth](auth/tinyauth/) | Go | 最小认证授权服务器，为反向代理提供 ForwardAuth | [GitHub](https://github.com/tinyauthapp/tinyauth) |
+| [Keycloak](auth/keycloak/) | Java | IAM 领域标准参考实现，CNCF 孵化，OIDC/SAML2/OAuth2 完整协议支持 | [GitHub](https://github.com/keycloak/keycloak) |
 
 ### [BaaS / 后端即服务](baas/)
 

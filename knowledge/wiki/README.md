@@ -269,4 +269,4 @@ Wiki.js 的配置分为两层：`config.yml` 文件（数据库连接、SSL、�
 
 > **GitHub:** [requarks/wiki](https://github.com/requarks/wiki)
 >
-> *本目录下还有独立深度文档：[多版本文档机制](./version-management.md) · [文档资源权限管理](./permission-model.md)*
+> *本目录下还有独立深度文档：[多版本文档机制](./version-management.md) · [文档资源权限管理](./permission-model.md) · [Git 存储集成](./git-storage.md)*

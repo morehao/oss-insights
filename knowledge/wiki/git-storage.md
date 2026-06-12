@@ -1,6 +1,6 @@
 # Wiki.js Git 存储集成详解
 
-> **关联文档:** [Wiki.js 主解读](./README.md) · [多版本文档机制](./version-management.md) · [文档资源权限管理](./permission-model.md)
+> **关联文档:** [Wiki.js 主解读](./README.md) · [多版本文档机制](./version-management.md) · [文档资源权限管理](./permission-model.md) · [系统架构](./system-arch.md)
 
 ## 1. 设计动机与解决的问题
 
@@ -358,7 +358,149 @@ async syncUntracked() {
 
 这里使用了 Node.js 的 `stream/promises` 的 `pipeline` 处理大量数据，避免内存溢出，同时配合 `klaw` 进行文件遍历。
 
-## 5. 配置体系与认证
+## 5. Git 工作流与仓库结构
+
+### 5.1 仓库目录结构
+
+Git 模块在本地维护一个完整的工作目录，目录结构与页面/资源的组织方式完全对应：
+
+```
+{localRepoPath}/
+├── {localeCode}/              # 语言命名空间（可配置 alwaysNamespace）
+│   ├── {page-path}.md         # Markdown 页面
+│   ├── {page-path}.html       # HTML 页面
+│   ├── {category}/
+│   │   ├── {sub-page}.md
+│   │   └── ...
+│   └── ...
+├── assets/                    # 资源文件
+│   ├── {asset-folder}/
+│   │   ├── {filename}.{ext}
+│   │   └── ...
+│   └── ...
+└── .git/                      # Git 仓库元数据
+```
+
+**文件名规则：**
+- 页面文件：`{path}.{extension}`，extension 根据 contentType 映射（markdown → md, html → html, asciidoc → adoc）
+- 语言命名空间：当 `alwaysNamespace=true` 或语言代码与默认语言不同时，加 `{localeCode}/` 前缀
+- 资源文件：按 `assetFolders` 的目录层级组织，文件名为原始文件名
+
+**文件内容格式（markdown 页面示例）：**
+
+```markdown
+---
+title: Getting Started
+description: How to get started with Wiki.js
+published: true
+date: 2024-01-15T10:00:00.000Z
+tags: guide, beginner
+editor: markdown
+dateCreated: 2024-01-10T08:00:00.000Z
+---
+
+# Getting Started
+
+Welcome to Wiki.js! This guide will help you...
+```
+
+元数据以 YAML front-matter 形式嵌入文件头部，通过 `pageHelper.injectPageMetadata()` 生成。HTML 格式的页面使用 HTML 注释格式的元数据。
+
+### 5.2 Commit 规范
+
+每次页面变更生成一个独立的 commit，commit 信息遵循统一的格式：
+
+| 操作 | Commit Message | 示例 |
+|------|---------------|------|
+| 创建 | `docs: create {path}` | `docs: create guide/getting-started` |
+| 更新 | `docs: update {path}` | `docs: update guide/getting-started` |
+| 删除 | `docs: delete {path}` | `docs: delete guide/getting-started` |
+| 移动 | `docs: rename {oldPath} -> {newPath}` | `docs: rename guide/start -> guide/getting-started` |
+| 资源上传 | `docs: upload asset {filename}` | `docs: upload asset diagram.png` |
+| 资源删除 | `docs: delete asset {filename}` | `docs: delete asset diagram.png` |
+| 批量同步 | `docs: add all untracked content` | syncUntracked 操作 |
+
+**Commit 作者：** 使用实际页面操作者的 `authorName` 和 `authorEmail`。当无法获取时，回退到 `definition.yml` 中配置的 `defaultName` / `defaultEmail`。
+
+**Commit 签名：** 支持 GPG 签名（`--signed=if-asked`），可通过仓库配置要求已验证签名。
+
+### 5.3 三种同步模式对比
+
+| 模式 | 方向 | 数据流 | 适用场景 |
+|------|------|--------|----------|
+| **sync**（默认） | 双向 | pull --rebase → 处理外部变更 → push 本地变更 | 团队协作，需要内外双向同步 |
+| **push** | 单向 | push --force（覆盖远程） | Wiki 只写，远程仓库作为备份 |
+| **pull** | 单向 | pull --rebase → 处理外部变更到 DB | Wiki 只读，从远程仓库导入内容 |
+
+### 5.4 从 Git 回写到 DB 的变更处理
+
+`processFiles()` 方法解析 `git diff` 输出的文件变更，按以下逻辑处理：
+
+```
+git diff 输出文件列表
+  │
+  ├── 判断文件类型
+  │   ├── 页面文件（.md / .html / .adoc） → processPage()
+  │   └── 资源文件（assets/下） → processAsset()
+  │
+  ├── 判断变更类型
+  │   ├── 重命名（diff -M 检测到） → rename page/asset in DB
+  │   ├── 删除（文件不存在） → delete page/asset from DB
+  │   └── 新增/修改 → processPage() / processAsset()
+  │
+  └── processPage() 内部
+        ├── 解析 YAML front-matter → 提取标题/标签/发布状态
+        ├── 提取正文内容
+        ├── 检查 DB 中是否存在同路径页面
+        │   ├── 存在 → updatePage()
+        │   └── 不存在 → createPage()
+        └── 使用 root 用户身份执行（避免权限校验）
+```
+
+**关键设计：** 从 Git 回写操作统一使用 root 用户（管理员）身份，跳过权限校验，确保外部 Git 操作的内容能顺利导入。
+
+### 5.5 完整工作流时序
+
+```
+┌──────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────┐
+│ Web UI   │     │  Wiki.js     │     │  Git 本地仓库  │     │ 远程仓库  │
+│ (用户)    │     │  应用层       │     │  data/repo    │     │ GitHub   │
+└────┬─────┘     └──────┬───────┘     └──────┬───────┘     └────┬─────┘
+     │                  │                    │                  │
+     │  编辑页面保存     │                    │                  │
+     │────────────────► │                    │                  │
+     │                  │  git add + commit  │                  │
+     │                  │──────────────────► │                  │
+     │                  │                    │  git commit      │
+     │                  │                    │    (本地)        │
+     │                  │                    │                  │
+     │                  │  定时 sync() 触发   │                  │
+     │                  │──────────────────► │                  │
+     │                  │                    │  git push        │
+     │                  │                    │──────────────────►│
+     │                  │                    │                  │
+     │                  │                    │  git pull --rebase
+     │                  │                    │◄─────────────────│
+     │                  │  外部变更 diff 处理  │                  │
+     │                  │◄────────────────── │                  │
+     │                  │                    │                  │
+     │                  │  开发者直接修改     │                  │
+     │                  │                    │◄─────────────────│
+     │                  │                    │   git clone      │
+     │                  │                    │   edit → push    │
+     │                  │                    │──────────────────►│
+     │                  │                    │                  │
+     │                  │  下次定时 sync()    │                  │
+     │                  │   检测到远程变更     │                  │
+     │                  │◄────────────────── │                  │
+     │                  │                    │                  │
+     │                  │   processFiles()   │                  │
+     │                  │   更新数据库        │                  │
+     │   变更可见        │                    │                  │
+     │◄──────────────── │                    │                  │
+```
+
+## 6. 配置体系与认证
 
 ### 配置项清单
 
@@ -386,7 +528,7 @@ async syncUntracked() {
 | **SSH** | 更安全，无需在 URL 中暴露凭证 | 需要管理私钥文件 | 生产环境推荐 |
 | **Basic** | 配置简单，适合 PAT 访问 | 凭证编码在 URL 中，安全性依赖 HTTPS | 开发/测试环境 |
 
-## 6. 技术选型与依赖
+## 7. 技术选型与依赖
 
 ### 使用的 npm 包
 
@@ -406,7 +548,7 @@ this.git = sgit(this.repoPath, { maxConcurrentProcesses: 1 })
 - `simple-git` 提供 Promise-based API，避免了手动管理 `child_process` 的 stdout/stderr 解析
 - `maxConcurrentProcesses: 1` 限制并发数，防止大量文件操作时 Git 进程冲突
 
-## 7. 设计模式与工程实践
+## 8. 设计模式与工程实践
 
 ### 7.1 插件化的存储模块架构
 
@@ -455,7 +597,7 @@ await pipeline(
 
 避免了一次性加载所有数据到内存中，适用于大数据量的首次导入场景。
 
-## 8. 潜在问题与局限
+## 9. 潜在问题与局限
 
 | 问题 | 说明 | 缓解措施 |
 |------|------|----------|
@@ -465,7 +607,7 @@ await pipeline(
 | **冲突处理** | 多人同时编辑同一页面通过 Web UI 和 Git 时，可能出现冲突 | `pull --rebase` 策略降低冲突概率 |
 | **本地仓库膨胀** | `pull` 模式下本地仓库会包含完整历史 | 可在管理界面调整同步策略为 `push-only` |
 
-## 9. 对比参考
+## 10. 对比参考
 
 ### 与其他 Wiki.js 存储模块的对比
 

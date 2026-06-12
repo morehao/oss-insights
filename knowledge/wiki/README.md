@@ -3,6 +3,8 @@
 > **GitHub:** [requarks/wiki](https://github.com/requarks/wiki)
 >
 > **版本:** v2.0.0 | **协议:** AGPL-3.0 | **语言:** Node.js | **Star:** 25k+
+>
+> **深度文档:** [系统架构](./system-arch.md) · [数据库设计](./db-design.md) · [多版本文档机制](./version-management.md) · [文档资源权限管理](./permission-model.md) · [Git 存储集成](./git-storage.md)
 
 ## 第一部分：快速概览
 
@@ -62,6 +64,8 @@ Wiki.js 是一个基于 Node.js 构建的现代化 Wiki 引擎，提供了丰富
 | **存储** | 磁盘/Git/S3/SFTP/Dropbox/GDrive/OneDrive/Azure 等 11 种 |
 
 ## 第二部分：架构深读
+
+> **详细分析参见:** [系统架构设计详解](./system-arch.md)
 
 ### 架构总览图
 
@@ -269,4 +273,4 @@ Wiki.js 的配置分为两层：`config.yml` 文件（数据库连接、SSL、�
 
 > **GitHub:** [requarks/wiki](https://github.com/requarks/wiki)
 >
-> *本目录下还有独立深度文档：[多版本文档机制](./version-management.md) · [文档资源权限管理](./permission-model.md) · [Git 存储集成](./git-storage.md)*
+> *本目录下还有独立深度文档：[系统架构](./system-arch.md) · [数据库设计](./db-design.md) · [多版本文档机制](./version-management.md) · [文档资源权限管理](./permission-model.md) · [Git 存储集成](./git-storage.md)*

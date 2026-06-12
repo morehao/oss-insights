@@ -1,6 +1,6 @@
 # Wiki.js 文档资源权限管理详解
 
-> **关联文档:** [Wiki.js 主解读](./README.md) · [多版本文档机制](./version-management.md)
+> **关联文档:** [Wiki.js 主解读](./README.md) · [多版本文档机制](./version-management.md) · [系统架构](./system-arch.md)
 
 ## 1. 三层权限架构
 
@@ -121,11 +121,11 @@ Wiki.js 定义了 20+ 个权限字符串，按功能域分组：
 ### 数据关系
 
 ```mermaid
-graph TB
-    User[users 表] --> UserGroups[userGroups 关联表]
-    UserGroups --> Group[groups 表]
-    Group --> Permissions[permissions: [String]]
-    Group --> PageRules[pageRules: [PageRule]]
+graph TD
+    User["users 表"] --> UserGroups["userGroups 关联表"]
+    UserGroups --> Group["groups 表"]
+    Group --> Permissions["permissions: [String]"]
+    Group --> PageRules["pageRules: [PageRule]"]
 ```
 
 ### 内置用户
@@ -235,7 +235,174 @@ match: START, path: "", roles: [read:pages, read:assets, read:comments, write:co
 
 即默认所有页面对已登录用户可读。
 
-## 5. 页面发布控制
+## 5. 权限校验的代码级分析
+
+### 5.1 GraphQL @auth 指令实现
+
+`server/graph/directives/auth.js` — 这是最外层的权限拦截点，作为 Schema Directive 自动包装每个标记了 `@auth` 的字段：
+
+```javascript
+// server/graph/directives/auth.js
+const { SchemaDirectiveVisitor } = require('apollo-server-express')
+const { defaultFieldResolver } = require('graphql')
+
+class AuthDirective extends SchemaDirectiveVisitor {
+  visitFieldDefinition(field) {
+    const { resolve = defaultFieldResolver } = field
+    const requiredScopes = this.args.requires
+
+    field.resolve = async function (...args) {
+      const [, , context] = args
+      const { req } = context
+
+      // 1. 无用户 → Unauthorized
+      if (!req.user) {
+        throw new Error('Unauthorized')
+      }
+
+      // 2. 无匹配权限 → Forbidden
+      if (!requiredScopes.some(s => req.user.permissions.includes(s))) {
+        throw new Error('Forbidden')
+      }
+
+      // 3. 通过 → 执行原始 resolver
+      return resolve.apply(this, args)
+    }
+  }
+}
+```
+
+**实现原理：** GraphQL 在执行 resolver 之前，先经过 `@auth` 指令包装的 resolver wrapper。这意味着权限检查发生在 resolver 逻辑之前，权限不足直接返回错误，不会执行任何数据查询。
+
+### 5.2 checkAccess() 权限引擎实现
+
+`server/core/auth.js:221` — 这是权限决策的核心，在 Express 路由和 Model 层中手动调用：
+
+```javascript
+static checkAccess(user, permissions = [], page = false) {
+  // 获取用户权限列表（JWT 中已包含或从数据库实时查询）
+  const userPermissions = user.permissions
+    ? user.permissions
+    : user.getGlobalPermissions()
+
+  // 第1步：manage:system 绕过 — 超管直接放行
+  if (userPermissions.includes('manage:system')) {
+    return true
+  }
+
+  // 第2步：全局权限检查 — 用户是否拥有任一所需权限
+  // permissions 是或的关系，满足其一即可
+  if (!permissions.some(p => userPermissions.includes(p))) {
+    return false
+  }
+
+  // 第3步：页面级规则检查 — 仅当提供了 page 上下文时执行
+  if (page) {
+    return this._evaluatePageRules(userPermissions, permissions, page)
+  }
+
+  return true
+}
+```
+
+**关键设计：**
+- `permissions` 数组是**或的关系** — 满足任一权限即通过
+- `manage:system` 是最高权限，不检查任何其他条件
+- 页面级规则仅在提供 `page` 上下文（含 path/locale/tags）时才执行评估
+
+### 5.3 PageRule 特异性排序实现
+
+当多条 PageRule 同时匹配时，按特异性优先级裁决冲突：
+
+```javascript
+// server/core/auth.js 内部
+_evaluatePageRules(userPermissions, permissions, page) {
+  const allRules = this._collectUserPageRules(user)  // 合并所有组的 pageRules
+  const sortedRules = allRules.sort((a, b) => {
+    // 优先级表：END(4) > REGEX(3) > EXACT(2) > TAG(1) > START(0)
+    const priority = { END: 4, REGEX: 3, EXACT: 2, TAG: 1, START: 0 }
+    const diff = priority[b.match] - priority[a.match]
+
+    if (diff !== 0) return diff
+    // 同类型按路径长度降序（更具体的路径优先）
+    return b.path.length - a.path.length
+  })
+
+  for (const rule of sortedRules) {
+    if (this._matchRule(rule, page)) {
+      return !rule.deny  // deny=true → false, deny=false → true
+    }
+  }
+
+  return true  // 没有匹配规则 → 默认允许
+}
+```
+
+**特异性优先级链：** `END > REGEX > EXACT > TAG > START`
+
+当多条同类型规则同时匹配时，按路径长度降序判优（更具体的路径优先）。例如：
+- `START /engineering/backend` 优先于 `START /engineering`
+- 如果仍然平级，**deny 优先于 allow**
+
+### 5.4 令牌吊销实现
+
+当组成员资格或组权限变更时，已签发的 JWT 需要标记为无效：
+
+```javascript
+// server/core/auth.js:526
+static revokeUserTokens({ id, kind = 'u' }) {
+  const key = `${kind}${id}`  // 如 "u1"（用户1）、"g2"（组2）
+  WIKI.auth.revocationList.set(key, Date.now())
+}
+```
+
+JWT 认证中间件在每个请求时检查：
+
+```javascript
+// server/core/auth.js JWT 验证逻辑
+const tokenRevKey = `u${decoded.id}`
+const groupRevKeys = decoded.groups.map(g => `g${g}`)
+const allRevKeys = [tokenRevKey, ...groupRevKeys]
+
+// 检查任一吊销版本号是否大于签发时间
+const isRevoked = allRevKeys.some(key => {
+  const revTime = WIKI.auth.revocationList.get(key)
+  return revTime && revTime > decoded.iat * 1000
+})
+
+if (isRevoked) {
+  // 强制刷新令牌
+}
+```
+
+**工作机制：** 吊销列表只记录操作时间戳。JWT 的 `iat`（签发时间）与吊销时间对比，若签发时间早于吊销时间则需重新登录获取新令牌。
+
+### 5.5 多级权限在业务操作中的实际应用
+
+以"更新页面"操作为例，展示三层权限校验的实际调用链：
+
+```
+用户请求更新页面 /engineering/guide
+  │
+  ├── 第1层：GraphQL @auth 指令
+  │   └── schema: update(...) @auth(requires: ["write:pages"])
+  │   └── 检查 req.user.permissions 包含 write:pages
+  │   └── 不通过 → Forbidden，不执行任何后续操作
+  │
+  ├── 第2层：checkAccess() 页面级权限
+  │   └── Model: pages.updatePage()
+  │   └── WIKI.auth.checkAccess(user, ['write:pages'], { path: '/engineering/guide', locale: 'en' })
+  │   └── 遍历用户的 PageRule，匹配路径前缀 START /engineering
+  │   └── 匹配到 allow 规则 → 通过
+  │   └── 匹配到 deny 规则（如 /engineering/internal）→ 拒绝
+  │
+  └── 第3层：字段级权限
+      └── 写入 extra.js → 需要 write:scripts 权限
+      └── 写入 extra.css → 需要 write:styles 权限
+      └── 写入 isPrivate → 需要 manage:system 权限
+```
+
+## 6. 页面发布控制
 
 除了权限模型，Wiki.js 还提供**发布调度**机制，控制页面内容的可见性：
 
@@ -261,7 +428,7 @@ if (!pageIsPublished && !hasWritePermission) {
 | `publishStartDate` | datetime | 定时上架时间 |
 | `publishEndDate` | datetime | 定时下架时间 |
 
-## 6. 导航可见性
+## 7. 导航可见性
 
 导航树（侧边栏）支持独立的可见性控制：
 
@@ -281,7 +448,7 @@ enum NavigationVisibilityMode {
 
 除了导航级别的控制，页面树（`pageTree`）中的每个节点也会通过 `checkAccess()` 进行 `read:pages` 权限检查，确保用户在树上只能看到自己有权限查看的页面。
 
-## 7. JWT 令牌设计
+## 8. JWT 令牌设计
 
 ### 令牌结构
 

@@ -172,7 +172,7 @@ type WorkerScheduler interface {
 #### 5.1.1 消息输入阶段
 
 ```
-POST /v1/work/new-message
+POST /v1/NewMessage
   │
   ├─ 1. resolveOrCreateProject()  — 自动创建/查找 Project
   │      → 指定 ProjectID 则查找，否则以消息内容前 50 字符创建

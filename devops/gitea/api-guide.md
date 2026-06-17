@@ -8,6 +8,8 @@
 
 后端调用 Gitea API 只需要一个 **Personal Access Token**（个人访问令牌），不依赖浏览器 Cookie 或 Session。
 
+> **Personal Access Token 默认永久有效**，不会过期，除非手动删除或撤销。相比之下，OAuth2 Access Token 有过期时间（默认 1 小时）。
+
 ### 方式一：Web UI 手动创建（推荐）
 
 1. 登录 Gitea → 右上角头像 → **设置** → **应用**
@@ -26,7 +28,7 @@ Token 示例: 7c4a8d09ca3762af61e59520943dc26494f8941b
 curl -X POST 'https://gitea.example.com/api/v1/users/{username}/tokens' \
   -u 'username:password' \
   -H 'Content-Type: application/json' \
-  -d '{"name":"ci-token","scopes":["read:repository","write:repository"]}'
+  -d '{"name":"admin-token","scopes":["all"]}'
 ```
 
 返回：

@@ -138,6 +138,12 @@ graph TB
 |------|------|--------|------|
 | [Apache Answer](community/answer/) | Go | 开源 Q&A 知识管理平台，支持社区问答、插件系统、AI 集成 | [GitHub](https://github.com/apache/answer) |
 
+### [DevOps 平台](devops/)
+
+| 项目 | 语言 | 一句话 | 仓库 |
+|------|------|--------|------|
+| [Gitea](devops/gitea/) | Go | 轻量级自托管 DevOps 平台，Git 托管 + Code Review + CI/CD + Package Registry | [GitHub](https://github.com/go-gitea/gitea) |
+
 ### [认证授权](auth/)
 
 | 项目 | 语言 | 一句话 | 仓库 |
@@ -157,15 +163,18 @@ graph TB
 |------|------|--------|------|
 | [Wiki.js](knowledge/wiki/) | Node.js | 现代化 Wiki 引擎，支持 Git 存储、多版本管理、细粒度权限控制 | [GitHub](https://github.com/requarks/wiki) |
 
+### [Agent 产品](agent-product/)
+
+| 项目 | 语言 | 一句话 | 仓库 |
+|------|------|--------|------|
+| [Leros](agent-product/leros/) | Go | 企业级 AI 工作协作平台，四平面架构，支持多 Agent 运行时 | [GitHub](https://github.com/insmtx/Leros) |
+| [Multica](agent-product/multica/) | Go+TS | 托管式 AI Agent 协作平台，Agent 作为第一公民的任务管理系统 | [GitHub](https://github.com/multica/multica) |
+
 ### [RAG / 知识管理](rag/)
 
 | 项目 | 语言 | 一句话 | 仓库 |
 |------|------|--------|------|
 | [WeKnora](rag/weknora/) | Go | 企业级 RAG 与知识推理框架，集成 Agent、Wiki 模式、多租户 RBAC | [GitHub](https://github.com/Tencent/WeKnora) |
-
-### 存储
-
-*待补充*
 
 ---
 

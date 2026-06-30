@@ -6,3 +6,4 @@
 |------|------|------|------|
 | [Wiki.js](wiki/) | Node.js | 现代化 Wiki 引擎，支持 Git 存储、多版本管理、细粒度权限控制 | [GitHub](https://github.com/requarks/wiki) |
 | [Outline](outline/) | TypeScript | 团队协作知识库，实时协作编辑，API 优先，Cancan 式权限继承 | [GitHub](https://github.com/outline/outline) |
+| [Starred](starred/) | Python | GitHub Stars 转 Awesome 列表 CLI 工具，GraphQL 获取，语言/Topic 双分类 | [GitHub](https://github.com/maguowei/starred) |

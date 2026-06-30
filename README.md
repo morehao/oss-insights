@@ -134,47 +134,51 @@ graph TB
 
 ### [社区 / 问答平台](community/)
 
-| 项目 | 语言 | 一句话 | 仓库 |
-|------|------|--------|------|
-| [Apache Answer](community/answer/) | Go | 开源 Q&A 知识管理平台，支持社区问答、插件系统、AI 集成 | [GitHub](https://github.com/apache/answer) |
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [Apache Answer](community/answer/) | Go | 开源 Q&A 知识管理平台，支持社区问答、插件系统、AI 集成 | Apache-2.0 | [GitHub](https://github.com/apache/answer) |
 
 ### [DevOps 平台](devops/)
 
-| 项目 | 语言 | 一句话 | 仓库 |
-|------|------|--------|------|
-| [Gitea](devops/gitea/) | Go | 轻量级自托管 DevOps 平台，Git 托管 + Code Review + CI/CD + Package Registry | [GitHub](https://github.com/go-gitea/gitea) |
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [Gitea](devops/gitea/) | Go | 轻量级自托管 DevOps 平台，Git 托管 + Code Review + CI/CD + Package Registry | MIT | [GitHub](https://github.com/go-gitea/gitea) |
 
 ### [认证授权](auth/)
 
-| 项目 | 语言 | 一句话 | 仓库 |
-|------|------|--------|------|
-| [Tinyauth](auth/tinyauth/) | Go | 最小认证授权服务器，为反向代理提供 ForwardAuth | [GitHub](https://github.com/tinyauthapp/tinyauth) |
-| [Keycloak](auth/keycloak/) | Java | IAM 领域标准参考实现，CNCF 孵化，OIDC/SAML2/OAuth2 完整协议支持 | [GitHub](https://github.com/keycloak/keycloak) |
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [Tinyauth](auth/tinyauth/) | Go | 最小认证授权服务器，为反向代理提供 ForwardAuth | AGPL-3.0 | [GitHub](https://github.com/tinyauthapp/tinyauth) |
+| [ZITADEL](auth/zitadel/) | Go | 企业级 IAM 平台，CQRS + Event Sourcing 架构，OIDC/SAML/SCIM 完整支持 | AGPL-3.0 | [GitHub](https://github.com/zitadel/zitadel) |
+| [TOPIAM](auth/topiam/) | Java | 企业级 IAM/IDaaS 平台，支持 OIDC/SAML2/JWT/CAS/表单代填 | AGPL-3.0 | [GitHub](https://github.com/topiam/eiam) |
+| [MaxKey](auth/maxkey/) | Java | 企业级 IAM-IDaas 单点登录系统，支持 OAuth2/OIDC/SAML2/CAS/JWT 协议 | Apache-2.0 | [GitHub](https://github.com/dromara/MaxKey) |
+| [Keycloak](auth/keycloak/) | Java | IAM 领域标准参考实现，CNCF 孵化，OIDC/SAML2/OAuth2 完整协议支持 | Apache-2.0 | [GitHub](https://github.com/keycloak/keycloak) |
 
 ### [BaaS / 后端即服务](baas/)
 
-| 项目 | 语言 | 一句话 | 仓库 |
-|------|------|--------|------|
-| [PocketBase](baas/pocketbase/) | Go | 开源 BaaS 引擎，单二进制集成 SQLite + 认证 + 文件存储 + 实时订阅 | [GitHub](https://github.com/pocketbase/pocketbase) |
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [PocketBase](baas/pocketbase/) | Go | 开源 BaaS 引擎，单二进制集成 SQLite + 认证 + 文件存储 + 实时订阅 | MIT | [GitHub](https://github.com/pocketbase/pocketbase) |
 
 ### [文档平台](knowledge/)
 
-| 项目 | 语言 | 一句话 | 仓库 |
-|------|------|--------|------|
-| [Wiki.js](knowledge/wiki/) | Node.js | 现代化 Wiki 引擎，支持 Git 存储、多版本管理、细粒度权限控制 | [GitHub](https://github.com/requarks/wiki) |
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [Wiki.js](knowledge/wiki/) | Node.js | 现代化 Wiki 引擎，支持 Git 存储、多版本管理、细粒度权限控制 | AGPL-3.0 | [GitHub](https://github.com/requarks/wiki) |
 
 ### [Agent 产品](agent-product/)
 
-| 项目 | 语言 | 一句话 | 仓库 |
-|------|------|--------|------|
-| [Leros](agent-product/leros/) | Go | 企业级 AI 工作协作平台，四平面架构，支持多 Agent 运行时 | [GitHub](https://github.com/insmtx/Leros) |
-| [Multica](agent-product/multica/) | Go+TS | 托管式 AI Agent 协作平台，Agent 作为第一公民的任务管理系统 | [GitHub](https://github.com/multica/multica) |
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [Leros](agent-product/leros/) | Go | 企业级 AI 工作协作平台，四平面架构，支持多 Agent 运行时 | Apache-2.0 | [GitHub](https://github.com/insmtx/Lework) |
+| [Multica](agent-product/multica/) | Go+TS | 托管式 AI Agent 协作平台，Agent 作为第一公民的任务管理系统 | Apache-2.0 | [GitHub](https://github.com/multica-ai/multica) |
+| [OpenBee](agent-product/openbee/) | Go+TS | 自托管 24/7 数字员工管理平台，对话驱动，多 IM 平台集成 | MIT | [GitHub](https://github.com/theopenbee/openbee) |
 
 ### [RAG / 知识管理](rag/)
 
-| 项目 | 语言 | 一句话 | 仓库 |
-|------|------|--------|------|
-| [WeKnora](rag/weknora/) | Go | 企业级 RAG 与知识推理框架，集成 Agent、Wiki 模式、多租户 RBAC | [GitHub](https://github.com/Tencent/WeKnora) |
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [WeKnora](rag/weknora/) | Go | 企业级 RAG 与知识推理框架，集成 Agent、Wiki 模式、多租户 RBAC | MIT | [GitHub](https://github.com/Tencent/WeKnora) |
 
 ---
 

@@ -138,13 +138,16 @@ Scope 可以跨资源复用。一个资源可以关联多个 scopes，一个 sco
     ▼
 子策略 ── 实际判定层：检查身份、上下文等条件
     │
-    ├── role:    检查角色（支持角色继承）
-    ├── user:    检查用户 ID
-    ├── group:   检查组归属
-    ├── client:  检查客户端 ID
-    ├── time:    检查时间范围
-    ├── js:      自定义脚本（最灵活）
-    └── ...      可 SPI 扩展
+    ├── role:        检查角色（支持角色继承）
+    ├── user:        检查用户 ID
+    ├── group:       检查组归属
+    ├── client:      检查客户端 ID
+    ├── client-scope: 检查客户端作用域归属
+    ├── time:        检查时间范围
+    ├── regex:       正则匹配自定义属性（如 claim 值匹配规则）
+    ├── aggregate:   聚合策略（组合多个子策略，自带独立决策收集器）
+    ├── js:          自定义脚本（最灵活）
+    └── ...          可 SPI 扩展
 ```
 
 关键理解：**权限策略**不直接做判定，它负责确定"哪些资源/作用域受保护"，然后委托给**子策略**做实际判定。子策略也可以进一步嵌套其他子策略。
@@ -166,8 +169,8 @@ Scope 可以跨资源复用。一个资源可以关联多个 scopes，一个 sco
 请求访问资源 R 的作用域 S
   │
   ├─ 1. 查找匹配策略
-  │     ├── 按资源 R 查找 → 找到权限策略 P1
-  │     ├── 按资源类型查找 → 找到权限策略 P2
+  │     ├── 按资源实例 R 查找 → 通过 resource_policy 表直接匹配 resource_id
+  │     ├── 按资源类型查找 → 通过 policy_config 表的 defaultResourceType 匹配资源 type 字段
   │     └── 按作用域 S 查找 → 找到权限策略 P3
   │
   ├─ 2. 评估每个匹配策略
@@ -335,18 +338,27 @@ FGAP 的核心思想：
 
 FGAP 的关键设计：
 
-1. **管理操作映射为资源类型**：`UserResource`, `RoleResource`, `GroupResource`, `ClientResource`
+1. **管理操作映射为资源类型**：将 Keycloak 管理对象映射为 5 种资源类型，每种类型对应一组操作 scope：
+
+| 资源类型 | 操作 scope |
+|----------|-----------|
+| `Clients` | `manage`, `view`, `map-roles`, `map-roles-client-scope`, `map-roles-composite` |
+| `Groups` | `manage`, `view`, `manage-members`, `manage-membership` |
+| `Roles` | `manage`, `view`, `map-roles` |
+| `Users` | `manage`, `view`, `impersonate`, `map-roles`, `manage-group-membership`, `reset-password` |
+| `Organizations` | `manage`, `view`, `manage-members` |
+
 2. **Admin 权限策略组合**：角色策略 + 范围约束（如只能管理 `customer` 类型的用户）
-3. **同一评估引擎**：业务权限和管理权限共享 `DefaultPolicyEvaluator`
+3. **同一评估引擎**：业务权限和管理权限共享同一评估引擎。FGAP 通过**继承复用**通用评估引擎实现——管理权限评估器在通用评估器基础上扩展，在运行时分发：遇 admin 客户端时路由到管理权限评估器，否则使用通用评估器
 
 这避免了维护两套独立的授权系统。
 
 > **场景示例：** 部门 A 的主管需要能管理本部门的文档，但不能碰 HR 部门的文档：
 > ```
-> 管理操作 "创建文档" → 映射为资源类型 UserResource
-> 范围约束 → 资源 filter: department = "A"
-> 策略组合 → role(部门主管) + scope(create/delete) + scope(仅 department=A)
-> → 结果：主管 Alice 可以创建/删除部门 A 的文档，无法操作 HR 文档
+> 管理操作 "创建文档" → 映射为资源类型 Clients
+> 范围约束 → scope: manage（仅管理权限）+ 属性 filter: department = "A"
+> 策略组合 → role(部门主管) + scope(manage) + 属性过滤(仅 department=A)
+> → 结果：主管 Alice 可以管理/删除部门 A 的文档，无法操作 HR 文档
 > ```
 
 ---
@@ -367,10 +379,13 @@ FGAP 的关键设计：
 ### 6.2 评估缓存（决策缓存）
 
 ```
-Map<Policy, Map<Permission, Effect>> decisionCache
+Map<Policy, Map<Object, Effect>> decisionCache
 
-// 同一请求中，同一策略 + 同一权限的评估结果直接复用
-// 避免权限策略树中重复计算相同子策略
+// 第一层 key：策略对象（同一策略的评估结果可复用）
+// 第二层 key：视策略类型不同而变化
+//   - 资源级策略：key = 资源对象（同资源不同 scope 复用结果）
+//   - 作用域/通用策略：key = 权限对象（同权限复用结果）
+// 同一请求中避免权限策略树中重复计算相同子策略
 ```
 
 ### 6.3 只读模式
@@ -458,11 +473,16 @@ registerProvider("my-policy", MyPolicyProvider)
 |-----------|---------------------|
 | pol-1 | pol-2 |
 
-**resource_policy 表（策略关联资源类型）：**
+**resource_policy 表（策略关联资源）：**
+
+> resource_policy 表支持两种匹配路径：
+> - **实例级匹配**：直接存储 `(policy_id, resource_id)` 外键对，命中时精准匹配到具体资源实例
+> - **类型级匹配**：通过 `policy_config` 表中的 `defaultResourceType` 键值对与资源的 `type` 字段进行匹配。当 resource_policy 表有 `(pol-1, res-1)` 记录时按实例匹配，无实例匹配时回退到类型匹配
 
 | policy_id | resource_id |
 |-----------|-------------|
-| pol-1 | (关联 type=project-doc，按类型匹配，非具体资源 ID) |
+| pol-1 | res-1（实例级：关联具体项目规格书） |
+| pol-2 | —（类型级：通过 config 的 defaultResourceType="tech-doc" 匹配所有技术文档） |
 
 **scope_policy 表（策略关联作用域）：**
 
@@ -479,6 +499,16 @@ registerProvider("my-policy", MyPolicyProvider)
 
 ### 8.2 请求评估过程
 
+评估入口有三条路径：
+
+| 路径 | 触发条件 | 评估方式 |
+|------|----------|----------|
+| **UMA 路径** | 携带 `permission_ticket`（用户自管理审批票据） | `evaluateUserManagedPermissions()` — 按 ticket 对应的 UMA 策略评估 |
+| **通用路径** | 无 ticket，指定具体资源和 scope | `evaluatePermissions()` — 走 resource/scope/类型三层匹配 |
+| **全量路径** | 无 ticket，未指定具体权限（请求所有权限） | `evaluateAllPermissions()` — 评估用户全部可用权限 |
+
+以下是通用路径的评估过程：
+
 ```
 场景：用户 Alice（角色：editor）请求 GET /api/docs/proj-spec-v2
       文档 proj-spec-v2 类型为 "project-doc"，scope 为 "read"
@@ -488,18 +518,16 @@ Step 1: 确定资源服务器 → 根据请求的 Client 映射到 rs-1
 Step 2: 创建 ResourcePermission
           { resource: res-1(proj-spec-v2), scopes: [read] }
 Step 3: DefaultPolicyEvaluator.evaluate()
-  ├── evaluateResourcePolicies()
-  │   └── 查询 policy → resource_policy → 无 res-1 专属策略
+  ├── evaluateResourcePolicies()          ← 按资源实例匹配
+  │   └── 查询 resource_policy 表 → 无 pol-1(res-1 不存在实例级关联)
   │       └── 结果：无匹配
   │
-  ├── evaluateResourceTypePolicies()
-  │   └── 查询 policy → config("defaultResourceType"="project-doc")
-  │       └── 找到 pol-1 (P_project-doc-access)
-  │           └── 委托 AbstractPermissionProvider
-  │               └── 遍历 associated_policy → 找到 pol-2 (R_editor)
-  │                   └── 委托 RolePolicyProvider
-  │                       ├── 读取 policy_config: roles=[{id:role-editor}]
-  │                       └── Alice.hasRole("editor")? → YES → grant
+  ├── evaluateResourceTypePolicies()      ← 按资源类型匹配
+  │   └── 查询 policy_config 表 → config("defaultResourceType"="project-doc")
+  │       └── 找到 pol-1 (P_project-doc-access)  ← pol-1 在 resource_policy 中无 res-1 实例关联，但通过类型匹配命中
+  │           └── 遍历 associated_policy → 找到 pol-2 (R_editor)
+  │               ├── 读取 policy_config: roles=[{id:role-editor}]
+  │               └── Alice.hasRole("editor")? → YES → grant
   │
   └── evaluateScopePolicies()
       └── 查询 scope_policy → 找到 pol-3 (PS_read)
@@ -540,9 +568,9 @@ Step 4: ENFORCING 模式下无策略匹配 → 默认拒绝
 ```
 Bob（senior-engineer）请求审批 proj-spec-v2：approve
   │
-  ├── 匹配 pol-1（关联 type=project-doc, scope=approve）
-  │     └── resource_policy 表: pol-1 ↔ project-doc
-  │     └── policy_config 表: pol-1 的 config 无特殊配置
+  ├── 匹配 pol-1（通过 config 的 defaultResourceType="project-doc" 类型匹配）
+  │     └── resource_policy 表: pol-1 ↔ res-1（实例级关联，优先于类型匹配）
+  │     └── policy_config 表: pol-1.defaultResourceType = "project-doc"（类型匹配回退）
   │
   ├── pol-1 委托子策略 pol-2（R_editor）
   │     └── associated_policy 表: pol-1 → pol-2
@@ -657,7 +685,7 @@ Bob（senior-engineer）请求审批 proj-spec-v2：approve
 | id | varchar(36) PK | 主键 |
 | name | varchar(255) | 策略名称 |
 | description | text | 策略描述 |
-| type | varchar(255) | 策略类型：`resource`, `scope`, `uma`, `role`, `user`, `js`, `time` 等 |
+| type | varchar(255) | 策略类型：`resource`, `scope`, `uma`, `role`, `user`, `group`, `client`, `client-scope`, `time`, `regex`, `aggregate`, `js` 等 |
 | decision_strategy | int | 子策略合并策略 |
 | logic | int | 0=POSITIVE, 1=NEGATIVE |
 | owner | varchar(255) | 所有者（UMA 场景） |
@@ -690,12 +718,18 @@ Bob（senior-engineer）请求审批 proj-spec-v2：approve
 | resource_id FK | 关联资源 |
 | scope_id FK | 关联作用域 |
 
+> 关联方向为单向多对多：关联关系定义在资源侧，Scope 表本身不含对资源的反向引用。查询"某 scope 关联了哪些资源"需通过 JOIN 反向查找。
+
 #### resource_policy（资源 ↔ 策略）
 
 | 列 | 说明 |
 |-----|------|
 | policy_id FK | 关联策略 |
-| resource_id FK | 关联资源 |
+| resource_id FK | 关联资源实例（可为 null，null 时通过 policy_config.defaultResourceType 按类型匹配） |
+
+> **两种匹配路径并存：**
+> - **实例级**：`resource_id` 直接指向具体资源 → 评估时通过 JOIN resource_policy 表精准匹配
+> - **类型级**：`resource_id` 为空时，通过 `policy_config` 表的 `defaultResourceType` 匹配资源的 `type` 字段 → 实现"对某类型的所有资源生效"的批量授权
 
 #### scope_policy（作用域 ↔ 策略）
 
@@ -882,3 +916,656 @@ Step 2 — 细粒度检查（资源权限路径）:
 > 核心源码路径：
 > - `server-spi-private/src/main/java/org/keycloak/authorization/` — 核心模型与评估引擎
 > - `authz/policy/common/src/main/java/org/keycloak/authorization/policy/provider/` — 内置策略实现
+
+
+## 十三、业务落地实践 — 多租户 SaaS 以新建租户为线索的端到端数据流
+
+本章以「CodeHub」多租户项目管理 SaaS 为背景，以「新建租户」为起点，追踪从组织搭建、角色定义、权限配置到用户访问业务数据的完整数据流转过程。
+
+### 13.1 场景定义
+
+**业务背景：**
+
+「星河科技」是一家新入驻客户（租户），团队包含研发部和产品部。需要为其建立完整的组织架构、角色体系、项目资源和权限控制。
+
+**角色体系：**
+
+| 角色 | 说明 | 菜单权限 |
+|------|------|----------|
+| `engineer` | 研发工程师 | 项目管理、任务列表、文档库 |
+| `pm` | 产品经理 | 项目管理、任务列表、文档库、团队管理 |
+| `admin` | 租户管理员 | 全部菜单 |
+
+**用户清单：**
+
+| 用户 | 角色 | 所属部门 |
+|------|------|----------|
+| Alice | `admin` | 产品部 |
+| Bob | `engineer` | 研发部 |
+| Charlie | `pm` | 产品部 |
+
+**业务数据：**
+
+| 资源 ID | 名称 | 类型 | 创建人 |
+|---------|------|------|--------|
+| proj-101 | 星河 CRM | `project` | Charlie |
+| proj-102 | 数据中台 | `project` | Alice |
+| task-201 | 登录模块 | `task` | Bob |
+| task-202 | 数据清洗 | `task` | Bob |
+| doc-301 | PRD-v2 | `document` | Charlie |
+| doc-302 | 技术方案 | `document` | Bob |
+
+**权限需求：**
+
+| # | 需求 |
+|---|------|
+| R1 | `engineer` 能查看和编辑所有项目/任务/文档 |
+| R2 | `pm` 能查看/编辑/删除项目，能查看/编辑任务和文档 |
+| R3 | `admin` 拥有全部资源的所有操作权限 |
+
+**贯穿全章的跟踪变量：**
+
+| 请求 | 用户 | 操作 | 目标资源 | 所需 scope |
+|------|------|------|----------|------------|
+| Q1 | Bob（engineer） | 查看 | proj-101 | `project:view` |
+| Q2 | Bob（engineer） | 删除 | proj-101 | `project:delete` |
+| Q3 | Charlie（pm） | 删除 | proj-101 | `project:delete` |
+
+---
+
+### 13.2 数据流：9 步完整推演
+
+以下沿时间线追踪每一步产生的数据库写入，以及 Step 8 中针对 Q1/Q2/Q3 三个请求的完整评估走查。
+
+---
+
+#### Step 1：创建租户 — 写入 resource_server
+
+**业务动作：** 平台管理员在后台为「星河科技」开通 SaaS 工作空间。
+
+**写入数据：**
+
+_resource_server 表_
+
+| id | allow_remote_mgmt | policy_enforce_mode | decision_strategy |
+|----|-------------------|---------------------|-------------------|
+| `tenant-starry` | false | 0（ENFORCING） | 0（AFFIRMATIVE） |
+
+**说明：** `resource_server` 在此充当租户隔离域的角色。后续所有 resource / scope / policy 均通过 `resource_server_id` 挂在 `tenant-starry` 下，实现租户间数据与策略的物理隔离。
+
+---
+
+#### Step 2：搭建组织架构 — 创建部门与成员
+
+**业务动作：** 管理员 Alice 在「星河科技」下创建研发部和产品部，添加成员。
+
+**操作：** 此步骤不写入授权相关表，但产出 RBAC 基础数据（以下为概念示意，非资源权限模型存储范围）：
+
+- 部门：`dept-eng`（研发部）、`dept-product`（产品部）
+- 用户注册：Alice、Bob、Charlie 注册到 `tenant-starry` 域
+- 部门成员：Alice ∈ `dept-product`、Bob ∈ `dept-eng`、Charlie ∈ `dept-product`
+
+**说明：** 组织和人员数据存储在 RBAC 层（用户/部门/角色模块），它们不直接写入资源权限表，但为后续角色策略的判定提供依据。当 Step 8 执行 `hasRole()` 检查时，正是查询这里建立的关系。
+
+---
+
+#### Step 3：创建角色 — 写入 role 类型 policy
+
+**业务动作：** Alice 定义三个业务角色。
+
+**Step 3a — 创建角色策略：**
+
+_policy 表_
+
+| id | name | type | decision_strategy | logic | resource_server_id |
+|----|------|------|-------------------|-------|-------------------|
+| `role-engineer` | 研发工程师 | `role` | UNANIMOUS | POSITIVE | tenant-starry |
+| `role-pm` | 产品经理 | `role` | UNANIMOUS | POSITIVE | tenant-starry |
+| `role-admin` | 管理员 | `role` | UNANIMOUS | POSITIVE | tenant-starry |
+
+**Step 3b — 写入角色策略的判定配置：**
+
+_policy_config 表_
+
+| policy_id | name | value |
+|-----------|------|-------|
+| `role-engineer` | `roles` | `[{"id":"role-engineer","required":true}]` |
+| `role-engineer` | `fetchRoles` | `false` |
+| `role-pm` | `roles` | `[{"id":"role-pm","required":true}]` |
+| `role-pm` | `fetchRoles` | `false` |
+| `role-admin` | `roles` | `[{"id":"role-admin","required":true}]` |
+| `role-admin` | `fetchRoles` | `false` |
+
+**当前进度说明：** 此时角色策略只是三个孤立的判定器——`role-engineer` 知道如何检查用户是否具有 `engineer` 角色，但还没有和任何资源或操作挂钩。后续 Step 6 会将其挂载为子策略。
+
+---
+
+#### Step 4：用户绑定角色 — RBAC 层操作
+
+**业务动作：** Alice 为团队成员分配角色。
+
+**操作：** 在 RBAC 层建立用户-角色关系（概念示意）：
+
+- Alice → `admin`
+- Bob → `engineer`
+- Charlie → `pm`
+
+**说明：** 角色绑定不在资源权限表中存储，它的价值在 Step 8 体现——评估引擎调用 `identity.hasRole()` 时回溯到这里。
+
+---
+
+#### Step 5：创建业务数据的同时创建 scope — 写入 resource 和 scope
+
+**业务动作：** 团队成员创建项目、任务、文档，同时定义系统中有哪些操作类型。
+
+**Step 5a — 创建 scope（定义操作类型）：**
+
+_scope 表_
+
+| id | name | resource_server_id |
+|----|------|-------------------|
+| `sc-project-view` | `project:view` | tenant-starry |
+| `sc-project-edit` | `project:edit` | tenant-starry |
+| `sc-project-del` | `project:delete` | tenant-starry |
+| `sc-task-view` | `task:view` | tenant-starry |
+| `sc-task-edit` | `task:edit` | tenant-starry |
+| `sc-doc-view` | `doc:view` | tenant-starry |
+| `sc-doc-edit` | `doc:edit` | tenant-starry |
+
+> scope 定义「能做什么」，按资源类型加操作动词命名，如 `project:view`。
+
+**Step 5b — 创建业务资源并随即挂载 scope：**
+
+_resource 表_
+
+| id | name | type | owner | resource_server_id |
+|----|------|------|-------|-------------------|
+| `proj-101` | 星河 CRM | `project` | Charlie | tenant-starry |
+| `proj-102` | 数据中台 | `project` | Alice | tenant-starry |
+| `task-201` | 登录模块 | `task` | Bob | tenant-starry |
+| `task-202` | 数据清洗 | `task` | Bob | tenant-starry |
+| `doc-301` | PRD-v2 | `document` | Charlie | tenant-starry |
+| `doc-302` | 技术方案 | `document` | Bob | tenant-starry |
+
+> 每个资源的 `type` 字段在整个权限体系中起关键作用——它是按类型批量匹配策略的锚点。
+
+**Step 5c — 同时写入 resource_scope（"每个业务数据创建时就挂载上 scope"）：**
+
+_resource_scope 表_
+
+| resource_id | scope_id |
+|-------------|----------|
+| `proj-101` | `sc-project-view` |
+| `proj-101` | `sc-project-edit` |
+| `proj-101` | `sc-project-del` |
+| `proj-102` | `sc-project-view` |
+| `proj-102` | `sc-project-edit` |
+| `proj-102` | `sc-project-del` |
+| `task-201` | `sc-task-view` |
+| `task-201` | `sc-task-edit` |
+| `task-202` | `sc-task-view` |
+| `task-202` | `sc-task-edit` |
+| `doc-301` | `sc-doc-view` |
+| `doc-301` | `sc-doc-edit` |
+| `doc-302` | `sc-doc-view` |
+| `doc-302` | `sc-doc-edit` |
+
+**当前进度说明：** 至此，我们有 3 个角色策略、7 个 scope、6 个资源及它们与 scope 的关联。角色（谁）和 scope（做什么）已经就位，只差把「谁 → 对什么资源 → 能做什么」串起来。这一步在 Step 6 完成。
+
+---
+
+#### Step 6：配置权限策略 — 将角色、资源类型、scope 串联
+
+这是整个流程的**核心步骤**。管理员 Alice 配置三条权限规则：
+
+- R1：`engineer` 角色 → `project`/`task`/`document` 类型资源 → `view`/`edit` scope
+- R2：`pm` 角色 → `project` 类型 → `view`/`edit`/`delete`；`task`/`document` 类型 → `view`/`edit`
+- R3：`admin` 角色 → 所有类型 → 所有 scope
+
+**Step 6a — 创建 resource 类型权限策略（桥接层）：**
+
+`admin` 角色需要匹配 3 种资源类型，按每种类型一条的原则创建 3 条 admin 策略。
+
+_policy 表_
+
+| id | name | type | decision_strategy | resource_server_id |
+|----|------|------|-------------------|-------------------|
+| `P-eng-project` | 工程师-项目权限 | `resource` | AFFIRMATIVE | tenant-starry |
+| `P-eng-task` | 工程师-任务权限 | `resource` | AFFIRMATIVE | tenant-starry |
+| `P-eng-doc` | 工程师-文档权限 | `resource` | AFFIRMATIVE | tenant-starry |
+| `P-pm-project` | 产品经理-项目权限 | `resource` | AFFIRMATIVE | tenant-starry |
+| `P-pm-task` | 产品经理-任务权限 | `resource` | AFFIRMATIVE | tenant-starry |
+| `P-pm-doc` | 产品经理-文档权限 | `resource` | AFFIRMATIVE | tenant-starry |
+| `P-admin-project` | 管理员-项目权限 | `resource` | AFFIRMATIVE | tenant-starry |
+| `P-admin-task` | 管理员-任务权限 | `resource` | AFFIRMATIVE | tenant-starry |
+| `P-admin-doc` | 管理员-文档权限 | `resource` | AFFIRMATIVE | tenant-starry |
+
+**Step 6b — 按资源类型匹配（policy_config）：**
+
+_policy_config 表_
+
+| policy_id | name | value |
+|-----------|------|-------|
+| `P-eng-project` | `defaultResourceType` | `project` |
+| `P-eng-task` | `defaultResourceType` | `task` |
+| `P-eng-doc` | `defaultResourceType` | `document` |
+| `P-pm-project` | `defaultResourceType` | `project` |
+| `P-pm-task` | `defaultResourceType` | `task` |
+| `P-pm-doc` | `defaultResourceType` | `document` |
+| `P-admin-project` | `defaultResourceType` | `project` |
+| `P-admin-task` | `defaultResourceType` | `task` |
+| `P-admin-doc` | `defaultResourceType` | `document` |
+
+> 一条 policy 的 `defaultResourceType` 只能存一个值，所以对每种资源类型创建独立策略。`resource_policy` 表此时为空——所有匹配都走类型匹配。
+
+**Step 6c — 绑定 scope（scope_policy）：**
+
+_scope_policy 表_
+
+| policy_id | scope_id |
+|-----------|----------|
+| `P-eng-project` | `sc-project-view` |
+| `P-eng-project` | `sc-project-edit` |
+| `P-eng-task` | `sc-task-view` |
+| `P-eng-task` | `sc-task-edit` |
+| `P-eng-doc` | `sc-doc-view` |
+| `P-eng-doc` | `sc-doc-edit` |
+| `P-pm-project` | `sc-project-view` |
+| `P-pm-project` | `sc-project-edit` |
+| `P-pm-project` | `sc-project-del` |
+| `P-pm-task` | `sc-task-view` |
+| `P-pm-task` | `sc-task-edit` |
+| `P-pm-doc` | `sc-doc-view` |
+| `P-pm-doc` | `sc-doc-edit` |
+| `P-admin-project` | `sc-project-view` |
+| `P-admin-project` | `sc-project-edit` |
+| `P-admin-project` | `sc-project-del` |
+| `P-admin-task` | `sc-task-view` |
+| `P-admin-task` | `sc-task-edit` |
+| `P-admin-doc` | `sc-doc-view` |
+| `P-admin-doc` | `sc-doc-edit` |
+
+> 这一步绑定了「resource 类型策略能覆盖哪些操作」。例如 `P-eng-project` 关联 `sc-project-view` 和 `sc-project-edit` 两个 scope——工程师可以查看和编辑项目，但不能删除。
+
+**Step 6d — 挂载角色策略（associated_policy）：**
+
+_associated_policy 表_
+
+| policy_id | associated_policy_id |
+|-----------|---------------------|
+| `P-eng-project` | `role-engineer` |
+| `P-eng-task` | `role-engineer` |
+| `P-eng-doc` | `role-engineer` |
+| `P-pm-project` | `role-pm` |
+| `P-pm-task` | `role-pm` |
+| `P-pm-doc` | `role-pm` |
+| `P-admin-project` | `role-admin` |
+| `P-admin-task` | `role-admin` |
+| `P-admin-doc` | `role-admin` |
+
+**Step 6 完成后，策略树全貌：**
+
+```
+P-eng-project  (resource, scope=[view,edit], type=project)
+  └── role-engineer  (检查 identity.hasRole("engineer"))
+
+P-eng-task  (resource, scope=[view,edit], type=task)
+  └── role-engineer
+
+P-eng-doc  (resource, scope=[view,edit], type=document)
+  └── role-engineer
+
+P-pm-project  (resource, scope=[view,edit,delete], type=project)
+  └── role-pm  (检查 identity.hasRole("pm"))
+
+P-pm-task  (resource, scope=[view,edit], type=task)
+  └── role-pm
+
+P-pm-doc  (resource, scope=[view,edit], type=document)
+  └── role-pm
+
+P-admin-project  (resource, scope=[view,edit,delete], type=project)
+  └── role-admin  (检查 identity.hasRole("admin"))
+
+P-admin-task  (resource, scope=[view,edit], type=task)
+  └── role-admin
+
+P-admin-doc  (resource, scope=[view,edit], type=document)
+  └── role-admin
+```
+
+**resource_policy 表当前状态：空**
+
+本案例中所有权限策略均通过 `defaultResourceType` 类型匹配，无实例级策略。
+
+---
+
+#### Step 7：用户发起业务请求
+
+**业务动作：** 用户在前端页面操作业务数据。
+
+| 请求 | 用户 | 操作 | 目标资源 | 所需 scope | 期望结果 |
+|------|------|------|----------|------------|----------|
+| Q1 | Bob（engineer） | 查看 | proj-101 | `project:view` | 允许 |
+| Q2 | Bob（engineer） | 删除 | proj-101 | `project:delete` | 拒绝 |
+| Q3 | Charlie（pm） | 删除 | proj-101 | `project:delete` | 允许 |
+
+---
+
+#### Step 8：权限判定 — 三个请求的完整数据流转
+
+##### Q1：Bob（engineer）查看 proj-101
+
+```
+=== 阶段 1：定位资源服务器 ===
+从请求上下文获取 resource_server → tenant-starry
+检查 policy_enforce_mode → ENFORCING
+
+=== 阶段 2：构造 ResourcePermission ===
+resource = proj-101 (type=project)
+scope   = project:view (sc-project-view)
+
+=== 阶段 3：查询匹配策略 ===
+
+3a. 按资源实例匹配（resource_policy 表）:
+    查询: SELECT * FROM resource_policy WHERE resource_id = 'proj-101'
+    → 结果: 空（没有为 proj-101 配置实例级策略）
+
+3b. 按资源类型匹配（policy_config 表）:
+    查询: policy_config WHERE KEY = 'defaultResourceType' AND value = 'project'
+          JOIN policy ON p.resource_server_id = 'tenant-starry'
+    → 命中: P-eng-project, P-pm-project, P-admin-project（3条）
+
+3c. 按 scope 匹配（scope_policy 表）:
+    在上一步命中的 3 条中筛选 scope_id = 'sc-project-view'：
+
+    P-eng-project:
+      SELECT * FROM scope_policy
+      WHERE policy_id = 'P-eng-project' AND scope_id = 'sc-project-view'
+      → 命中 ✓
+
+    P-pm-project:
+      SELECT * FROM scope_policy
+      WHERE policy_id = 'P-pm-project' AND scope_id = 'sc-project-view'
+      → 命中 ✓
+
+    P-admin-project:
+      SELECT * FROM scope_policy
+      WHERE policy_id = 'P-admin-project' AND scope_id = 'sc-project-view'
+      → 命中 ✓
+
+    → 最终命中策略: P-eng-project, P-pm-project, P-admin-project（3条同时满足类型+scope匹配）
+
+=== 阶段 4：递归评估策略树 ===
+
+    评估 P-eng-project:
+      加载子策略: associated_policy WHERE policy_id = 'P-eng-project'
+      → role-engineer
+      读取子策略配置: policy_config WHERE policy_id = 'role-engineer'
+      → roles=[{"id":"role-engineer","required":true}]
+      判定: Bob.hasRole("engineer")? → 是 → GRANT
+      → P-eng-project = GRANT
+
+    评估 P-pm-project:
+      加载子策略: role-pm
+      配置: roles=[{"id":"role-pm","required":true}]
+      判定: Bob.hasRole("pm")? → 否 → 不产生 effect
+      → denyIfNoEffect() → P-pm-project = DENY
+
+    评估 P-admin-project:
+      加载子策略: role-admin
+      配置: roles=[{"id":"role-admin","required":true}]
+      判定: Bob.hasRole("admin")? → 否 → 不产生 effect
+      → denyIfNoEffect() → P-admin-project = DENY
+
+=== 阶段 5：合并结果 ===
+resource_server.decision_strategy = AFFIRMATIVE
+→ 任一条 GRANT → 最终 GRANT
+
+P-eng-project = GRANT
+→ 最终: PERMIT（允许查看）✓
+```
+
+##### Q2：Bob（engineer）删除 proj-101
+
+```
+阶段 1-2: 同 Q1，scope 改为 project:delete (sc-project-del)
+
+阶段 3: 查询匹配策略
+
+3a. 按资源实例: 空（同上）
+
+3b. 按资源类型: 命中 P-eng-project, P-pm-project, P-admin-project（同上）
+
+3c. 按 scope 筛选:
+
+    P-eng-project: scope_policy 中没有 sc-project-del → 不匹配 ✗
+    P-pm-project:  scope_policy 中有 sc-project-del    → 匹配 ✓
+    P-admin-project: scope_policy 中有 sc-project-del   → 匹配 ✓
+
+    → 命中策略: P-pm-project, P-admin-project（2条）
+
+阶段 4: 评估
+
+    评估 P-pm-project:
+      → role-pm → Bob.hasRole("pm")? → 否 → denyIfNoEffect → DENY
+
+    评估 P-admin-project:
+      → role-admin → Bob.hasRole("admin")? → 否 → denyIfNoEffect → DENY
+
+阶段 5: AFFIRMATIVE → 全部 DENY → 最终 DENY
+→ Bob 不能删除 proj-101 ✓
+```
+
+##### Q3：Charlie（pm）删除 proj-101
+
+```
+阶段 1-3: 同 Q2，命中 P-pm-project, P-admin-project（2条）
+
+阶段 4: 评估
+
+    评估 P-pm-project:
+      → role-pm → Charlie.hasRole("pm")? → 是 → GRANT
+      → P-pm-project = GRANT
+
+    评估 P-admin-project:
+      → role-admin → Charlie.hasRole("admin")? → 否 → denyIfNoEffect → DENY
+
+阶段 5: AFFIRMATIVE → P-pm-project 已 GRANT → 最终 GRANT
+→ Charlie 可以删除 proj-101 ✓
+```
+
+---
+
+#### Step 9：数据膨胀观察 — 新增业务资源触发的写操作
+
+新增一个项目「移动端 App」（`proj-103`, 创建人 Alice, type=`project`）后：
+
+**需要写入的数据：**
+
+```
+resource:        INSERT 1 行  (proj-103, project, Alice, tenant-starry)
+resource_scope:  INSERT 3 行  (proj-103 ↔ sc-project-view/edit/del)
+```
+
+**无需变更的数据：**
+
+```
+policy:            不变（P-eng-project/P-pm-project/P-admin-project 已存在）
+policy_config:     不变（defaultResourceType = 'project' 已配置）
+associated_policy: 不变（role-engineer/role-pm/role-admin 已挂载）
+scope_policy:      不变（project:view/edit/del 已绑定）
+resource_policy:   不变（仍通过类型匹配）
+```
+
+**新增项目前后各表行数对比：**
+
+| 表 | 新增前 | 新增后 | +Δ |
+|----|--------|--------|-----|
+| resource | 6 | 7 | +1 |
+| resource_scope | 14 | 17 | +3 |
+| policy | 12 | 12 | 0 |
+| policy_config | 15 | 15 | 0 |
+| associated_policy | 9 | 9 | 0 |
+| scope_policy | 20 | 20 | 0 |
+
+新增一个任务「推送通知」（`task-203`）同理，仅需在 resource 和 resource_scope 插入。无论多少项目/任务/文档，策略层规模保持恒定。
+
+---
+
+### 13.3 数据表全貌快照
+
+以下汇总 9 步流程完成后，所有授权相关表的完整数据行。
+
+#### resource_server（1 行）
+
+| id | allow_remote_mgmt | policy_enforce_mode | decision_strategy |
+|----|-------------------|---------------------|-------------------|
+| `tenant-starry` | false | 0（ENFORCING） | 0（AFFIRMATIVE） |
+
+#### resource（6 行）
+
+| id | name | type | owner | owner_managed_access | resource_server_id |
+|----|------|------|-------|---------------------|-------------------|
+| `proj-101` | 星河 CRM | `project` | Charlie | false | tenant-starry |
+| `proj-102` | 数据中台 | `project` | Alice | false | tenant-starry |
+| `task-201` | 登录模块 | `task` | Bob | false | tenant-starry |
+| `task-202` | 数据清洗 | `task` | Bob | false | tenant-starry |
+| `doc-301` | PRD-v2 | `document` | Charlie | false | tenant-starry |
+| `doc-302` | 技术方案 | `document` | Bob | false | tenant-starry |
+
+#### scope（7 行）
+
+| id | name | resource_server_id |
+|----|------|-------------------|
+| `sc-project-view` | `project:view` | tenant-starry |
+| `sc-project-edit` | `project:edit` | tenant-starry |
+| `sc-project-del` | `project:delete` | tenant-starry |
+| `sc-task-view` | `task:view` | tenant-starry |
+| `sc-task-edit` | `task:edit` | tenant-starry |
+| `sc-doc-view` | `doc:view` | tenant-starry |
+| `sc-doc-edit` | `doc:edit` | tenant-starry |
+
+#### resource_scope（14 行）
+
+| resource_id | scope_id | | resource_id | scope_id |
+|-------------|----------|---|-------------|----------|
+| `proj-101` | `sc-project-view` | | `task-202` | `sc-task-view` |
+| `proj-101` | `sc-project-edit` | | `task-202` | `sc-task-edit` |
+| `proj-101` | `sc-project-del` | | `doc-301` | `sc-doc-view` |
+| `proj-102` | `sc-project-view` | | `doc-301` | `sc-doc-edit` |
+| `proj-102` | `sc-project-edit` | | `doc-302` | `sc-doc-view` |
+| `proj-102` | `sc-project-del` | | `doc-302` | `sc-doc-edit` |
+| `task-201` | `sc-task-view` | | | |
+| `task-201` | `sc-task-edit` | | | |
+
+#### policy（12 行）
+
+| id | name | type | decision_strategy | logic | resource_server_id |
+|----|------|------|-------------------|-------|-------------------|
+| `role-engineer` | 研发工程师 | `role` | UNANIMOUS | POSITIVE | tenant-starry |
+| `role-pm` | 产品经理 | `role` | UNANIMOUS | POSITIVE | tenant-starry |
+| `role-admin` | 管理员 | `role` | UNANIMOUS | POSITIVE | tenant-starry |
+| `P-eng-project` | 工程师-项目权限 | `resource` | AFFIRMATIVE | POSITIVE | tenant-starry |
+| `P-eng-task` | 工程师-任务权限 | `resource` | AFFIRMATIVE | POSITIVE | tenant-starry |
+| `P-eng-doc` | 工程师-文档权限 | `resource` | AFFIRMATIVE | POSITIVE | tenant-starry |
+| `P-pm-project` | 产品经理-项目权限 | `resource` | AFFIRMATIVE | POSITIVE | tenant-starry |
+| `P-pm-task` | 产品经理-任务权限 | `resource` | AFFIRMATIVE | POSITIVE | tenant-starry |
+| `P-pm-doc` | 产品经理-文档权限 | `resource` | AFFIRMATIVE | POSITIVE | tenant-starry |
+| `P-admin-project` | 管理员-项目权限 | `resource` | AFFIRMATIVE | POSITIVE | tenant-starry |
+| `P-admin-task` | 管理员-任务权限 | `resource` | AFFIRMATIVE | POSITIVE | tenant-starry |
+| `P-admin-doc` | 管理员-文档权限 | `resource` | AFFIRMATIVE | POSITIVE | tenant-starry |
+
+#### policy_config（15 行）
+
+| policy_id | name | value |
+|-----------|------|-------|
+| `role-engineer` | `roles` | `[{"id":"role-engineer","required":true}]` |
+| `role-engineer` | `fetchRoles` | `false` |
+| `role-pm` | `roles` | `[{"id":"role-pm","required":true}]` |
+| `role-pm` | `fetchRoles` | `false` |
+| `role-admin` | `roles` | `[{"id":"role-admin","required":true}]` |
+| `role-admin` | `fetchRoles` | `false` |
+| `P-eng-project` | `defaultResourceType` | `project` |
+| `P-eng-task` | `defaultResourceType` | `task` |
+| `P-eng-doc` | `defaultResourceType` | `document` |
+| `P-pm-project` | `defaultResourceType` | `project` |
+| `P-pm-task` | `defaultResourceType` | `task` |
+| `P-pm-doc` | `defaultResourceType` | `document` |
+| `P-admin-project` | `defaultResourceType` | `project` |
+| `P-admin-task` | `defaultResourceType` | `task` |
+| `P-admin-doc` | `defaultResourceType` | `document` |
+
+#### associated_policy（9 行）
+
+| policy_id | associated_policy_id |
+|-----------|---------------------|
+| `P-eng-project` | `role-engineer` |
+| `P-eng-task` | `role-engineer` |
+| `P-eng-doc` | `role-engineer` |
+| `P-pm-project` | `role-pm` |
+| `P-pm-task` | `role-pm` |
+| `P-pm-doc` | `role-pm` |
+| `P-admin-project` | `role-admin` |
+| `P-admin-task` | `role-admin` |
+| `P-admin-doc` | `role-admin` |
+
+#### scope_policy（20 行）
+
+| policy_id | scope_id |
+|-----------|----------|
+| `P-eng-project` | `sc-project-view` |
+| `P-eng-project` | `sc-project-edit` |
+| `P-eng-task` | `sc-task-view` |
+| `P-eng-task` | `sc-task-edit` |
+| `P-eng-doc` | `sc-doc-view` |
+| `P-eng-doc` | `sc-doc-edit` |
+| `P-pm-project` | `sc-project-view` |
+| `P-pm-project` | `sc-project-edit` |
+| `P-pm-project` | `sc-project-del` |
+| `P-pm-task` | `sc-task-view` |
+| `P-pm-task` | `sc-task-edit` |
+| `P-pm-doc` | `sc-doc-view` |
+| `P-pm-doc` | `sc-doc-edit` |
+| `P-admin-project` | `sc-project-view` |
+| `P-admin-project` | `sc-project-edit` |
+| `P-admin-project` | `sc-project-del` |
+| `P-admin-task` | `sc-task-view` |
+| `P-admin-task` | `sc-task-edit` |
+| `P-admin-doc` | `sc-doc-view` |
+| `P-admin-doc` | `sc-doc-edit` |
+
+#### resource_policy（0 行）
+
+本案例中所有策略均通过类型匹配，此表为空。
+
+---
+
+### 13.4 设计总结
+
+| 业务关注点 | 在模型中的体现 | 数据行变化 |
+|-----------|---------------|-----------|
+| 新建租户 | 插入一行 `resource_server`，全部资源/策略以 `resource_server_id` 隔离 | +1 行 |
+| 新增角色 | 创建一条 `type=role` 的 policy + 对应的 policy_config | +1 policy, +1~2 config |
+| 角色绑定菜单权限 | `role` 策略 + `resource` 策略 + `scope_policy` 三层关联 | 组合后约 3 行/menu |
+| 用户绑定角色 | RBAC 层操作，评估时 `hasRole()` 回溯 | 不写入本章表 |
+| 新增业务数据 | 插入 `resource` + `resource_scope`，策略通过类型匹配自动覆盖 | +1 resource, +N scope |
+| 数据膨胀控制 | 策略层规模与业务数据量解耦，`resource_policy` 仅用于实例级例外 | 策略表行数恒定 |
+
+**数据增长曲线（本案例 6 个资源规模）：**
+
+```
+表              行数    增长模式
+────────────────────────────────
+resource_server   1     每租户 +1
+scope             7     每种操作 +1，与资源数量无关
+resource          6     每业务对象 +1
+resource_scope   14     resource × 关联 scope 数
+policy           12     角色数 + 角色数×资源类型数
+policy_config    15     与 policy 成正比
+associated_policy 9     角色数×资源类型数
+scope_policy     20     resource型policy × 关联scope数
+resource_policy   0     仅实例级例外时产生
+```
+
+当资源从 6 个增长到 1000 个时，策略相关的 5 张表（policy / policy_config / associated_policy / scope_policy / resource_policy）行数不变，只有 resource 和 resource_scope 线性增长。

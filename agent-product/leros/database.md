@@ -578,21 +578,106 @@ WHERE uo.user_id = ? AND uo.is_default = true AND o.deleted_at IS NULL;
 
 ---
 
+### 6.3 leros_worker_deployment — Worker 部署
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| `id` | uint | PK | |
+| `org_id` | integer | NOT NULL, INDEX, 联合唯一 | 组织ID |
+| `digital_assistant_id` | bigint | NOT NULL, UNIQUE, INDEX | 关联数字助手ID |
+| `worker_id` | bigint | NOT NULL, 联合唯一 | Worker 编号 |
+| `deployment_name` | varchar(255) | NOT NULL, UNIQUE | 部署名称 |
+| `namespace` | varchar(255) | NOT NULL, DEFAULT `''` | 命名空间 |
+| `status` | varchar(50) | NOT NULL, DEFAULT `pending`, INDEX | 状态（pending / provisioning / ready / failed / stopped） |
+| `bootstrap_token_hash` | varchar(64) | NOT NULL, DEFAULT `''` | 启动令牌哈希 |
+| `workspace_path` | varchar(1000) | NOT NULL, DEFAULT `''` | 工作空间路径 |
+| `last_error` | text | | 最后错误信息 |
+| `last_started_at` | timestamp | INDEX | 最后启动时间 |
+| `last_reconciled_at` | timestamp | INDEX | 最后调和时间 |
+
+**唯一索引**:
+- `idx_worker_deploy_org_worker`: `(org_id, worker_id)` — 同一组织内 worker_id 唯一
+
+**用例**: 将数字员工绑定到具体 Worker 运行时实例，管理部署生命周期。
+
+---
+
+### 6.4 leros_project_file — 项目文件关联
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| `id` | uint | PK | |
+| `file_public_id` | varchar(255) | NOT NULL, UNIQUE | 文件公开ID |
+| `org_id` | integer | NOT NULL, INDEX | 组织ID |
+| `project_id` | bigint | NOT NULL, INDEX | 项目ID |
+| `task_id` | bigint | INDEX | 任务ID |
+| `resource_id` | bigint | NOT NULL, INDEX | 关联资源ID |
+| `resource_type` | varchar(50) | NOT NULL, INDEX | 资源类型（user_upload / artifact） |
+| `uin` | bigint | INDEX | 用户UIN |
+
+**用例**: 记录项目/任务与资源（上传文件、工作产物）的映射关系。
+
+---
+
+### 6.5 leros_message_resource — 消息资源关联
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| `id` | uint | PK | |
+| `resource_id` | varchar(255) | NOT NULL, INDEX | 资源主键ID |
+| `message_id` | bigint | NOT NULL, INDEX | 关联消息ID（FK -> session_message.id） |
+| `session_id` | bigint | NOT NULL, INDEX | 关联会话ID（FK -> session.id） |
+| `org_id` | integer | NOT NULL, DEFAULT `0`, INDEX | 组织ID |
+| `uin` | bigint | DEFAULT `0`, INDEX | 用户UIN |
+| `resource_type` | varchar(50) | NOT NULL, INDEX | 资源类型（skill / MCP / tool） |
+| `resource_key` | varchar(255) | NOT NULL, INDEX | 资源标识键（{source}:{skill_id}） |
+| `resource_name` | varchar(255) | NOT NULL | 资源展示名称 |
+| `invoke_type` | varchar(50) | NOT NULL | 调用方式（slash_command / mention / auto） |
+| `seq` | integer | NOT NULL, DEFAULT `0` | 同消息内排序序号 |
+
+**用例**: 记录一条消息使用了哪些资源（技能、MCP 工具等），用于用量统计和审计。
+
+---
+
+### 6.6 leros_skill_marketplace_item — 技能市场缓存
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| `id` | uint | PK | |
+| `skill_id` | varchar(100) | NOT NULL, 联合唯一 | 技能唯一业务编码 |
+| `name` | varchar(255) | NOT NULL | 技能展示名称 |
+| `translated_name` | varchar(255) | | 中文展示名（模型翻译） |
+| `source` | varchar(50) | NOT NULL, 联合唯一 | 数据来源（Leros / ClawHub） |
+| `description` | text | | 原始描述（英文） |
+| `translated_description` | text | | 中文描述（模型翻译） |
+| `author` | varchar(255) | NOT NULL | 作者 |
+| `installs` | bigint | NOT NULL, DEFAULT `0` | 安装计数 |
+| `version` | varchar(50) | NOT NULL, 联合唯一 | 版本号 |
+| `category` | varchar(100) | NOT NULL, INDEX | 分类 |
+| `tags` | jsonb | | 标签列表 |
+| `package_storage_path` | varchar(500) | | 缓存包URI（异步写入） |
+
+**唯一索引**: `idx_marketplace_item_source_skill_version`: `(source, skill_id, version)` — 同一来源+技能+版本唯一
+
+---
+
 ## 7. 完整关系总览
 
 ```
   组织 (org_id 维度隔离)
   leros_organization
        │
-       │ 1:N ─────────────────────────────────────────────────
-       │                                                    │
-  leros_user_org (user ↔ org 多对多)              leros_digital_assistant
-       │                                                    │
-       │ N:1                                                 │
-  leros_user                                              │
-                                                        │
-  项目体系                                               │
-  ───────                                                │
+       │ 1:N ─────────────────────────────────────────────────────────
+       │                                                             │
+  leros_user_org (user ↔ org 多对多)                       leros_digital_assistant
+       │                                                             │
+       │ N:1                                                          │ 1:1
+  leros_user                                               leros_worker_deployment
+                                                                     │ (org_id + worker_id 联合唯一)
+                                                                     │ digital_assistant_id 唯一
+                                                                     │
+  项目体系                                                           │
+  ───────                                                            │
   leros_project ──── 1:N ──── leros_task ──── 1:N ──── leros_artifact
        │                        │                          │ (via task_id)
        │ 1:N                    │ session_id               │ (via project_id)
@@ -605,18 +690,38 @@ WHERE uo.user_id = ? AND uo.is_default = true AND o.deleted_at IS NULL;
   user | assistant                              │
                                                 │ chunks (jsonb)
                                                 │ artifacts (jsonb)
+                                                │ attachments (jsonb)
                                                 │ usage (jsonb)
+
+  消息资源关联
+  ────────────
+  leros_message_resource
+       │ message_id -> session_message.id
+       │ session_id -> session.id
+       │ resource_type: skill / MCP / tool
+
+  项目文件关联
+  ────────────
+  leros_project_file
+       │ project_id -> project.id
+       │ task_id -> task.id
+       │ resource_type: user_upload / artifact
 
   技能体系
   ───────
   leros_skill ──── 1:1 ──── leros_skill_registry
        │
        └── 1:N ──── leros_skill_execution_log
-                         │ skill_id
-                         │ session_id / uin / assistant_id
+                        │ skill_id
+                        │ session_id / uin / assistant_id
 
   内置技能市场
   leros_builtin_skill_marketplace_item
+       │ (skill_id, version) 联合唯一
+
+  技能市场缓存
+  leros_skill_marketplace_item
+       │ (source, skill_id, version) 联合唯一
 
   LLM 模型配置
   leros_llm_model
@@ -628,7 +733,8 @@ WHERE uo.user_id = ? AND uo.is_default = true AND o.deleted_at IS NULL;
   leros_user
        │ 1:N
        ├── leros_auth_refresh_token (token_hash 唯一)
-       └── leros_auth_login_attempt (identifier 唯一)
+       ├── leros_auth_login_attempt (identifier 唯一)
+       └── leros_auth_phone_verification_code
 
   事件存储
   leros_event (外部事件持久化)
@@ -721,6 +827,8 @@ ID 生成使用 Snowflake 算法（`ygpkg/yg-go/encryptor/snowflake`），Base58
 | auth_login_attempt | `idx_auth_identifier` | `identifier` | 唯一 | |
 | digital_assistant | `idx_da_code` | `code` | 普通 | |
 | digital_assistant | `idx_da_org_id` | `org_id` | 普通 | |
+| worker_deployment | `idx_worker_deploy_org_worker` | `(org_id, worker_id)` | 联合唯一 | |
+| worker_deployment | `idx_worker_deploy_da` | `digital_assistant_id` | 唯一 | |
 | project | `idx_project_public_id` | `public_id` | 唯一 | |
 | project | `idx_project_org_id` | `org_id` | 普通 | |
 | task | `idx_task_public_id` | `public_id` | 唯一 | |
@@ -741,7 +849,12 @@ ID 生成使用 Snowflake 算法（`ygpkg/yg-go/encryptor/snowflake`），Base58
 | skill | `idx_skill_code` | `code` | 唯一 | |
 | skill_registry | `idx_skill_registry_skill_id` | `skill_id` | 唯一 | |
 | file_upload | `idx_file_upload_public_id` | `public_id` | 唯一 | |
+| project_file | `idx_project_file_public_id` | `file_public_id` | 唯一 | |
 | builtin_skill_marketplace | `idx_builtin_skill_id_version` | `(skill_id, version)` | 联合唯一 | |
+| skill_marketplace_item | `idx_marketplace_item_source_skill_version` | `(source, skill_id, version)` | 联合唯一 | |
+| message_resource | `idx_msg_resource_resource_id` | `resource_id` | 普通 | |
+| message_resource | `idx_msg_resource_message_id` | `message_id` | 普通 | |
+| message_resource | `idx_msg_resource_session_id` | `session_id` | 普通 | |
 
 ---
 

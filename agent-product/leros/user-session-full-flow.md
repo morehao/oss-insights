@@ -18,14 +18,14 @@ graph TB
     end
 
     subgraph NATS["NATS JetStream"]
-        TASK_STREAM["TASK_STREAM<br/>(保留 72h)"]
-        SESSION_STREAM["SESSION_STREAM<br/>(保留 24h)"]
+        WORKER_CMD_STREAM["WORKER_CMD_STREAM<br/>(保留 72h)<br/>org.*.worker.*.cmd.>"]
+        SESSION_RUN_STREAM["SESSION_RUN_STREAM<br/>(保留 24h)<br/>org.*.session.*.run.>"]
     end
 
     subgraph Worker["Worker 进程 (port 8081)"]
-        TC[TaskConsumer<br/>NATS 订阅者] --> RT[Runtime<br/>Lifecycle Pipeline]
-        RT --> Engine[Engine<br/>Eino / Claude]
-        Engine --> Sink[MQStreamSink<br/>NATS 发布者]
+        DISP[Dispatcher<br/>4 lane NATS 分发] --> ASSIST[assistant.Service<br/>Preparer → Executor → Finalizer]
+        ASSIST --> RT[agent.Runtime<br/>Native / Claude / Codex / OpenCode]
+        RT --> SINK[NATSEventSink<br/>run.stream / run.state]
     end
 
     NATSPub --> NATS
@@ -41,30 +41,32 @@ graph TB
 |------|------|------|
 | Gin HTTP Router | `backend/internal/api/router.go` | 注册所有 HTTP 路由、中间件、后台 Runnable |
 | Handler | `backend/internal/api/handler/` | 请求解析、参数校验、DTO 转换 |
-| Service | `backend/internal/service/message_poster.go` | 业务编排：Project → Task → Session → WorkerTask |
-| EventBus | `backend/internal/infra/mq/nats.go` | NATS JetStream 发布/订阅 (双 Stream: TASK_STREAM + SESSION_STREAM) |
-| TaskConsumer | `backend/internal/worker/taskconsumer/consumer.go` | 订阅 Worker Task, 调度 Agent Run |
-| Runtime (Lifecycle) | `backend/internal/runtime/lifecycle/runner.go` | Pipeline 式执行（13 个步骤） |
-| Engine (Native) | `backend/engines/native/runner.go` | 基于 CloudWeGo Eino 的内置 LLM 引擎 |
-| MQStreamSink | `backend/internal/worker/taskconsumer/stream_sink.go` | Agent 运行时事件 → NATS Session Stream |
-| SSE Handler | `backend/internal/api/handler/session_handler.go` | NATS Session Stream → SSE → 前端 |
-| Runnable | `backend/internal/runnable/` | 后台异步消费者（完成持久化、标题生成、产物存储） |
+| Service | `backend/internal/service/message_poster.go` | 业务编排：Project → Task → Session → WorkerCommand |
+| EventBus | `backend/internal/infra/mq/nats.go` | NATS JetStream 发布/订阅 (双 Stream: WORKER_CMD_STREAM + SESSION_RUN_STREAM) |
+| Dispatcher | `backend/internal/worker/command/dispatcher.go` | 4 lane 命令分发（run/control/interaction/skill） |
+| RunCoordinator | `backend/internal/worker/run/coordinator.go` | Session 级别去抖合并 + 并发控制 |
+| assistant.Service | `backend/internal/assistant/service.go` | 业务运行包装：Preparer → agent.Executor → Finalizer |
+| agent.Executor | `backend/agent/executor.go` | Runtime 解决 + 执行生命周期 |
+| Runtime (Native) | `backend/agent/runtime/native/` | 基于 CloudWeGo Eino 的内置 LLM 引擎 |
+| NATSEventSink | `backend/internal/worker/eventpub/nats_sink.go` | agent.Event → NATS SESSION_RUN_STREAM（双 lane） |
+| SSE Handler | `backend/internal/api/handler/session_handler.go` | NATS SESSION_RUN_STREAM → SSE → 前端 |
+| Runnable | `backend/internal/runnable/` | 后台异步消费者（state 投影、stream 投影） |
 | 前端 Store | `frontend/packages/store/slices/chatSlice.ts` | SSE 消费 + Redux 状态管理 |
 
 ### NATS Topic 拓扑 & 消息协议
 
 ```mermaid
 graph LR
-    subgraph TASK_STREAM
-        T1["org.{org}.worker.{id}.task<br/>Server → Worker<br/>Agent 执行任务"]
-        T2["org.{org}.worker.{id}.approval<br/>Server → Worker<br/>审批决策"]
-        T3["org.{org}.worker.{id}.skill.install<br/>Server → Worker<br/>技能安装通知"]
+    subgraph WORKER_CMD_STREAM
+        T1["org.{org}.worker.{id}.cmd.run<br/>Server → Worker<br/>Agent 执行命令"]
+        T2["org.{org}.worker.{id}.cmd.control<br/>Server → Worker<br/>取消/控制"]
+        T3["org.{org}.worker.{id}.cmd.interaction<br/>Server → Worker<br/>审批/问答"]
+        T4["org.{org}.worker.{id}.cmd.skill<br/>Server → Worker<br/>技能管理"]
     end
 
-    subgraph SESSION_STREAM
-        S1["org.{org}.session.{id}.message.stream<br/>Worker → Server/前端<br/>实时事件流"]
-        S2["org.{org}.session.{id}.message.completed<br/>Worker → Server (后台)<br/>运行完成事件"]
-        S3["org.{org}.session.{id}.message.request<br/>Server → Server (后台)<br/>新消息事件"]
+    subgraph SESSION_RUN_STREAM
+        S1["org.{org}.session.{id}.run.stream<br/>Worker → Server/前端<br/>高频增量事件流"]
+        S2["org.{org}.session.{id}.run.state<br/>Worker → Server (后台)<br/>低频关键状态"]
     end
 ```
 
@@ -72,10 +74,9 @@ graph LR
 
 | Topic | 消息类型 | 协议结构 | 说明 |
 |-------|---------|---------|------|
-| `org.{org}.worker.{id}.task` | `protocol.WorkerTaskMessage` | Envelope{Trace, Route} + Body{Actor, Workspace, Input, Model} | Worker 任务分派 |
-| `org.{org}.session.{id}.message.stream` | `protocol.MessageStreamMessage` | Envelope + Event{Type, Payload, Seq} | 实时事件流 |
-| `org.{org}.session.{id}.message.completed` | `protocol.RunCompletedMessage` | Envelope + RunResult{Status, Usage, Artifacts} | 运行完成通知 |
-| `org.{org}.session.{id}.message.request` | `types.SessionMessage` | 标准消息实体 | 新消息通知 |
+| `org.{org}.worker.{id}.cmd.run` | `messaging.WorkerCommand` | Envelope{Trace, Route} + Body{CommandType, Payload} | Worker 执行命令 |
+| `org.{org}.session.{id}.run.stream` | `messaging.RunEvent` | Envelope + RunEventBody{Seq, Event, Payload} | 高频实时事件流 |
+| `org.{org}.session.{id}.run.state` | `messaging.RunEvent` | Envelope + RunEventBody{Seq, Event, Payload, RunCompleted(终端)} | 低频关键状态
 
 ---
 
@@ -115,7 +116,7 @@ POST /v1/SessionEvents             → SessionHandler.SessionEvents
 | 步骤 | 事件 | NATS Topic | 消息内容 |
 |------|------|-----------|---------|
 | PostMessage → Publish | `session.message.request` | `org.{org}.session.{id}.message.request` | 完整的 `types.SessionMessage` 实体 |
-| PostMessage → publishWorkerTask | `worker.task` | `org.{org}.worker.{id}.task` | `protocol.WorkerTaskMessage`（含 Session 上下文、模型配置、用户消息） |
+| PostMessage → publishWorkerTask | `worker.command (cmd.run)` | `org.{org}.worker.{id}.cmd.run` | `messaging.WorkerCommand`（含 RunCommandPayload, Session 上下文、模型配置、用户消息） |
 
 ```mermaid
 flowchart TD
@@ -152,8 +153,8 @@ flowchart TD
         F2 --> F3["db.UpdateLastMessageAt"]
         F3 --> F4["Publish: org.{org}.session.{id}.message.request<br/>→ 自动标题生成 Runnable 消费"]
         F4 --> F5["resolveWorkerTaskModel 从 DB 获取默认 LLM 配置"]
-        F5 --> F6["构建 protocol.WorkerTaskMessage"]
-        F6 --> F7["Publish: org.{org}.worker.{id}.task<br/>→ Worker TaskConsumer 消费"]
+        F5 --> F6["构建 messaging.WorkerCommand (CommandTypeRun)"]
+        F6 --> F7["Publish: org.{org}.worker.{id}.cmd.run<br/>→ Worker Dispatcher.RunHandler 消费"]
     end
 
     S1 --> S2 --> S3 --> S4 --> S5
@@ -180,73 +181,80 @@ type WorkerTaskMessage struct {
 
 ---
 
-### 阶段 3：Worker 消费 Task
+### 阶段 3：Worker 消费命令
 
-**代码位置:** `backend/internal/worker/taskconsumer/consumer.go`
+**代码位置:** `backend/internal/worker/command/dispatcher.go` / `backend/internal/worker/command/run/handler.go`
 
 **事件流:**
 
 | 方向 | 事件 | NATS Topic |
 |------|------|-----------|
-| 输入 | `worker.task` | `org.{org}.worker.{id}.task` |
+| 输入 | `worker.command (cmd.run)` | `org.{org}.worker.{id}.cmd.run` |
 
 ```mermaid
 flowchart LR
-    A["NATS 消息到达<br/>org.{org}.worker.{id}.task"] --> B[handleEvent<br/>反序列化、路由校验、去重]
-    B --> C[schedule<br/>1.5s debounce 按 session_id]
-    C --> D[runTask]
-    D --> D1[RequestFromWorkerTask<br/>→ agent.RequestContext]
-    D1 --> D2[prepareWorkspace<br/>创建工作目录]
-    D2 --> D3[NewMQStreamSink<br/>创建事件流 Sink]
-    D3 --> D4[runner.Run context req]
+    A["NATS 消息到达<br/>org.{org}.worker.{id}.cmd.run"] --> B[Dispatcher.RunHandler<br/>反序列化、路由校验、去重]
+    B --> C[RunCoordinator.Submit<br/>1.5s debounce 按 session_id]
+    C --> D[assistant.Service.Run]
+    D --> D1[Preparer: Workspace/Skills/Memory/Tool]
+    D1 --> D2[agent.Executor.Execute]
+    D2 --> D3[NATSEventSink<br/>创建事件流 Sink]
+    D3 --> D4[Runtime.Execute]
 ```
 
-#### Agent Runtime Pipeline
+#### assistant.Service Run
 
-**位置:** `backend/internal/runtime/service.go` → `backend/internal/runtime/lifecycle/runner.go`
+**位置:** `backend/internal/assistant/service.go` → `backend/agent/executor.go`
 
-Pipeline 式 13 步执行流程（SyncPipeline, 按序执行）:
+三阶段执行流程（Preparer → Executor.Runtime → Finalizer）:
 
 ```mermaid
 flowchart TD
-    S1["1. NormalizeStep<br/>标准化 RequestContext"]
-    S2["2. JournalStep<br/>记录运行日志"]
-    S3["3. ModelStep<br/>解析 LLM 模型配置"]
-    S4["4. ContextStep<br/>从 DB 加载最多 20 条历史消息"]
-    S5["5. AuthorizeStep<br/>权限验证"]
-    S6["6. StartEventStep<br/>发送 run.started 事件"]
-    S7["7. ArtifactBaselineStep<br/>记录产物基线"]
-    S8["8. ExecuteStep<br/>委托给 Engine 执行"]
-    S9["9. ArtifactReconcileStep<br/>产物核对"]
-    S10["10. ArtifactStep<br/>产物持久化"]
-    S11["11. PersistStep<br/>消息持久化"]
-    S12["12. LearningStep<br/>学习记录"]
-    S13["13. SessionCompleteStep<br/>Publish: org.{org}.session.{id}.message.completed"]
+    S0["assistant.Service.Run(ctx, request)"]
+    S1["1. Validate<br/>校验 RunRequest"]
+    S2["2. Preparer.BuildExecutionRequest<br/>准备上下文"]
+    S2S1["  ├─ Workspace: 创建工作目录"]
+    S2S2["  ├─ Skills: 加载技能 → skills 目录"]
+    S2S3["  ├─ Memory: 加载上下文记忆"]
+    S2S4["  └─ Tools: 注册工具 (8 内置 + 技能)"]
+    S3["3. agent.Executor.Execute(ctx, request, observer)"]
+    S3S1["  ├─ Registry.Resolve(runtimeKind)"]
+    S3S2["  ├─ Emit execution.started"]
+    S3S3["  └─ Runtime.Execute(ctx, request, observer)"]
+    S4["4. Finalizer.Finalize<br/>后处理"]
+    S4S1["  ├─ ArtifactReconcile: 产物核对"]
+    S4S2["  ├─ Git Commit: 自动提交"]
+    S4S3["  └─ 业务终态通知"]
 
-    S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10 --> S11 --> S12 --> S13
+    S0 --> S1 --> S2
+    S2 --> S2S1 --> S2S2 --> S2S3 --> S2S4
+    S2S4 --> S3
+    S3 --> S3S1 --> S3S2 --> S3S3
+    S3S3 --> S4
+    S4 --> S4S1 --> S4S2 --> S4S3
 ```
 
-**Pipeline 中产生的事件:**
+**执行中产生的事件:**
 
-| Pipeline 步骤 | 事件类型 | 发布到 |
-|-------------|---------|-------|
-| 6. StartEventStep | `run.started` | MQStreamSink → `message.stream` |
-| 8. ExecuteStep | `message.delta`、`reasoning.delta`、`tool_call.*`、`todo.*`、`artifact.declared`、`approval.*` | MQStreamSink → `message.stream` |
-| 13. SessionCompleteStep | `run.completed` / `run.failed` | `message.completed` |
+| 阶段 | 事件类型 | 发布到 |
+|-----|---------|-------|
+| Executor execution.started | `run.started` | NATSEventSink → `run.state` |
+| Runtime.Execute | `message.delta`、`reasoning.delta`、`tool_call.*`、`todo.*`、`artifact.declared`、`approval.*`、`question.*` | NATSEventSink → `run.stream` / `run.state` |
+| Executor terminal | `run.completed` / `run.failed` / `run.cancelled` | NATSEventSink → `run.state`（含 RunCompletedPayload） |
 
 ---
 
 ### 阶段 4：Native Engine 执行
 
-**代码位置:** `backend/engines/native/runner.go`
+**代码位置:** `backend/agent/runtime/native/`
 
-**输入:** `agent.RequestContext`（含 Session 历史、模型配置、系统 Prompt）
+**输入:** `agent.ExecutionRequest`（含 Session 历史、模型配置、系统 Prompt）
 
-**输出:** 通过 `streamSink` 回调持续发出运行时事件
+**输出:** 通过 `observer` 回调持续发出运行时事件
 
 ```mermaid
 flowchart TD
-    A["Runner.Run(streamSink)"] --> B["创建 ChatModel<br/>OpenAI / DeepSeek 等"]
+    A["Runtime.Execute(ctx, request, observer)"] --> B["创建 ChatModel<br/>OpenAI / DeepSeek 等"]
     B --> C["构建 System Prompt"]
     C --> C1["加载 agents.md"]
     C1 --> C2["加载 assistant 配置的 prompts"]
@@ -265,42 +273,57 @@ flowchart TD
     E --> E8["artifact_declare - 声明产物"]
 
     E --> F["初始化 Eino Flow<br/>ADK 框架, MaxStep=90"]
-    F --> G["flow.StreamWithUsage(streamSink)<br/>→ message.delta, tool_call.* 等事件"]
+    F --> G["flow.StreamWithUsage(sink)<br/>→ message.delta, tool_call.* 等事件"]
 ```
 
-**引擎发出的运行时事件类型 (通过 streamSink.Emit):**
+**引擎发出的运行时事件类型 (通过 observer.Emit):**
 
 | 事件类型 | 产生时机 | Payload 结构 |
 |---------|---------|-------------|
 | `message.delta` | LLM 逐 token 输出 | `{message_id, role, content}` |
 | `reasoning.delta` | LLM 推理过程输出 | `{message_id, role, content}` |
-| `message.result` | LLM 单次回复完成 | `{message, usage}` |
+| `message.completed` | LLM 单次回复完成 | `{content, usage}` |
 | `tool_call.started` | LLM 请求调用工具 | `{tool_call_id, name, arguments}` |
-| `tool_call.delta` | 工具流式输出 | `{tool_call_id, content}` |
-| `tool_call.completed` | 工具执行成功 | `{tool_call_id, name, result, elapsed_ms}` |
-| `tool_call.failed` | 工具执行失败 | `{tool_call_id, name, error, elapsed_ms}` |
+| `tool_call.finished` | 工具执行完成/失败 | `{tool_call_id, name, result, error, elapsed_ms}` |
 | `todo.snapshot` / `todo.updated` | 待办列表变更 | `[{id, title, status, priority}]` |
 | `artifact.declared` | 新产物被声明 | `{artifact_id, title, filename, mime_type, ...}` |
 | `approval.requested` | 需要用户审批 | `{request_id, tool_name, description, arguments}` |
 | `approval.resolved` | 审批被处理 | `{request_id, action, reason}` |
-| `run.completed` / `run.failed` | 引擎运行结束 | `{status, result, usage, artifacts, events}` |
+| `question.asked` | 需要用户回答 | `{request_id, questions, ...}` |
+| `question.answered` | 用户回答提交 | `{request_id, answers}` |
+| `run.completed` / `run.failed` / `run.cancelled` | 引擎运行结束 | `{status, result, usage, artifacts, events}` |
 
 ---
 
 ### 阶段 5：事件流 Worker → NATS → Server SSE → 前端
 
-#### MQStreamSink：Agent 事件 → NATS Session Stream
+#### NATSEventSink：Agent 事件 → NATS Session Run Stream
 
-**代码位置:** `backend/internal/worker/taskconsumer/stream_sink.go:35-75`
+**代码位置:** `backend/internal/worker/eventpub/nats_sink.go:60-154`
 
 ```
-Emit(event *agent.Event)
-  ├── 封装为 protocol.MessageStreamMessage
-  │     ├── Envelope{Trace, Route, SessionID}
-  │     ├── Type = EventType (如 "message.delta")
-  │     ├── Payload = JSON(raw payload)
-  │     └── Seq = 递增序号
-  └── eventbus.Publish("org.{org}.session.{session_id}.message.stream", msg)
+Emit(ctx, event *agent.Event)
+  ├── 映射 agent.EventType → messaging.RunEventType
+  │     ├── "run.started"             → RunEventRunStarted
+  │     ├── "run.completed"           → RunEventRunCompleted
+  │     ├── "message.delta"           → RunEventMessageDelta
+  │     ├── "tool_call.started"       → RunEventToolCallStarted
+  │     └── ...
+  │
+  ├── 构建 messaging.RunEvent
+  │     ├── Envelope{Trace, Route}
+  │     ├── Body: {
+  │     │     Seq:   递增序号,
+  │     │     Event: RunEventType,
+  │     │     Payload: 结构化数据 (ToolCallPayload/ArtifactPayload 等),
+  │     │     RunCompleted: (仅终端事件) 完整运行结果
+  │     │   }
+  │
+  ├── ClassifyRunEvent → lane
+  │     ├── 高频增量 → RunEventLaneStream ("run.stream")
+  │     └── 关键状态 → RunEventLaneState ("run.state")
+  │
+  └── eventbus.Publish("org.{org}.session.{session_id}.{lane}", msg)
 ```
 
 #### Server 端 SSE 推送
@@ -311,9 +334,9 @@ Emit(event *agent.Event)
 
 | 方向 | Topic | 事件类型 |
 |------|-------|---------|
-| Worker → NATS | `org.{org}.session.{id}.message.stream` | 所有运行时事件 |
-| NATS → Server | `org.{org}.session.{id}.message.stream` | 同上（Server Subscribe 后推 SSE） |
-| Server → 前端 | SSE | `run.started`、`message.delta`、`tool_call.*`、`todo.*`、`artifact.declared`、`approval.*`、`run.completed` / `run.failed` |
+| Worker → NATS | `org.{org}.session.{id}.run.stream` / `run.state` | 所有运行时事件 |
+| NATS → Server | `org.{org}.session.{id}.run.stream` / `run.state` | 同上（Server Subscribe 后推 SSE） |
+| Server → 前端 | SSE | `run.started`、`message.delta`、`reasoning.delta`、`tool_call.*`、`todo.*`、`artifact.declared`、`approval.*`、`question.*`、`run.completed` / `run.failed` / `run.cancelled` |
 
 ```mermaid
 sequenceDiagram
@@ -325,15 +348,15 @@ sequenceDiagram
 
     Frontend->>Server: POST /v1/SessionEvents<br/>{ session_ids: [...] }
     Server->>Server: 设置 SSE Headers<br/>Content-Type: text/event-stream
-    Server->>NATS: Subscribe("org.{org}.session.{id}.message.stream")
+    Server->>NATS: Subscribe("org.{org}.session.{id}.run.>")
 
-    Worker->>Engine: ExecuteStep → flow.StreamWithUsage(sink)
+    Worker->>Engine: Runtime.Execute → flow.StreamWithUsage(sink)
 
     loop 流式执行周期
         Engine-->>Worker: Emit("message.delta", {content: "Hello"})
-        Worker->>NATS: Publish("org.{org}.session.{id}.message.stream", msg)
-        NATS-->>Server: 收到 MessageStreamMessage
-        Server->>Server: ProjectStreamMessage → dto.SessionEvent
+        Worker->>NATS: Publish("org.{org}.session.{id}.run.stream", RunEvent)
+        NATS-->>Server: 收到 RunEvent
+        Server->>Server: ProjectRunEvent → dto.SessionEvent
         Server-->>Frontend: SSE event: message.delta<br/>data: {"content":"Hello","session_id":"sess_xxx"}
     end
 
@@ -342,18 +365,17 @@ sequenceDiagram
         Worker->>NATS: Publish(...)
         NATS-->>Server: ...
         Server-->>Frontend: SSE event: tool_call.started
-        Engine-->>Worker: Emit("tool_call.completed", {result: "..."})
+        Engine-->>Worker: Emit("tool_call.finished", {result: "..."})
         Worker->>NATS: Publish(...)
-        Server-->>Frontend: SSE event: tool_call.completed
+        Server-->>Frontend: SSE event: tool_call.finished
     end
 
     Engine-->>Worker: Emit("run.completed", {usage: {...}, artifacts: [...]})
-    Worker->>NATS: Publish("org.{org}.session.{id}.message.stream", ...)
+    Worker->>NATS: Publish("org.{org}.session.{id}.run.state", ...)
     NATS-->>Server: ...
     Server-->>Frontend: SSE event: run.completed
 
-    Worker->>NATS: Publish("org.{org}.session.{id}.message.completed", ...)
-    NATS-->>Server: Runnable 消费<br/>持久化完整消息
+    %% Terminal payload goes through run.state lane with RunCompletedPayload
 ```
 
 **SSE 帧格式（Gin `ctx.SSEvent()` 输出）:**
@@ -403,26 +425,37 @@ event: run.failed        → markFailed() + stopSSE()
 
 ### 阶段 6：异步消息持久化（Runnable）
 
-三个后台 Runnable 独立运行于 Server 进程内, 作为常规 NATS 消费者：
+两个后台 Runnable 作为 NATS 持久化消费者运行于 Server 进程:
 
-#### 6.1 Session Completed Runnable
+#### 6.1 Session Run State Projector
 
-**路径:** `backend/internal/runnable/session_completed.go`
+**路径:** `backend/internal/runnable/session_run_state_projector.go`
 
-**订阅:** `org.{org}.session.{id}.message.completed`
+**订阅:** `org.{org}.session.{id}.run.state`
 
-**触发时机:** Worker Lifecycle Pipeline 的 `SessionCompleteStep` 发布运行结果
+**触发时机:** Worker 端 NATSEventSink 发布低频关键状态事件
 
-**消息内容:** `protocol.RunCompletedMessage`
+**消费的 RunEventType:**
+- `run.started` — 标记消息状态为 processing
+- `run.completed` — 持久化完整 assistant 回复（含 chunks/artifacts/usage）
+- `run.failed` — 持久化失败消息
+- `run.cancelled` — 持久化取消消息
+- `artifact.declared` — 持久化产物元数据到 DB
+- `approval.*`、`question.*` — 互动事件处理
+
+**消息内容:** `messaging.RunEvent`（终端事件含 `RunCompletedPayload`）
 
 ```go
-type RunCompletedMessage struct {
-    Status    string              // "completed" | "failed"
-    Result    RunResult           // 最终消息内容
-    Usage     *UsagePayload       // token 使用量
-    Artifacts []ArtifactPayload   // 生成的产物
-    Events    []RunEventRecord    // 事件归档
-    Metadata  map[string]any
+// RunCompletedPayload 归档完整的运行结果
+type RunCompletedPayload struct {
+    Status      string              // "completed" | "failed" | "cancelled"
+    Result      RunResultPayload    // 最终消息内容
+    Usage       *UsagePayload       // token 使用量
+    Artifacts   []ArtifactPayload   // 生成的产物
+    Events      []RunEventRecord    // 事件归档
+    StartedAt   string
+    CompletedAt string
+    Metadata    *RunMetadataPayload
 }
 ```
 
@@ -432,31 +465,17 @@ type RunCompletedMessage struct {
 - 保存 artifacts 元数据
 - 保存 usage 信息
 
-#### 6.2 Session Title Auto-Generation
+#### 6.2 Session Run Stream Projector
 
-**路径:** `backend/internal/runnable/session_title_handler.go`
+**路径:** `backend/internal/runnable/session_run_stream_projector.go`
 
-**订阅:** `org.{org}.session.{id}.message.request`
+**订阅:** `org.{org}.session.{id}.run.stream`
 
-**触发时机:** Server 端 PostMessage 后发布
+**触发时机:** Worker 端 NATSEventSink 发布高频增量事件
 
-**消息内容:** `types.SessionMessage`
-
-**操作:** 调用 LLM 根据用户消息内容生成 Session 标题，回写 DB
-
-#### 6.3 Artifact Persistence
-
-**路径:** `backend/internal/runnable/session_artifact_declared.go`
-
-**订阅:** `org.{org}.session.{id}.message.stream`（过滤 `artifact.declared` 事件）
-
-**触发时机:** Engine 执行期间调用 `artifact_declare` 工具时
-
-**消息内容:** `protocol.MessageStreamMessage`（其中 Event.Type = `artifact.declared`）
-
-**操作:**
-- 持久化产物数据到文件存储
-- 记录产物元数据到 DB
+**消费的 RunEventType:**
+- `message.delta` — 增量持久化流式片段
+- `reasoning.delta` — 增量持久化推理片段
 
 ---
 
@@ -483,7 +502,7 @@ sequenceDiagram
     Server->>NATS: Publish("org.{org}.session.{id}.message.request", types.SessionMessage)
     Note over NATS: → session_title_handler Runnable 消费
     Server->>Server: publishWorkerTask()
-    Server->>NATS: Publish("org.{org}.worker.{id}.task", protocol.WorkerTaskMessage)
+    Server->>NATS: Publish("org.{org}.worker.{id}.cmd.run", messaging.WorkerCommand)
     Server-->>Client: 200 OK {session_id, project_id, task_id, message_id}
     deactivate Server
 
@@ -492,91 +511,70 @@ sequenceDiagram
     Client->>+Server: POST /v1/SessionEvents {session_ids: [...]}
     Server->>Server: 设置 SSE Headers + 创建 ChannelSink
     Server->>Server: goroutine → StreamSessionEvents(ctx, sessionID, sink)
-    Server->>NATS: Subscribe("org.{org}.session.{id}.message.stream")
+    Server->>NATS: Subscribe("org.{org}.session.{id}.run.>")
 
-    NATS-->>Worker: Deliver("org.{org}.worker.{id}.task")
+    NATS-->>Worker: Deliver("org.{org}.worker.{id}.cmd.run")
     activate Worker
-    Worker->>Worker: handleEvent() → 反序列化 + 校验路由 + seqTracker 去重
-    Worker->>Worker: scheduleAndWait() → 1.5s debounce (按 session_id)
+    Worker->>Worker: Dispatcher.RunHandler → 解码 + 校验路由 + seqTracker 去重
+    Worker->>Worker: RunCoordinator.Submit → 1.5s debounce (按 session_id)
     Worker->>Worker: enqueueTask() → pool.Submit()
-    Worker->>Worker: executeWithTracker() → seqTracker.MarkProcessing
-    Worker->>Worker: runTask()
-    Worker->>Worker: RequestFromWorkerTask(taskMsg) → *agent.RequestContext
-    Worker->>Worker: prepareWorkspace() → 创建工作目录
-    Worker->>Worker: NewMQStreamSink(publisher, taskMsg) → 绑定 NATS 事件发布
-    Worker->>Worker: req.EventSink = MQStreamSink
-    Worker->>+Runtime: runner.Run(ctx, req)
+    Worker->>Worker: executorService.Run()
+    Worker->>Worker: Preparer: Workspace/Skills/Memory/Tools
+    Worker->>Worker: NewNATSEventSink(publisher, runContext) → 绑定 NATS 双 lane 发布
+    Worker->>+Runtime: agent.Executor.Execute(ctx, request, observer)
 
-    Note over Client,Engine: === 阶段 4: Agent Runtime Pipeline (13 步) ===
+    Note over Client,Engine: === 阶段 4: assistant.Service (Preparer → Executor → Finalizer) ===
 
-    Runtime->>Runtime: RunPipeline(ctx, defaultPipeline, state)
-    Runtime->>Runtime: [1] NormalizeStep — 标准化 RequestContext
-    Runtime->>Runtime: [2] JournalStep — 运行日志记录
-    Runtime->>Runtime: [3] ModelStep — 校验/补全 LLM 配置
-    Runtime->>Runtime: [4] ContextStep — 加载历史消息 + 构建 SystemPrompt + 创建 Emitter
-    Runtime->>Runtime: [5] AuthorizeStep — 权限校验
-    Runtime->>Runtime: [6] StartEventStep
-
-    Runtime->>NATS: Emit("run.started") → MQStreamSink
-    Note over NATS: Publish("org.{org}.session.{id}.message.stream", StreamEventRunStarted)
-    NATS-->>Server: Deliver
-    Server-->>Client: SSE event: run.started
-
-    Runtime->>Runtime: [7] ArtifactBaselineStep
-    Runtime->>+Engine: [8] ExecuteStep → Delegate.Run(ctx, req)
-
-    Note over Client,Engine: === 阶段 4(续): LLM 流式执行 ===
-
-    Engine->>Engine: 创建 ChatModel + SystemPrompt + 加载历史消息
-    Engine->>Engine: 构建 Tool Registry (8 内置工具)
-    Engine->>Engine: 初始化 Eino Flow → flow.StreamWithUsage(sink)
+    Runtime->>Runtime: Registry.Resolve(kind) → Runtime.Execute()
+    Runtime->>Runtime: [Pre] Validate + Prepare
+    Runtime->>Runtime: [Execute] ChatModel + SystemPrompt + 历史消息
+    Runtime->>Runtime: 构建 Tool Registry (8 内置工具)
+    Runtime->>Runtime: 初始化 Eino Flow → flow.StreamWithUsage(sink)
 
     loop 实时事件流推送
-        Engine->>NATS: Emit("message.delta") → MQStreamSink
+        Engine->>NATS: Emit("message.delta") → NATSEventSink (run.stream)
         NATS-->>Server: Deliver
         Server-->>Client: SSE event: message.delta
-        Engine->>NATS: Emit("reasoning.delta") → MQStreamSink
+        Engine->>NATS: Emit("reasoning.delta") → NATSEventSink (run.stream)
         NATS-->>Server: Deliver
         Server-->>Client: SSE event: reasoning.delta
-        Engine->>NATS: Emit("tool_call.started/completed/failed") → MQStreamSink
+        Engine->>NATS: Emit("tool_call.started/finished") → NATSEventSink (run.stream)
         NATS-->>Server: Deliver
         Server-->>Client: SSE event: tool_call.*
-        Engine->>NATS: Emit("todo.snapshot/updated") → MQStreamSink
+        Engine->>NATS: Emit("todo.snapshot/updated") → NATSEventSink (run.stream)
         NATS-->>Server: Deliver
         Server-->>Client: SSE event: todo.*
-        Engine->>NATS: Emit("artifact.declared") → MQStreamSink
+        Engine->>NATS: Emit("artifact.declared") → NATSEventSink (run.state)
         NATS-->>Server: Deliver
         Server-->>Client: SSE event: artifact.declared
-        Engine->>NATS: Emit("approval.requested/resolved") → MQStreamSink
+        Engine->>NATS: Emit("approval.requested/resolved") → NATSEventSink (run.state)
         NATS-->>Server: Deliver
         Server-->>Client: SSE event: approval.*
+        Engine->>NATS: Emit("question.asked/answered") → NATSEventSink (run.state)
+        NATS-->>Server: Deliver
+        Server-->>Client: SSE event: question.*
     end
 
-    Note over Client,Engine: === 阶段 4(续): Pipeline 后置步骤 ===
+    Note over Client,Engine: === 阶段 4(续): 完成与持久化 ===
 
     Engine-->>-Runtime: Emit("run.completed")
-    Runtime->>Runtime: [9] ArtifactReconcileStep
-    Runtime->>Runtime: [10] ArtifactStep
-    Runtime->>Runtime: [11] PersistStep
-    Runtime->>Runtime: [12] LearningStep
-    Runtime->>Runtime: [13] SessionCompleteStep
-    Runtime->>NATS: Emit("run.completed") → MQStreamSink
-    Note over NATS: Publish("org.{org}.session.{id}.message.stream", StreamEventRunCompleted)
+    Runtime->>Runtime: Finalizer.Finalize()
+    Runtime->>Runtime: ArtifactReconcile / Git Commit / 业务终态
+    Runtime->>NATS: Emit("run.completed") → NATSEventSink (run.state lane, 含 RunCompletedPayload)
+    Note over NATS: Publish("org.{org}.session.{id}.run.state", RunEventRunCompleted)
     NATS-->>Server: Deliver
     Server-->>Client: SSE event: run.completed
-
-    Runtime->>NATS: emitCompleted() → Publish("org.{org}.session.{id}.message.completed", RunCompletedMessage)
     deactivate Runtime
 
-    Note over Client,Engine: === 阶段 5: 异步消息持久化 ===
+    Note over Client,Engine: === 阶段 5: Runnable 异步持久化 ===
 
-    NATS-->>+Server: session_completed Runnable 消费<br/>   "org.{org}.session.{id}.message.completed"
+    NATS-->>+Server: session-run-state-projector Runnable
+    Note over NATS: 消费 "org.{org}.session.{id}.run.state" 中的 terminal 事件
     Server->>Server: CompleteSessionMessage() — 持久化助理消息(chunks/artifacts/usage)
     deactivate Server
 
-    Note over NATS: session_completed Runnable (run.failed 分支):<br/>FailedSessionMessage() — 持久化失败消息
-    Note over NATS: session_title Runnable (独立):<br/>按需调用 LLM 生成会话标题 → 回写 DB
-    Note over NATS: session_artifact Runnable (独立):<br/>过滤 artifact.declared → 产物持久化到 FileStore + DB
+    Note over NATS: session-run-stream-projector (独立):<br/>增量持久化 message.delta / reasoning.delta
+    Note over NATS: session-title 由 API 层 POST /v1/NewMessage 后<br/>通过独立 NATS subject (message.request) 触发
 ```
 
 ---
@@ -602,12 +600,12 @@ Worker 和 Server 是独立进程，需要解耦：
 - Worker 只管执行 Agent Run
 - NATS 提供 at-least-once 投递、持久化、消费组
 
-### 4.3 为什么分 TASK_STREAM 和 SESSION_STREAM 两个 Stream
+### 4.3 为什么分 WORKER_CMD_STREAM 和 SESSION_RUN_STREAM 两个 Stream
 
 | Stream | 用途 | 保留策略 | 差异点 |
 |--------|------|---------|--------|
-| TASK_STREAM | Worker 任务分发 + 审批控制 | 72h, 200/subject | 重要, 不可丢失 |
-| SESSION_STREAM | 会话事件流（增量推送） | 24h, 10000/subject | 高吞吐, 可丢部分 |
+| WORKER_CMD_STREAM | Worker 命令分发（run/control/interaction/skill） | 72h, 200/subject | 重要, 不可丢失 |
+| SESSION_RUN_STREAM | 运行事件流（stream 增量 + state 状态） | 24h, 10000/subject | 高吞吐, 可丢部分 |
 
 ### 4.4 幂等与去重
 
@@ -630,22 +628,21 @@ Worker TaskConsumer 按 `session_id` 做 1.5s debounce：
 | NewMessage 编排 | ✅ 已实现 | Project/Task/Session 原子创建 |
 | Session CRUD | ✅ 已实现 | Create/Retrieve/Update/Delete |
 | NATS EventBus | ✅ 已实现 | Publisher + Subscriber 接口, JetStream 实现 |
-| Worker TaskConsumer | ✅ 已实现 | 去重、debounce、并发池、崩溃恢复 |
-| Native Engine (Eino) | ✅ 已实现 | 内置 Go 运行时, CloudWeGo Eino |
+| Worker 命令分发 | ✅ 已实现 | 4 lane 分发 (run/control/interaction/skill) |
+| RunCoordinator | ✅ 已实现 | 去重、debounce、并发池、崩溃恢复 |
+| Native Engine (Eino) | ✅ 已实现 | 内置 Go 运行时, CloudWeGo Eino, `agent/runtime/native/` |
+| External CLI Runtimes | ✅ 已实现 | Claude/Codex/OpenCode, `agent/runtime/` |
 | SSE Streaming | ✅ 已实现 | Server → Frontend (Gin SSEvent) |
 | CLI Chat | ✅ 已实现 | 交互式 + SSE |
-| 消息持久化 | ✅ 已实现 | 异步 Runnable 消费 completed topic |
-| 自动会话标题 | ✅ 已实现 | 异步 Runnable + LLM Prompt |
-| 产物持久化 | ✅ 已实现 | 异步 Runnable + FileStore |
-| 审批流程 | ✅ 已实现 | Frontend → API → NATS → Worker |
-| 技能管理 | ✅ 已实现 | 注册/管理/使用 |
-| Claude/Codex Engine | ✅ 已实现 | 外部 CLI 适配器 |
-| 会话历史加载 | ✅ 已实现 | 最多 20 条历史消息 |
-| Assistant 推断 | ⚠️ 硬编码 | 总是返回 assistant_id=1, 待实现智能推断 |
-| Orchestrator | ⚠️ 部分实现 | GitHub 事件解析是桩代码 |
-| WebSocket 端点 | ⚠️ 未集成 | Server 端存在, 前端未使用 |
-| 记忆系统 | 🔄 计划中 | 工具已注册, 功能基础 |
+| 消息持久化 | ✅ 已实现 | 异步 Runnable 消费 run.state lane |
+| 增量流式持久化 | ✅ 已实现 | 异步 Runnable 消费 run.stream lane |
+| 产物持久化 | ✅ 已实现 | 异步 Runnable + FileStore (通过 run.state artifact.declared) |
+| 审批流程 | ✅ 已实现 | Frontend → API → NATS cmd.interaction → Worker |
+| 问答流程 | ✅ 已实现 | question.asked/answered 事件流 |
+| 自动会话标题 | 🔄 计划中 | 原 Runnable 已移除, 待重建 |
+| 忆系统 | ⚠️ 基础 | 工具已注册, 功能基础 |
 | 会话恢复 (Resume) | 🔄 计划中 | 状态机支持, 无消费端实现 |
+| Orchestrator | 🔄 计划中 | GitHub 事件解析是桩代码 |
 
 ---
 
@@ -658,16 +655,19 @@ Worker TaskConsumer 按 `session_id` 做 1.5s debounce：
 | `backend/internal/api/router.go` | 全量路由注册 |
 | `backend/internal/api/handler/work_handler.go` | POST /v1/NewMessage |
 | `backend/internal/api/handler/session_handler.go` | POST /v1/SessionEvents (SSE) |
-| `backend/internal/service/message_poster.go` | NewMessage 编排 + WorkerTask 发布 |
-| `backend/internal/worker/taskconsumer/consumer.go` | Worker Task 消费 |
-| `backend/internal/worker/taskconsumer/stream_sink.go` | Agent 事件 → NATS |
-| `backend/internal/runtime/lifecycle/runner.go` | Pipeline 13 步执行 |
-| `backend/internal/runtime/events/events.go` | 事件类型定义 + Payload 结构 |
-| `backend/engines/native/runner.go` | Eino 引擎实现 |
+| `backend/internal/service/message_poster.go` | NewMessage 编排 + WorkerCommand 发布 |
+| `backend/internal/worker/command/dispatcher.go` | Worker 4 lane 命令分发 |
+| `backend/internal/worker/command/run/handler.go` | cmd.run lane 处理 |
+| `backend/internal/worker/eventpub/nats_sink.go` | Agent 事件 → NATS run.stream/run.state |
+| `backend/internal/worker/run/coordinator.go` | RunCoordinator (去抖/并发/取消) |
+| `backend/internal/assistant/service.go` | 业务运行包装 (Preparer → Executor → Finalizer) |
+| `backend/agent/executor.go` | agent.Executor 执行器 |
+| `backend/agent/runtime.go` | Runtime 接口 |
+| `backend/agent/runtime/native/` | Eino 引擎实现 |
+| `backend/pkg/messaging/` | 统一消息契约包 |
 | `backend/internal/infra/mq/nats.go` | NATS JetStream 实现 |
-| `backend/internal/runnable/session_completed.go` | 完成消息持久化 |
-| `backend/internal/runnable/session_title_handler.go` | 会话标题生成 |
-| `backend/internal/runnable/session_artifact_declared.go` | 产物持久化 |
+| `backend/internal/runnable/session_run_state_projector.go` | run.state 持久化投影 |
+| `backend/internal/runnable/session_run_stream_projector.go` | run.stream 持久化投影 |
 | `frontend/packages/store/slices/chatSlice.ts` | 前端 SSE 消费 + 状态管理 |
 | `frontend/packages/ui/lib/fetch-sse.ts` | 前端 SSE Client |
 

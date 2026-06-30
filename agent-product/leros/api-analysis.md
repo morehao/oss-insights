@@ -16,12 +16,12 @@
 | `backend/internal/api/handler/session_handler.go:279-293` | `POST /v1/AddMessage` Handler |
 | `backend/internal/service/message_poster.go:91-152` | `RunNewMessage()` 5 步编排 |
 | `backend/internal/service/message_poster.go:40-89` | `PostMessage()` 共享逻辑 |
-| `backend/internal/service/message_poster.go:314-402` | `publishWorkerTask()` 构建并发布 WorkerTask |
+| `backend/internal/service/message_poster.go:314-402` | `publishWorkerTask()` 构建并发布 WorkerCommand |
 | `backend/internal/service/session_service.go:257-281` | `AddMessage()` 实现 |
 | `backend/internal/service/assistant_inferrer.go:7-9` | `AssistantInferrer` 接口定义 |
 | `backend/internal/service/assistant_inferrer.go:21-33` | `DefaultAssistantInferrer` 默认实现 |
-| `backend/internal/worker/protocol/task.go:35-36` | `WorkerTaskMessage` 类型定义 |
-| `backend/internal/worker/protocol/envelope.go:34-44` | `Envelope[T]` 泛型信封 |
+| `backend/pkg/messaging/command.go:83-96` | `RunCommandPayload` 类型定义（原 `protocol.WorkerTaskMessage`） |
+| `backend/pkg/messaging/envelope.go:50-61` | `Envelope[T]` 泛型信封 |
 | `backend/internal/api/contract/work_type.go:7-25` | `NewMessageRequest` / `NewMessageResponse` |
 
 ### 1.1 NewMessage — 消息入口 API
@@ -181,8 +181,8 @@ sequenceDiagram
         Server->>Server: publishWorkerTask()
         Server->>Server: InferAssignedAssistantID() 若未分配
         Server->>DB: 读取组织默认 LLM 模型配置
-        Server->>Server: 构建 WorkerTaskMessage (Trace/Route/Body)
-        Server->>NATS: Publish("org.{org}.worker.{id}.task", WorkerTaskMessage)
+        Server->>Server: 构建 messaging.WorkerCommand (CommandTypeRun + Trace/Route)
+        Server->>NATS: Publish("org.{org}.worker.{id}.cmd.run", WorkerCommand)
     else 无可用 assistant
         Note over Server: 跳过 NATS 发布，不触发 Worker 执行
     end
@@ -203,28 +203,26 @@ sequenceDiagram
     Note over Client,Engine: === 阶段 3: Worker 消费 + Agent 执行（异步） ===
     Note over Client,Engine: 此阶段 NewMessage 和 AddMessage 完全一致
 
-    NATS-->>Worker: Deliver("org.{org}.worker.{id}.task")
+    NATS-->>Worker: Deliver("org.{org}.worker.{id}.cmd.run")
     activate Worker
-    Worker->>Worker: Semaphore.Acquire (容量 40, 阻塞背压)
-    Worker->>Worker: decodeWorkerTask → validRoute? taskType=AgentRun? ModelConfig?
+    Worker->>Worker: Dispatcher.RunHandler → decode WorkerCommand
+    Worker->>Worker: 校验路由 + TaskType + ModelConfig
     Worker->>Worker: SeqTracker.TrackReceived (SQLite 去重)
-    Worker->>Worker: Debouncer.Wait (1.5s, 按 session_id 合并)
-    Worker->>Worker: pool.Submit → executeWithTracker
-    Worker->>Worker: RequestFromWorkerTask → agent.RequestContext
-    Worker->>Worker: prepareWorkspace → 创建工作目录
-    Worker->>Worker: req.EventSink = NewMQStreamSink(publisher, taskMsg)
-    Worker->>+Runtime: runner.Run(ctx, req)
+    Worker->>Worker: RunCoordinator.Submit (1.5s debounce, 按 session_id 合并)
+    Worker->>Worker: pool.Submit → assistant.Service.Run()
+    Worker->>Worker: Preparer (Workspace/Skills/Memory/Tools)
+    Worker->>Worker: req.EventSink = NewNATSEventSink(publisher, runContext)
+    Worker->>+Runtime: agent.Executor.Execute(ctx, request, observer)
 
-    Runtime->>Runtime: SyncPipeline (13 步)
+    Runtime->>Runtime: Registry.Resolve(kind) → Runtime.Execute()
 
-    Runtime->>Runtime: [1] Normalize / [2] Journal / [3] Model
-    Runtime->>Runtime: [4] ContextStep
+    Runtime->>Runtime: [Pre] Validate + Prepare
     Runtime->>DB: 加载最近 20 条历史消息
     Runtime->>Runtime: 构建 SystemPrompt + Emitter
     Runtime->>Runtime: [5] Authorize / [6] StartEventStep
 
-    Runtime->>NATS: Emit(run.started) → MQStreamSink
-    Note over NATS: Publish("org.{org}.session.{id}.message.stream", StreamEventRunStarted)
+    Runtime->>NATS: Emit(run.started) → NATSEventSink
+    Note over NATS: Publish("org.{org}.session.{id}.run.state", RunEventRunStarted)
     NATS-->>Server: Deliver
     Server-->>Client: SSE event: run.started
 
@@ -233,7 +231,7 @@ sequenceDiagram
     loop 流式执行周期
         Engine->>Engine: Eino Flow (MaxStep=90), StreamWithUsage(sink)
         Engine->>NATS: Emit(message.delta / reasoning.delta / tool_call.* / ...)
-        Note over NATS: Publish("org.{org}.session.{id}.message.stream")
+        Note over NATS: Publish("org.{org}.session.{id}.run.stream" 或 "org.{org}.session.{id}.run.state")
         NATS-->>Server: Deliver
         Server-->>Client: SSE event: message.delta / tool_call.* / ...
     end
@@ -241,18 +239,18 @@ sequenceDiagram
     Engine-->>-Runtime: Emit(run.completed)
     Runtime->>Runtime: [9] ArtifactReconcile / [10] Artifact / [11] Persist / [12] Learning
     Runtime->>Runtime: [13] SessionCompleteStep
-    Runtime->>NATS: Emit(run.completed) → MQStreamSink (stream)
+    Runtime->>NATS: Emit(run.completed) → NATSEventSink (run.state lane)
     NATS-->>Server: Deliver
     Server-->>Client: SSE event: run.completed
 
-    Runtime->>NATS: emitCompleted → Publish("org.{org}.session.{id}.message.completed", RunCompletedMessage)
+    Runtime->>NATS: Emit(run.completed terminal) → NATSEventSink (run.state lane, 含 RunCompletedPayload)
     deactivate Runtime
     deactivate Worker
 
     Note over Client,Engine: === 阶段 4: 异步消息持久化 ===
 
-    NATS-->>+Server: session_completed Runnable 消费
-    Server->>Server: CompleteSessionMessage()
+    NATS-->>+Server: session-run-state-projector Runnable 消费
+    Server->>Server: 消费 run.state → CompleteSessionMessage()
     Server->>DB: 持久化完整 assistant 回复 + chunks + artifacts + usage
     deactivate Server
 ```
@@ -418,20 +416,22 @@ PostMessage(ctx, buildMessage func(sequence) *SessionMessage)
          │
          ├─ 构建 protocol.WorkerTaskMessage
          │    ├─ ID: "msg_{session.ID}_{message.Sequence}"
-         │    ├─ Type: "worker.task"
-         │    ├─ Trace: {TraceID=session.PublicID, RequestID, TaskID, RunID}
-         │    ├─ Route: {OrgID, SessionID, WorkerID}
-         │    ├─ Body: {
-         │    │     TaskType:   TaskTypeAgentRun,
-         │    │     Actor:      {UserID, DisplayName, Channel},
-         │    │     Execution:  ...,
-         │    │     Workspace:  {ProjectID, TaskID},
-         │    │     Input:      {Messages: [{role, content}], Attachments: [...]},
-         │    │     Model:      {Provider, Model, BaseURL, APIKey}
-         │    │   }
-         │    └─ Metadata: {session_id, message_type, sequence}
-         │
-         └─ eventbus.Publish(ctx, topic, taskMsg)
+          │    ├─ Type: "worker.command"
+          │    ├─ Trace: {TraceID=session.PublicID, RequestID, TaskID, RunID}
+          │    ├─ Route: {OrgID, SessionID, WorkerID}
+          │    ├─ Body: {
+          │    │     CommandType: "agent.run",
+          │    │     Payload: {
+          │    │       TaskType:   "agent.run",
+          │    │       Actor:      {UserID, DisplayName, Channel},
+          │    │       Workspace:  {ProjectID, TaskID},
+          │    │       Input:      {Type: "message", Messages: [{role, content}], Attachments: [...]},
+          │    │       Model:      {Provider, Model, BaseURL, APIKey}
+          │    │     }
+          │    │   }
+          │    └─ Metadata: {session_id, message_type, sequence}
+          │
+          └─ eventbus.Publish(ctx, WorkerCommandSubject(orgID, workerID, LaneRun), msg)
 ```
 
 ### 1.4 异步事件流与消费者映射
@@ -451,16 +451,16 @@ graph LR
         D1 --> E1["调用 LLM → 生成 Session 标题 → 回写 DB"]
     end
 
-    subgraph Stream2["Event 2: worker.task"]
+    subgraph Stream2["Event 2: worker command (cmd.run)"]
         direction LR
-        B2["Topic: org.{org}.worker.{id}.task"] --> C2["Consumer: worker-task-consumer"]
-        C2 --> D2["Worker: TaskConsumer.handleEvent()"]
-        D2 --> E2["Agent Runtime Pipeline (13 步)"]
-        E2 --> F2["LLM 引擎执行"]
-        F2 --> G2["Stream: org.{org}.session.{id}.message.stream"]
+        B2["Topic: org.{org}.worker.{id}.cmd.run"] --> C2["Consumer: worker-run-consumer"]
+        C2 --> D2["Worker: Dispatcher.RunHandler"]
+        D2 --> E2["RunCoordinator (debounce 1.5s)"]
+        E2 --> F2["assistant.Service → agent.Executor Runtime"]
+        F2 --> G2["NATSEventSink → run.stream / run.state"]
         G2 --> H2["Server SSE → 前端"]
-        F2 --> I2["Complete: org.{org}.session.{id}.message.completed"]
-        I2 --> J2["Runnable: 消息持久化"]
+        G2 --> I2["Runnable: session-run-state-projector"]
+        I2 --> J2["消息持久化 + 产物归档"]
     end
 
     A --> Stream1
@@ -471,15 +471,16 @@ graph LR
 
 | Consumer | 订阅主题（通配符） | 所属进程 | 用途 |
 |----------|-------------------|----------|------|
-| `worker-task-consumer` | `org.*.worker.*.task` | Worker | 接收 Agent 任务，调度执行 |
-| `session-title-handler` | `org.*.session.*.message.request` | Server (Runnable) | 自动生成会话标题 |
-| `session-completed-handler` | `org.*.session.*.message.completed` | Server (Runnable) | 持久化完整的 assistant 回复 |
-| `session-artifact-declared-handler` | `org.*.session.*.message.stream` | Server (Runnable) | 持久化产物声明 |
+| `worker-run-consumer` | `org.*.worker.*.cmd.run` | Worker | 接收 Agent 执行命令，调度执行 |
+| `worker-control-consumer` | `org.*.worker.*.cmd.control` | Worker | 接收取消/控制命令 |
+| `worker-interaction-consumer` | `org.*.worker.*.cmd.interaction` | Worker | 接收审批/问答交互 |
+| `worker-skill-consumer` | `org.*.worker.*.cmd.skill` | Worker | 接收技能管理命令 |
+| `session-run-state-projector` | `org.*.session.*.run.state` | Server (Runnable) | 持久化运行状态、消息、产物
 
 **通配符匹配说明:**
-- `org.*.worker.*.task` → 匹配 `org.abc.worker.1.task`、`org.xyz.worker.2.task` 等任意 orgID 和 workerID
-- `org.*.session.*.message.*` → 匹配任意 orgID 和 sessionID 下的所有消息事件
-- Worker 和 Server 共享同一个 NATS 集群，通过 Stream 隔离：`TASK_STREAM`（Worker 侧）、`SESSION_STREAM`（Server 侧）
+- `org.*.worker.*.cmd.run` → 匹配 `org.abc.worker.1.cmd.run`、`org.xyz.worker.2.cmd.run` 等任意 orgID 和 workerID
+- `org.*.session.*.run.*` → 匹配任意 orgID 和 sessionID 下的所有运行事件
+- Worker 和 Server 共享同一个 NATS 集群，通过 Stream 隔离：`WORKER_CMD_STREAM`（Server → Worker）、`SESSION_RUN_STREAM`（Worker → Server/UI）
 
 ### 1.5 关键设计要点
 
@@ -510,24 +511,26 @@ Project Session 用于维护项目级别的协作上下文（所有 Task 共享�
 
 #### 1.5.4 Worker 的消峰与去重
 
-Worker 端 TaskConsumer 的三层保护机制：
+Worker 端 Worker 的三层处理机制：
 
 ```
-NATS Message → [1] Semaphore(40)
-                  阻塞背压，满时不 ACK
-                 → [2] SeqTracker (SQLite)
-                   track processed_seq，防止 NATS 重投
-                 → [3] Debouncer(1.5s)
-                   按 session_id 合并连续任务
-                 → [4] WorkerPool(20)
-                   控制并发度
+WorkerCommand (cmd.run) → [1] Dispatcher.RunHandler
+                                   解码 + 校验 (route/model/taskType)
+                                  → [2] SeqTracker (SQLite)
+                                    track processed_seq，防止 NATS 重投
+                                  → [3] RunCoordinator (1.5s debounce)
+                                    按 session_id 合并连续命令
+                                  → [4] WorkerPool (20)
+                                    控制并发度
+                                  → [5] assistant.Service
+                                    Preparer → Executor → Finalizer
 ```
 
-#### 1.5.5 WorkerTaskMessage 数据结构
+#### 1.5.5 WorkerCommand 数据结构
 
 ```go
-// WorkerTaskMessage 是 Envelope[WorkerTaskBody] 的类型别名
-type WorkerTaskMessage = Envelope[WorkerTaskBody]
+// WorkerCommand 是 Server → Worker 的统一命令消息
+type WorkerCommand = Envelope[WorkerCommandBody]
 
 // Envelope 是 MQ Topic 上的通用领域消息信封
 type Envelope[T any] struct {
@@ -537,32 +540,26 @@ type Envelope[T any] struct {
     Trace     TraceContext      `json:"trace"`
     Route     RouteContext      `json:"route"`
     Body      T                 `json:"body"`
-    Metadata  map[string]any    `json:"metadata,omitempty"`
+    Metadata  json.RawMessage   `json:"metadata,omitempty"`
 }
 
-type WorkerTaskBody struct {
-    TaskType  TaskType         `json:"task_type"`
-    Actor     ActorContext     `json:"actor"`
-    Execution ExecutionTarget  `json:"execution"`
-    Workspace WorkspaceOptions `json:"workspace,omitempty"`
-    Input     TaskInput        `json:"input"`
-    Model     ModelOptions     `json:"model,omitempty"`
-    Runtime   RuntimeOptions   `json:"runtime,omitempty"`
-    Policy    TaskPolicy       `json:"policy,omitempty"`
+type WorkerCommandBody struct {
+    CommandType CommandType     `json:"command_type"` // "agent.run" | "run.cancel" | "approval.resolve" | ...
+    Payload     json.RawMessage `json:"payload,omitempty"`  // RunCommandPayload / CancelRunCommandPayload / ...
+    ReplyTo     string          `json:"reply_to,omitempty"` // NATS inbox for request/reply
 }
 
-type TraceContext struct {
-    TraceID   string `json:"trace_id"`
-    RequestID string `json:"request_id,omitempty"`
-    TaskID    string `json:"task_id,omitempty"`
-    RunID     string `json:"run_id,omitempty"`
-    ParentID  string `json:"parent_id,omitempty"`
-}
-
-type RouteContext struct {
-    OrgID     uint   `json:"org_id"`
-    SessionID string `json:"session_id,omitempty"`
-    WorkerID  uint   `json:"worker_id,omitempty"`
+// RunCommandPayload 是 agent.run 命令的 payload
+type RunCommandPayload struct {
+    TaskType      TaskType         `json:"task_type"`
+    ExecutionMode string           `json:"execution_mode,omitempty"`
+    Actor         ActorContext     `json:"actor"`
+    Execution     ExecutionTarget  `json:"execution"`
+    Workspace     WorkspaceOptions `json:"workspace,omitempty"`
+    Input         TaskInput        `json:"input"`
+    Model         ModelOptions     `json:"model,omitempty"`
+    Runtime       RuntimeOptions   `json:"runtime,omitempty"`
+    Policy        TaskPolicy       `json:"policy,omitempty"`
 }
 ```
 
@@ -572,8 +569,8 @@ type RouteContext struct {
 
 | Stream | 包含 Subjects | 保留策略 | 用途 |
 |--------|-------------|---------|------|
-| `TASK_STREAM` | `org.*.worker.*.task` + `org.*.worker.*.approval` + `org.*.worker.*.skill.install` | 72h, 200/subject | 任务分发，重要不可丢失 |
-| `SESSION_STREAM` | `org.*.session.*.message.*` | 24h, 10000/subject | 流式事件，高吞吐可丢部分 |
+| `WORKER_CMD_STREAM` | `org.*.worker.*.cmd.>` | 72h, 200/subject | 任务分发，重要不可丢失 |
+| `SESSION_RUN_STREAM` | `org.*.session.*.run.>` | 24h, 10000/subject | 运行事件，高吞吐可丢部分 |
 
 ---
 

@@ -174,6 +174,12 @@ graph TB
 | [Multica](agent-product/multica/) | Go+TS | 托管式 AI Agent 协作平台，Agent 作为第一公民的任务管理系统 | Apache-2.0 | [GitHub](https://github.com/multica-ai/multica) |
 | [OpenBee](agent-product/openbee/) | Go+TS | 自托管 24/7 数字员工管理平台，对话驱动，多 IM 平台集成 | MIT | [GitHub](https://github.com/theopenbee/openbee) |
 
+### [即时通讯 (IM)](IM/)
+
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [Open-IM-Server](IM/open-im-server/) | Go | 开源 IM 即时通讯服务器，微服务架构，支持 WebSocket 长连接、消息推送、多端登录 | Apache-2.0 | [GitHub](https://github.com/openimsdk/open-im-server) |
+
 ### [RAG / 知识管理](rag/)
 
 | 项目 | 语言 | 说明 | 协议 | 仓库 |

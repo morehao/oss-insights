@@ -238,6 +238,35 @@ sequenceDiagram
 - 不同通知类型可以有不同的 `IsSendMsg`、`IsHistory`、`IsOfflinePush` 等设置
 - 例如：群禁言通知 `IsHistory=true`，但加群申请通知 `IsHistory=false`
 
+#### NotificationConfig 配置字段
+
+每条通知类型对应一个 `NotificationConfig`，定义在 `pkg/common/config/config.go:179`：
+
+```go
+type NotificationConfig struct {
+    IsSendMsg        bool              // 是否作为"发送消息"处理，影响存储和历史
+    ReliabilityLevel int               // 可靠性级别：0=不可靠不存储, 1=可靠不存储但触发推送
+    UnreadCount      bool              // 是否计入未读计数
+    OfflinePush      OfflinePushConfig // 离线推送配置
+}
+
+type OfflinePushConfig struct {
+    Enable bool   // 是否启用离线推送
+    Title  string // 通知标题
+    Desc   string // 通知描述
+    Ext    string // 扩展字段
+}
+```
+
+`ReliabilityLevel` 取值：
+
+| 值 | 常量 | 含义 |
+|-----|------|------|
+| 0 | `UnreliableNotification` | 不可靠，不存储，仅推送 |
+| 1 | `ReliableNotificationNoMsg` | 可靠，标记 IsHistory=true + IsPersistent=true，但不作为发送消息 |
+
+消息通知（`MsgRevoke`、`HasReadReceipt`、`DeleteMsgsNotification`）的配置硬编码为 `{IsSendMsg: false, ReliabilityLevel: ReliableNotificationNoMsg}`，其余通知类型在 `config/notification.yml` 中可配置。
+
 ### 3.3 通知类型完整列表
 
 #### 群组通知（19 种）
@@ -298,7 +327,72 @@ sequenceDiagram
 | `HasReadReceipt` | 已读回执 | 单聊 |
 | `DeleteMsgsNotification` | 删除消息通知 | 原消息会话类型 |
 
-### 3.4 关键设计决策
+### 3.4 通知 Payload（tips）结构
+
+通知的 Payload 以 protobuf 定义，作为 `sdkws.NotificationElem.Detail`（JSON 序列化）嵌入消息体中。以下是每种通知的 tips 结构和关键字段，均定义在 `github.com/openimsdk/protocol/sdkws/sdkws.proto`。
+
+#### 群组通知 Payload
+
+| 通知类型 | Tips 结构体 | 关键 Payload 字段 |
+|----------|------------|------------------|
+| `GroupCreated` | `GroupCreatedTips` | group(群信息), opUser(操作者), memberList(成员列表), groupOwnerUser(群主), operationTime |
+| `GroupInfoSet` | `GroupInfoSetTips` | opUser, group(变更后的群信息), muteTime |
+| `GroupInfoSetName` | `GroupInfoSetNameTips` | opUser, group(含新群名) |
+| `GroupInfoSetAnnouncement` | `GroupInfoSetAnnouncementTips` | opUser, group(含新公告) |
+| `JoinGroupApplication` | `JoinGroupApplicationTips` | group, applicant(申请人信息), reqMsg(申请消息), request(完整申请记录) |
+| `MemberQuit` | `MemberQuitTips` | group, quitUser(退群用户), operationTime |
+| `GroupApplicationAccepted` | `GroupApplicationAcceptedTips` | group, opUser, handleMsg, receiverAs(admin/applicant), request |
+| `GroupApplicationRejected` | `GroupApplicationRejectedTips` | group, opUser, handleMsg(拒绝原因), request |
+| `GroupOwnerTransferred` | `GroupOwnerTransferredTips` | group, opUser, newGroupOwner(新群主), oldGroupOwnerInfo(原群主) |
+| `MemberKicked` | `MemberKickedTips` | group, opUser, kickedUserList(被踢用户列表), operationTime |
+| `MemberInvited` | `MemberInvitedTips` | group, opUser, invitedUserList(被邀请列表), inviterUser(邀请人) |
+| `MemberEnter` | `MemberEnterTips` | group, entrantUser(进入用户), operationTime |
+| `GroupDismissed` | `GroupDismissedTips` | group, opUser, operationTime |
+| `GroupMuted` / `GroupCancelMuted` | `GroupMutedTips` / `GroupCancelMutedTips` | group, opUser, operationTime |
+| `GroupMemberMuted` | `GroupMemberMutedTips` | group, opUser, mutedUser(被禁言用户), mutedSeconds(禁言秒数) |
+| `GroupMemberCancelMuted` | `GroupMemberCancelMutedTips` | group, opUser, mutedUser(被解禁用户) |
+| `GroupMemberInfoSet` | `GroupMemberInfoSetTips` | group, opUser, changedUser(信息变更的成员) |
+| `GroupMemberSetToAdmin` / `GroupMemberSetToOrdinaryUser` | `GroupMemberInfoSetTips` | 同 GroupMemberInfoSetTips（复用） |
+
+#### 好友通知 Payload
+
+| 通知类型 | Tips 结构体 | 关键 Payload 字段 |
+|----------|------------|------------------|
+| `FriendApplication` | `FriendApplicationTips` | fromToUserID(发起方/接收方), request(好友请求记录) |
+| `FriendApplicationApproved` | `FriendApplicationApprovedTips` | fromToUserID, handleMsg, request, friendVersion |
+| `FriendApplicationRejected` | `FriendApplicationRejectedTips` | fromToUserID, handleMsg(拒绝原因), request |
+| `FriendDeleted` | `FriendDeletedTips` | fromToUserID(操作者/被删除者), friendVersion |
+| `FriendRemarkSet` / `FriendInfoUpdated` | `FriendInfoChangedTips` | fromToUserID, friendVersion, friendSortVersion |
+| `FriendsInfoUpdate` | `FriendsInfoUpdateTips` | fromToUserID, friendIDs(变化的用户ID列表) |
+| `BlackAdded` | `BlackAddedTips` | fromToUserID(操作者/被拉黑用户) |
+| `BlackDeleted` | `BlackDeletedTips` | fromToUserID(操作者/移出用户) |
+
+#### 用户通知 Payload
+
+| 通知类型 | Tips 结构体 | 关键 Payload 字段 |
+|----------|------------|------------------|
+| `UserInfoUpdated` | `UserInfoUpdatedTips` | userID(信息变更的用户) |
+| `UserStatusChange` | `UserStatusChangeTips` | fromUserID, status(上线/离线), platformID |
+
+#### 会话通知 Payload
+
+| 通知类型 | Tips 结构体 | 关键 Payload 字段 |
+|----------|------------|------------------|
+| `ConversationChange` | `ConversationUpdateTips` | userID, conversationIDList(变化的会话ID列表) |
+| `ConversationUnread` | `ConversationHasReadTips` | userID, conversationID, hasReadSeq(已读序列号) |
+| `ConversationPrivateChat` | `ConversationSetPrivateTips` | recvID, sendID, isPrivate(是否私聊), conversationID |
+
+#### 消息通知 Payload
+
+| 通知类型 | Tips 结构体 | 关键 Payload 字段 |
+|----------|------------|------------------|
+| `MsgRevoke` | `MessageRevokedContent` | revokerID(撤回者), clientMsgID, seq, sessionType, isAdminRevoke |
+| `HasReadReceipt` | `MarkAsReadTips` | markAsReadUserID, conversationID, seqs(已读序列号列表), hasReadSeq |
+| `DeleteMsgsNotification` | `DeleteMsgsTips` | userID, conversationID, seqs(删除的消息序列号列表) |
+
+所有 tips 中的 `groupMemberVersion` / `groupMemberVersionID` / `friendVersion` / `friendVersionID` 等版本字段用于客户端本地缓存增量更新，避免全量拉取。
+
+### 3.5 关键设计决策
 
 **通知走标准消息链路**：系统通知不是独立的分发渠道，而是通过 `NotificationSender.sendMsg()` 构造为标准的 `sdkws.MsgData`，进入消息的完整链路（Kafka → MsgTransfer → Push → MsgGateway）。这意味着：
 - 通知消息同样有序列号、可被拉取历史
@@ -324,5 +418,8 @@ sequenceDiagram
 | MongoDB 持久化 | `internal/msgtransfer/online_msg_to_mongo_handler.go` |
 | NotificationSender | `pkg/notification/msg.go` |
 | 通知类型配置 | `pkg/notification/msg.go:newContentTypeConf` |
+| NotificationConfig 定义 | `pkg/common/config/config.go:179` |
+| 通知配置 -> Options 转换 | `pkg/common/config/parse.go:60` `GetOptionsByNotification` |
+| 通知 tips protobuf 定义 | `github.com/openimsdk/protocol/sdkws/sdkws.proto` |
 | 消息选项定义 | `pkg/msgprocessor/options.go` |
 | 会话 ID 生成 | `pkg/msgprocessor/conversation.go` |

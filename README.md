@@ -132,6 +132,18 @@ graph TB
 
 ## 分类索引
 
+### [计量与计费](billing/)
+
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [OpenMeter](billing/openmeter/) | Go | AI 和 DevTool 公司的使用量计量和计费平台，实时计量 + 产品目录 + 订阅管理 + 发票生成 | Apache-2.0 | [GitHub](https://github.com/openmeterio/openmeter) |
+
+### [API 网关](gateway/)
+
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [New API](gateway/new-api/) | Go | 统一 AI API 网关，聚合 40+ AI 供应商，提供统一接口、计费、权限管理 | AGPL-3.0 | [GitHub](https://github.com/QuantumNous/new-api) |
+
 ### [社区 / 问答平台](community/)
 
 | 项目 | 语言 | 说明 | 协议 | 仓库 |

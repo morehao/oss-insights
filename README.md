@@ -199,6 +199,12 @@ graph TB
 |------|------|------|------|------|
 | [WeKnora](rag/weknora/) | Go | 企业级 RAG 与知识推理框架，集成 Agent、Wiki 模式、多租户 RBAC | MIT | [GitHub](https://github.com/Tencent/WeKnora) |
 
+### [编程语言](languages/)
+
+| 语言 | 说明 |
+|------|------|
+| [Go](languages/go/) | Go 语言规范、最佳实践与惯用法指南 |
+
 ---
 
 > 每个项目目录下有独立的 README 作为项目解读的入口和三方仓库地址。

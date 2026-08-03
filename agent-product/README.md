@@ -4,7 +4,7 @@
 
 | 项目 | 语言 | 说明 | 协议 | 仓库 |
 |------|------|------|------|------|
-| [OpenWorker](openworker/) | Python+TS+Rust | 开源 AI 同事桌面平台，本地 sidecar 架构，审批门控 Agent 循环，5+ LLM Provider，25+ 连接器，MCP 协议，技能/记忆/角色系统 | MIT | [GitHub](https://github.com/andrewyng/openworker) |
+| [OpenWorker](openworker/) | Python+TS+Rust | 开源 AI 同事桌面平台，本地 sidecar 架构，审批门控 Agent 循环，5+ LLM Provider（+Together/Fireworks 转售），26+ 连接器，MCP 协议，技能 CRUD/上传/自定义，上下文自动压缩，SSRF 防护 | MIT | [GitHub](https://github.com/andrewyng/openworker) |
 | [OpenHuman](openhuman/) | Rust + TS | Web3 社区 AI 超级助手桌面应用，进程内 Rust 核心（135个域模块），自研 AI 编排/记忆/工作流引擎，多链钱包，MCP 协议 | AGPL-3.0 | [GitHub](https://github.com/tinyhumansai/openhuman) |
 | [PicoClaw](picoclaw/) | Go | 极致轻量 Go 原生 AI Agent 网关，<10MB 内存跑在 $10 硬件，20+ 通道 30+ LLM，MCP 集成 | MIT | [GitHub](https://github.com/sipeed/picoclaw) |
 | [Leros](leros/) | Go | 企业级 AI 工作协作平台，四平面架构（Edge/Interface/Control/Execution），支持多 Agent 运行时（Eino/Claude Code/Codex CLI） | Apache-2.0 | [GitHub](https://github.com/insmtx/Lework) |

@@ -4,7 +4,7 @@
 >
 > **作者:** Andrew Ng（吴恩达）团队
 >
-> **关联文档:** [核心引擎与 Agent 体系](./engine-and-agent.md) · [连接器与 LLM 提供商体系](./connectors-and-providers.md) · [权限与安全模型](./permission-and-safety.md)
+> **关联文档:** [核心引擎与 Agent 体系](./engine-and-agent.md) · [技能（Skills）系统](./skills-system.md) · [上下文自动压缩（Compaction）](./compaction.md) · [连接器与 LLM 提供商体系](./connectors-and-providers.md) · [权限与安全模型](./permission-and-safety.md)
 
 ---
 
@@ -34,7 +34,8 @@ OpenWorker 是一款**开源的 AI 同事（AI Coworker）**桌面应用。与 C
 | **25+ 连接器** | Slack / GitHub / Jira / Notion / Gmail / Google Calendar / Outlook / Linear 等 |
 | **审批门控** | 4 种权限模式：Discuss / Plan / Interactive / Auto + 自定义 |
 | **MCP 协议** | 完全支持 Model Context Protocol（stdio + streamable HTTP） |
-| **技能系统** | 可加载的能力包（Anthropic 格式），渐进式暴露 |
+| **技能系统** | 可加载的能力包（Anthropic SKILL.md），渐进式暴露 + 完整 CRUD / 分阶段上传 / worker 自建（`save_skill`） |
+| **上下文自动压缩** | 长会话自动压缩：LLM 结构化摘要 + 机械提取状态，只改外发视图不动 transcript |
 | **持久记忆** | SQLite 存储，全局 + 工作区双作用域 |
 | **定时任务** | cron 驱动的自动化调度（早报/周报/监控） |
 | **本地优先** | 所有数据本地存储，仅模型调用和集成传出数据 |
@@ -46,6 +47,7 @@ OpenWorker 是一款**开源的 AI 同事（AI Coworker）**桌面应用。与 C
 |------|------|
 | 后端运行时 | Python 3.10+, FastAPI + Uvicorn |
 | AI 框架 | aisuite（chat-completions + agents 框架） |
+| LLM Provider | OpenAI / Anthropic / Gemini / Vertex / Bedrock + 转售商（Together / Fireworks） |
 | 前端 | React 18, TypeScript, Vite 5, Tailwind CSS |
 | 桌面壳层 | Tauri 2（macOS DMG / Windows 安装包） |
 | 语音边车 | Rust（Cargo, `stt/` 目录） |
@@ -75,12 +77,13 @@ OpenWorker 是一款**开源的 AI 同事（AI Coworker）**桌面应用。与 C
 
 | 类别 | 数量 |
 |------|------|
-| Python 模块 | ~70+ 文件 |
-| 测试文件 | ~84 个 |
+| Python 模块 | ~126 文件（`coworker/` 下） |
+| 测试文件 | 92（Python）+ 60 E2E（Playwright） |
 | 前端包 | React + Tauri |
-| 连接器数 | 25+ |
-| LLM Provider | 5+ |
-| GitHub Stars | ~1,500+（公开 Beta） |
+| 连接器数 | 26+ |
+| LLM Provider | 5 原生 + 转售商（Together / Fireworks） |
+| 行数参考 | `engine.py` ~1192 行，`manager.py` ~4086 行 |
+| GitHub Stars | 持续增长（公开 Beta） |
 | 许可证 | MIT |
 
 ---
@@ -209,6 +212,14 @@ tests/                     ← 测试（84+ 文件）
 
 所有数据（对话历史、密钥配置、连接器 Token）默认存储在本地文件系统。云服务（Auth0 认证、连接器中继）是可选项。这种设计既满足了企业数据安全要求，又保留了云服务的便利性。
 
+### 5. 技能文件夹即真相 + 渐进式暴露
+
+技能以 `SKILL.md` 文件夹存储（无数据库），项目技能随 git 共享；会话只注入目录、按需 `load_skill` 加载正文。三层启用逻辑（Settings 禁用 > 会话静音 > 项目覆盖全局）让技能对在线会话即时生效，且禁用态不污染共享文件夹。
+
+### 6. 上下文压缩：LLM 摘要 + 机械保真
+
+长会话通过 `min(threshold × window, cap)` 提前触发压缩，用 LLM 结构化摘要 + **机械提取**（工作状态、逐字用户消息）替换外发视图的老旧部分，**持久化 transcript 永不被修改**。机械层零幻觉、用户意图不依赖 LLM 记得收录，是无摘要降级下的安全兜底。
+
 ---
 
 ## 六、不足
@@ -230,4 +241,4 @@ tests/                     ← 测试（84+ 文件）
 
 ---
 
-> **关联文档:** [核心引擎与 Agent 体系](./engine-and-agent.md) · [连接器与 LLM 提供商体系](./connectors-and-providers.md) · [权限与安全模型](./permission-and-safety.md)
+> **关联文档:** [核心引擎与 Agent 体系](./engine-and-agent.md) · [技能（Skills）系统](./skills-system.md) · [上下文自动压缩（Compaction）](./compaction.md) · [连接器与 LLM 提供商体系](./connectors-and-providers.md) · [权限与安全模型](./permission-and-safety.md)

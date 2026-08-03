@@ -2,7 +2,7 @@
 
 ## 1. TurnEngine — Agent 核心循环
 
-**文件:** `coworker/engine.py`（~1041 行）
+**文件:** `coworker/engine.py`（~1192 行）
 
 TurnEngine 是 OpenWorker 的心脏——一个异步 agent 循环引擎，负责协调用户输入、LLM 推理和工具执行。
 
@@ -199,22 +199,16 @@ Catalog 是所有"vetted capability"（经过审查的能力）的注册中心�
 
 **目录:** `coworker/skills/`
 
-技能是可加载的能力包（Anthropic 格式标准），支持：
+技能（Skill）是可重用的能力包（Anthropic `SKILL.md` 格式）。在 2026-08-01 的 PR #391 后，技能系统从"加载器"升级为完整的**加载 + 管理**两大部分：
 
-- **渐进式暴露**：只展示与当前任务相关的技能
-- **双来源**：全局 `state_dir/skills/` + 工作区 `.coworker/skills/`
-- **目录索引**：索引标记以过滤相关技能
+| 部分 | 文件 | 职责 |
+|------|------|------|
+| **加载层** | `skills/base.py`（`SkillLoader`） | 渐进式暴露：会话开始只注入目录（name+description），按需通过 `load_skill` 加载完整正文（未命中会 `rescan` 兜底） |
+| **管理层** | `skills/store.py`（`SkillStore` / `SessionSkillStore`） | 文件夹即真相的 CRUD（global/project 双作用域）、上传 stage→preview→confirm、会话级静音、worker 自建 `save_skill` 工具 |
 
-技能定义示例（Anthropic 格式）：
+引擎通过注入一个 `skill_filter` **可调用体**来获取当前会话的技能目录（`manager.py:467`），使 Settings 禁用与新建技能对**在线会话立即生效**。完整的加载、CRUD、上传、静音、启用优先级与代码索引详见：
 
-```json
-{
-  "name": "code_review",
-  "description": "执行代码审查并给出结构化反馈",
-  "instructions": "读取代码差异，检查安全性、性能、可维护性...",
-  "tools": ["file_read", "grep_search"]
-}
-```
+> **→ [技能（Skills）系统深度分析](./skills-system.md)**
 
 ---
 
@@ -243,7 +237,7 @@ Catalog 是所有"vetted capability"（经过审查的能力）的注册中心�
 
 ### 6.1 SessionManager
 
-**文件:** `coworker/server/manager.py`（~3769 行）
+**文件:** `coworker/server/manager.py`（~4086 行）
 
 SessionManager 是 OpenWorker 中最大的模块，负责：
 
@@ -302,6 +296,7 @@ build_engine()
 | 记忆作用域 | GLOBAL + WORKSPACE | `memory/base.py` |
 | 技能来源 | 全局 + 工作区 | `skills/base.py` |
 | MCP 传输 | stdio + streamable HTTP | `mcp/client.py` |
+| 上下文压缩触发 | `min(0.8×window, 250k)` | `compaction.py` |
 
 ---
 
@@ -328,7 +323,8 @@ build_engine()
 | 工具目录 | `coworker/catalog.py` |
 | 记忆存储 | `coworker/memory/sqlite_store.py` |
 | 记忆工具 | `coworker/memory/tools.py` |
-| 技能基类 | `coworker/skills/base.py` |
+| 技能加载器（渐进式暴露） | `coworker/skills/base.py` |
+| 技能管理（CRUD/上传/静音） | `coworker/skills/store.py` |
 | 角色清单 | `coworker/personas/manifest.py` |
 | 角色注册表 | `coworker/personas/registry.py` |
 | 角色加载 | `coworker/personas/loading.py` |

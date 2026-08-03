@@ -275,7 +275,28 @@ MCP 工具的权限可以细粒度控制：
 
 ---
 
-## 8. 多会话隔离
+## 8. Web 取址防 SSRF（URL 守卫）
+
+**文件:** `coworker/web/guard.py`
+
+`web_fetch` 和 `browser_read_url` 直接使用模型挑选的 URL，而模型的输入被视为**不可信**（它读网页、邮件和 Slack 消息，这些都是"数据而非指令"）。恶意页面可能诱骗 agent 去抓 `http://169.254.169.254/` 或 `http://127.0.0.1:11434/`，把只读调研工具变成对本机网络位置的探针——且 `web_fetch` 是 `requires_approval=False`，不会有审批弹窗出现。
+
+**防护策略：**
+
+| 机制 | 实现 | 位置 |
+|------|------|------|
+| **范围阻断** | 拒绝 loopback、RFC1918/私有空间、link-local（含云元数据端点 `169.254.169.254`）、保留/组播段，以及 **CGNAT**（`100.64.0.0/10`）——Python 的 `is_private` 漏掉它，而 Tailscale 会把内网主机分在这个段 | `guard.py:37` |
+| **逐跳校验** | **每次重定向都检查地址**，`get_checked` 手动遍历最多 5 跳重定向——否则公开 URL 302 到 loopback 是绕过此过滤器的标准方式 | `guard.py:97` |
+| **全 A 记录检查** | 多个地址中**任一**落进被阻范围即拒绝——防止"双 A 记录"名同时有公网和私网记录时被钻空子 | `guard.py:53` |
+| **IPv4-mapped 还原** | `::ffff:127.0.0.1` 按其所承载的 v4 地址判属 | `guard.py:71` |
+
+`browser_automation.py` 的 `open_url` 复用同一 `check_url`（`browser_automation.py:340`），针对模型提供 URL 做防御纵深（此路径有审批门控，故只是第二道防线，且不逐跳校验浏览器内部重定向）。
+
+**未覆盖**：DNS rebinding——token 在守卫处与客户端连接时各解析一次，`~0` TTL 记录可能在两次之间变化；彻底封掉需连接级 IP 钉扎，逐跳校验是廉价且常用的 90% 方案。
+
+---
+
+## 9. 多会话隔离
 
 SessionManager 确保安全边界：
 
@@ -288,7 +309,7 @@ SessionManager 确保安全边界：
 
 ---
 
-## 9. 代码索引
+## 10. 代码索引
 
 | 想了解什么 | 看哪个文件 |
 |-----------|-----------|
@@ -298,6 +319,8 @@ SessionManager 确保安全边界：
 | 工作区信任 | `coworker/workspace_trust.py` |
 | 密钥管理 | `coworker/secrets.py` |
 | 审计日志 | `coworker/audit.py` |
+| URL 守卫（防 SSRF） | `coworker/web/guard.py` |
+| 浏览器自动化守卫 | `coworker/connectors/browser_automation.py` |
 | 无人值守模式 | `coworker/unattended.py` |
 | 自唤醒安全 | `coworker/selfwake.py` |
 | 交互记录 | `coworker/interactions.py` |

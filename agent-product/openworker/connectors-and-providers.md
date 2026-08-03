@@ -80,10 +80,25 @@ class ProviderClient(ABC):
 | `vertex/` 或 `vertex_` | Vertex AI |
 | `bedrock/` | AWS Bedrock |
 | `ollama/` | Ollama（本地） |
+| `together:*` | Together（转售商，模型命名空间原样保留） |
+| `fireworks:*` | Fireworks（转售商） |
+| `kimi:*` / `meta:*` / `zai:*` / `deepseek:*` 等 | 直连 OpenAI 兼容厂商 |
 
 支持运行时动态切换 provider——在对话中更换 model 字符串即可切换底层 LLM。
 
-### 1.4 Capabilities & Matrix
+### 1.4 转售商与直连兼容厂商
+
+除 OpenAI/Anthropic/Gemini/Vertex/Bedrock 五路原生 Provider 外，能力矩阵（`providers/matrix.py`）还收录了通过**转售商**和**直连 OpenAI 兼容面**接入的模型：
+
+| 接路 | 示例模型 | 说明 |
+|------|---------|------|
+| **Together 转售** | `together:moonshotai/Kimi-K3`、`together:zai-org/GLM-5.2`、`together:deepseek-ai/DeepSeek-V4-Pro` | 模型命名空间原样保留 |
+| **Fireworks 转售** | `fireworks:accounts/fireworks/models/kimi-k2p6`、`.../glm-5p2` | 同上 |
+| **直连兼容** | `kimi:kimi-k2.6`、`deepseek:deepseek-v4-pro`、`zai:glm-5.2`、`meta:muse-spark-1.1` | 走 OpenAI-compat 接口 |
+
+**Kimi K3 via Together**（2026 年 7 月下旬落地，`matrix.py:117`）：1M 上下文窗口 + 原生 vision + tools/流式/并行工具调用。PDF 在 compat 面上未验证，经 `pdf_support.py` 回退（同 Muse Spark）。大窗口模型配合 cap 提前压缩的 compaction 策略（见 [Compaction](./compaction.md)）。
+
+### 1.5 Capabilities & Matrix
 
 **文件:** `providers/capabilities.py`, `providers/matrix.py`
 
@@ -333,7 +348,8 @@ send_message(target: str, content: str, attachments: list = None)
 | 日历连接器 | Google Calendar, Outlook |
 | 邮箱连接器 | Gmail, Outlook Mail |
 | MCP 传输方式 | stdio, streamable HTTP |
-| Provider 数量 | 5 |
+| 原生 Provider 数量 | 5（OpenAI/Anthropic/Gemini/Vertex/Bedrock） |
+| 转售商 / 直连厂商 | Together / Fireworks + 多家 compat 厂商 |
 
 ---
 
@@ -347,6 +363,7 @@ send_message(target: str, content: str, attachments: list = None)
 | Gemini Provider | `coworker/providers/gemini_provider.py` |
 | Vertex AI Provider | `coworker/providers/vertex_provider.py` |
 | Bedrock Provider | `coworker/providers/bedrock_provider.py` |
+| OpenAI Responses Provider | `coworker/providers/openai_responses.py` |
 | Provider 路由器 | `coworker/providers/router.py` |
 | Provider 注册表 | `coworker/providers/registry.py` |
 | 能力矩阵 | `coworker/providers/matrix.py` |

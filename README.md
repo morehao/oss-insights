@@ -187,6 +187,7 @@ graph TB
 | [Multica](agent-product/multica/) | Go+TS | 托管式 AI Agent 协作平台，Agent 作为第一公民的任务管理系统 | Apache-2.0 | [GitHub](https://github.com/multica-ai/multica) |
 | [OpenBee](agent-product/openbee/) | Go+TS | 自托管 24/7 数字员工管理平台，对话驱动，多 IM 平台集成 | MIT | [GitHub](https://github.com/theopenbee/openbee) |
 | [Mem0](agent-product/mem0/) | Python+TS | AI Agent 智能记忆层，70+ Provider 插件体系，V3 多信号检索，双模式部署 + MCP 集成 | Apache-2.0 | [GitHub](https://github.com/mem0ai/mem0) |
+| [DeepWiki-Open](agent-product/deepwiki-open/) | Python+TS | 开源代码仓库 Wiki 自动生成平台，Next.js+FastAPI+AdalFlow 编排，9 种 LLM Provider，RAG+Deep Research+Codemap 引用落点 | MIT | [GitHub](https://github.com/AsyncFuncAI/deepwiki-open) |
 
 ### [即时通讯 (IM)](IM/)
 

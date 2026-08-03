@@ -672,6 +672,38 @@ type Backend interface {
 
 > 完整的 18 种 provider 协议分类、resume-rejection 白名单、隔离策略对比，见 **[`18-runtimes-compare.md`](18-runtimes-compare.md)**。
 
+### 多模态与附件处理
+
+一个关键事实：**Multica 没有自有的视觉/多模态管线**（无 OCR、无 image caption、无 vision model）。它的"多模态支持"是**附件驱动的、由具体编码 CLI 自行消费**的方式——Multica 负责"传递文件"，真正的看图能力取决于 agent 配置了哪一个 CLI（Claude Code / Codex / Kimi 等是否原生支持读取图片）。
+
+**输入侧（把图给 agent 看）：**
+
+```
+用户在 Issue / 评论 / 聊天里贴图（attachment）
+   → agent 任务携带 attachment IDs
+   → 提示词引导 agent 执行 `multica attachment download <id>`
+   → 文件落到该次运行的私有 workdir
+   → 编码 CLI 原生读取本地图片文件，用自己的多模态能力看图
+```
+
+关键设计（`daemon/prompt.go:469-485`）：**故意不内联附件 URL**——URL 可能过期，且该文件只存在于运行 agent 的机器上。改为列出附件 ID + 文件名，让 agent 经 `multica attachment download <id>` 按需拉取（可重新签名）。
+
+**输出侧（agent 回传图/文件）：**
+
+`daemon/prompt.go:495`：agent 想交付一张图或文件时执行 `multica attachment upload <local-path>`，绑定到回复里，前端渲染为附件卡片（文件）或内联图（图片）。
+
+**附件下载的鉴权设计：**
+
+`handler/attachment_capability.go`（MUL-5292）：浏览器/Electron 原生下载不携带 Authorization header，故 `GetAttachmentByID` 铸一枚**短时签名能力**（单附件绑定 + 60s TTL + 与 JWT secret 域分离的 HMAC），供公开下载路由一次性兑换——成员校验在铸签时完成、兑签时不再校验（签名即凭证）。
+
+**附件进入 workdir 的私有语义：**
+
+`runtime_config_sections.go:601-607`（MUL-4899）：下载到 workdir 的附件是「私有工作副本」——agent 被明确告知不能把它当链接回传进交付物，因为读者机器上没有这个路径。
+
+**唯一的"原生多模态相关"代码是健壮性处理：**
+
+`pkg/agent/kiro.go:513-539`：恢复的会话历史里若含超大图片（`image.source.base64.data` 维度超 8000px），provider 会拒绝整个会话——Multica 据此把这次 resume 判定为拒绝，用全新会话重试。这是"历史图片导致 resume 失败"的处理，而非图片内容理解。
+
 ---
 
 ## 第四部分：部署与配置

@@ -1,6 +1,10 @@
 # Multica — 托管式 AI Agent 协作平台解读
 
 > **GitHub:** [https://github.com/multica/multica](https://github.com/multica/multica)
+>
+> **文档维护说明**：本文档 2026-08-03 全面更新。配套文档：
+> - [`18-runtimes-compare.md`](18-runtimes-compare.md) — 18 种 Agent 运行时深度对比
+> - [`memory.md`](memory.md) — 多 Provider 隔离与记忆架构
 
 ## 第一部分：快速概览
 
@@ -37,11 +41,14 @@ Multica（**Mul**tiplexed **I**nformation and **C**omputing **A**gent）是一�
 | **Autopilot 自动飞行** | 定时（Cron）、Webhook 或手动触发自动化工作流 |
 | **Skill 技能库** | 可复用的 workflow，每次解决问题的方案可以沉淀为 Skill |
 | **实时 WebSocket** | 任务进展、Agent 状态、聊天消息的实时推送 |
-| **多运行时** | Agent 可以在本地（用户机器）或云端通过 Daemon 运行 |
+| **多运行时（18 种）** | Claude Code、Codex、Copilot、OpenCode、Grok、Qwen 等 18 个 CLI，经统一 `pkg/agent.Backend` 抽象执行 |
+| **multica CLI** | Cobra 构建的全功能命令行工具（issue/agent/autopilot/daemon/runtime 管理），GoReleaser 发布 |
+| **自托管** | Docker Compose / Helm / `multica setup self-host` 一键部署 |
 | **多平台前端** | Web（Next.js）、Desktop（Electron）、Mobile（React Native） |
 | **多语言界面** | 英文、简体中文、韩文、日文 |
 | **GitHub 集成** | GitHub App Webhook 接收 Issue/PR 事件 |
 | **飞书集成** | Lark Open Platform 集成，IM 消息收发、Bot Agent 路由 |
+| **VCS / Slack / Composio** | 自托管 VCS（Forgejo/GitLab）、Slack、Composio、GHSnapshot 集成 |
 
 ### 技术栈一览
 
@@ -53,6 +60,7 @@ Multica（**Mul**tiplexed **I**nformation and **C**omputing **A**gent）是一�
 | **数据库** | PostgreSQL 17 + pgvector |
 | **缓存 / 实时中继** | Redis（可选，多节点部署） |
 | **数据层生成** | sqlc |
+| **CLI 框架** | Cobra + GoReleaser（发布 `multica` 二进制，支持 Homebrew/Scoop/安装脚本） |
 | **前端框架** | Next.js 16 (App Router) + React 19 |
 | **桌面端** | Electron + electron-vite + react-router-dom |
 | **移动端** | Expo / React Native |
@@ -61,6 +69,7 @@ Multica（**Mul**tiplexed **I**nformation and **C**omputing **A**gent）是一�
 | **服务端状态** | TanStack React Query |
 | **客户端状态** | Zustand |
 | **类型验证** | zod |
+| **端到端测试** | Playwright |
 
 ---
 
@@ -121,14 +130,15 @@ Multica（**Mul**tiplexed **I**nformation and **C**omputing **A**gent）是一�
              │  │   - 矢量存储             │   │   - 缓存 / 限流   │   │
              │  └─────────────────────────┘   └───────────────────┘   │
              └────────────────────────────────────────────────────────┘
-                                        │ WebSocket
+                                         │ WebSocket
              ┌──────────────────────────▼─────────────────────────────┐
              │                 Agent Execution Layer                  │
              │                                                        │
-             │         Agent Daemon (runs on user machine)            │
-             │              ├── Claude Code CLI                       │
-             │              ├── Codex CLI                             │
-             │              └── (Future: cloud runtime)               │
+             │   multica Daemon (single binary, re-exec child)        │
+             │   └── pkg/agent.Backend 统一抽象（18 个 provider）      │
+             │       ├── Claude Code │ Codex │ Copilot │ OpenCode     │
+             │       ├── Kimi │ Kiro │ Qoder │ Trae │ Grok │ Qwen     │
+             │       └── daemon/execenv 负责每 provider 隔离          │
              └────────────────────────────────────────────────────────┘
 ```
 
@@ -138,31 +148,50 @@ Multica（**Mul**tiplexed **I**nformation and **C**omputing **A**gent）是一�
 multica/
 ├── server/                      # Go 后端
 │   ├── cmd/
-│   │   ├── server/              # API Server 入口
-│   │   ├── multica/             # CLI 工具
-│   │   └── migrate/             # 数据库迁移运行器
+│   │   ├── server/              # API Server 入口（main.go + router.go）
+│   │   ├── multica/             # multica CLI（Cobra，~58 文件）
+│   │   ├── migrate/             # 数据库迁移运行器
+│   │   └── backfill_*/          # 用量回溯工具
 │   ├── internal/
-│   │   ├── handler/             # HTTP 处理器
+│   │   ├── handler/             # HTTP 处理器（~310 个路由）
 │   │   ├── service/             # 业务逻辑服务
+│   │   ├── daemon/              # Agent 运行时 + execenv 隔离（最大模块）
+│   │   │   └── execenv/         # 运行时上下文注入 + 多 provider 隔离（57 文件）
 │   │   ├── realtime/            # 浏览器 WebSocket Hub
 │   │   ├── daemonws/            # Daemon WebSocket Hub
 │   │   ├── events/              # 进程内事件总线
 │   │   ├── middleware/          # 中间件链
 │   │   ├── auth/                # 认证（JWT/PAT/DaemonToken）
 │   │   ├── scheduler/           # 调度器
-│   │   ├── integrations/        # Lark / GitHub 集成
+│   │   ├── cli/                 # CLI HTTP 客户端 + 错误翻译
+│   │   ├── integrations/        # Lark / GitHub / Slack / VCS / Composio
+│   │   ├── selfexec/            # 单二进制 re-exec（守护进程复用）
+│   │   ├── dispatch/            # 任务分发
+│   │   ├── featureflags/        # 特性开关
+│   │   ├── analytics/ metrics/ storage/ logger/
+│   │   ├── issueguard/ issueposition/ attribution/ ...
 │   │   └── ...
-│   ├── pkg/db/                  # sqlc 生成代码
-│   └── migrations/              # ~120 个 SQL 迁移
+│   ├── pkg/
+│   │   ├── agent/               # 18 种 Agent 运行时后端（统一 Backend 抽象）
+│   │   ├── llm/                 # LLM 层（快捷动作服务端生成）
+│   │   ├── protocol/ redact/ skillbundle/ taskfailure/ ...
+│   │   └── db/                  # sqlc 生成代码
+│   └── migrations/              # ~291 个 SQL 迁移
 ├── apps/
 │   ├── web/                     # Next.js 前端
 │   ├── desktop/                 # Electron 桌面端
-│   └── mobile/                  # React Native 移动端
-└── packages/
-    ├── core/                    # 无头业务逻辑（Zustand/ReactQuery/API）
-    ├── views/                   # 共享业务组件
-    ├── ui/                      # 原子 UI 组件
-    └── tsconfig/                # TypeScript 共享配置
+│   ├── mobile/                  # React Native 移动端
+│   └── docs/                    # Next.js 文档站点
+├── packages/
+│   ├── core/                    # 无头业务逻辑（Zustand/ReactQuery/API）
+│   ├── views/                   # 共享业务组件
+│   ├── ui/                      # 原子 UI 组件
+│   ├── eslint-config/           # 共享 ESLint 配置
+│   └── tsconfig/                # TypeScript 共享配置
+├── e2e/                         # Playwright 端到端测试
+├── deploy/helm/                 # Kubernetes Helm chart
+├── docker/                      # 自托管 Docker 打包
+└── docs/                        # 内部文档（feature-flags、design 等）
 ```
 
 ### 启动流程
@@ -184,7 +213,7 @@ Server 启动（server/cmd/server/main.go）
   │
   ├── 6. 创建服务层（TaskService / IssueService / AutopilotService / EmailService）
   │
-  ├── 7. 构建 Chi 路由（~1150 行路由注册）
+  ├── 7. 构建 Chi 路由（~310 个 route verbs，92 个 handler 文件）
   │      ├── 公共路由：/health /ws /auth/*
   │      ├── Daemon API：/api/daemon/*
   │      ├── 用户路由：/api/me /api/workspaces /api/invitations
@@ -200,6 +229,32 @@ Server 启动（server/cmd/server/main.go）
   │
   └── 9. 启动 HTTP Server，等待 SIGINT/SIGTERM
 ```
+
+### Daemon 启动单二进制架构（新增）
+
+Daemon **不是一个独立编译的二进制**——它是同一个 `multica` 二进制以 `daemon start --foreground` 参数重新执行（re-exec）为子进程：
+
+```
+multica daemon start（后台模式）
+  │
+  ├── 1. 检查健康端口（per-profile，默认 19514）确认未在运行
+  ├── 2. requireDaemonAuth — 校验已 `multica login`
+  ├── 3. selfexec.Resolve 解析当前二进制路径
+  ├── 4. 构造子进程参数：daemon start --foreground [+ 转发的 flag/env]
+  ├── 5. 后台 spawn 子进程（Windows 走 Job Object breakaway，防父 shell 退出连带）
+  ├── 6. 写 daemon.pid，轮询健康端口直到 status=running（45s 窗口）
+  │
+  └── daemon start --foreground（子进程）
+        ├── 日志：stderr 是终端 → 彩色终端；否则 → 旋转式 daemon.log（lumberjack）
+        ├── daemon.LoadConfig（flag > env > config.json > 默认 四级优先级）
+        ├── daemon.New(cfg) → d.Run(ctx)
+        └── 自更新后 spawn 继任者（更新后的二进制再次 re-exec 交接）
+```
+
+关键点：
+- `selfexec.Resolve`（`server/internal/selfexec/`）解析要 spawn 的二进制；测试通过覆盖该变量避免 fork 测试进程（`cmd_daemon.go:280`）
+- Windows 用**健康端口 HTTP `/shutdown`**而非 OS 信号做优雅关闭（DETACHED_PROCESS 无共享 console，`cmd_daemon.go:1005-1016`）
+- 多 profile 隔离在 `~/.multica/profiles/<name>/`，每个有独立健康端口
 
 ### 核心请求链路
 
@@ -252,6 +307,12 @@ sequenceDiagram
 | **Middleware** | `middleware/` | 鉴权、工作空间解析、限流 |
 | **Auth** | `auth/` | 多模式认证（JWT / PAT / Daemon Token） |
 | **Scheduler** | `scheduler/` | DB 租赁式定时任务调度 |
+| **Agent Backend** | `pkg/agent/` | 18 种 CLI 的统一执行抽象（Backend/Session/Message） |
+| **Daemon / 隔离** | `daemon/` + `daemon/execenv/` | 任务执行、工作目录、多 provider 隔离（sandbox/home/记忆） |
+| **CLI 客户端** | `cli/` | CLI 的 HTTP 客户端、错误翻译、profile 管理 |
+| **Integrations** | `integrations/` | Lark / GitHub / Slack / VCS / Composio |
+| **Self-exec** | `selfexec/` | 单二进制 re-exec（守护进程复用） |
+| **Dispatch / FF** | `dispatch/` `featureflags/` | 任务分发、特性开关 |
 
 ---
 
@@ -380,6 +441,36 @@ CREATE TABLE comment (
 - **任务队列**：`agent_task_queue` 作为 Issue 和 Agent 之间的调度层，支持排队、分发、运行、完成的全生命周期管理
 - **审计日志**：`activity_log` 记录所有操作，支持按工作空间和 Issue 追溯
 - **JSONB 元数据**：`issue.metadata`、`workspace.settings` 等字段使用 JSONB 存储，保持核心表稳定同时支持扩展
+
+**自定义运行时（runtime_profile，migration 120 新增）：**
+
+为了支持多 provider（18 种 CLI）带来的运行时管理需求，新增了 `runtime_profile` 表（`server/migrations/120_runtime_profile.up.sql`）：
+
+```sql
+CREATE TABLE runtime_profile (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL,
+    display_name TEXT NOT NULL,
+    -- protocol_family 与 server/pkg/agent/agent.go 的 Backend switch 保持 lockstep
+    protocol_family TEXT NOT NULL CHECK (protocol_family IN (
+        'claude','codebuddy','codex','copilot','opencode','openclaw',
+        'hermes','gemini','pi','cursor','kimi','kiro','antigravity'
+    )),
+    command_name TEXT NOT NULL,
+    -- fixed_args：该运行时下所有 agent 必须继承的固定参数
+    fixed_args JSONB NOT NULL DEFAULT '[]',
+    ...
+    UNIQUE (workspace_id, display_name)
+);
+```
+
+关键点：
+
+- **编译期白名单 + 数据库 CHECK 双保险**：`protocol_family` 必须与 `pkg/agent.New()` 支持的运行时一致——新增运行时 = 加 backend + 白名单 + migration 扩展 CHECK
+- **`fixed_args` 与 `agent.custom_args` 分离**：profile 固定参数（进入兼容模式必需）与单个 agent 特有参数（`custom_args`）分开管理（`120_runtime_profile.up.sql:27-29`）
+- **不加外键**：遵循仓库铁律，`runtime_profile` 与 `agent_runtime` 的关联（`profile_id` 列）在主表层级显式维护
+
+> 注意：CHECK 约束里包含 `gemini`，但 `pkg/agent` 的 18 个 `SupportedTypes` 中暂无 `gemini` 后端——`gemini` 是数据库约束中预留但尚未正式实现的运行时。
 
 ### 双 WebSocket 架构
 
@@ -561,6 +652,26 @@ const issue = parseWithFallback(issueSchema, response.data, defaultIssue);
 - **枚举值降级**：遇到未知枚举值走 `default` 分支
 - **API 字段增删**不会导致前端崩溃，只丢失对应功能
 
+### 统一 Agent Backend 抽象（18 种运行时）
+
+Multica 通过 `server/pkg/agent/` 的统一接口抽象所有 Agent CLI。这是从「仅供 Claude Code + Codex」到「18 种运行时」最核心的架构演进：
+
+```go
+// server/pkg/agent/agent.go: 统一执行接口
+type Backend interface {
+    Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error)
+}
+```
+
+- **`Session`**：`Messages` 通道流式输出，`Result` 通道返回最终结果，归一化所有 CLI 的事件
+- **`ExecOptions`**：跨运行时通用参数（超时、看门狗、resume、MCP 配置、thinking level、service tier）
+- **`New()` 工厂**（`agent.go:297`）：18 分支 switch，每个 provider 独立实现
+- **`SupportedTypes` 白名单**（`agent.go:237`）：与 migration 120 的 `protocol_family` CHECK 约束 lockstep
+
+三种启动协议：**ACP**（kimi/kiro/hermes/qoder/copilot/traecli/grok/openclaw）、**Stream-JSON**（claude/codebuddy/cursor/opencode/qwen/pi）、**原生专用**（codex app-server/antigravity/deveco)。
+
+> 完整的 18 种 provider 协议分类、resume-rejection 白名单、隔离策略对比，见 **[`18-runtimes-compare.md`](18-runtimes-compare.md)**。
+
 ---
 
 ## 第四部分：部署与配置
@@ -574,6 +685,7 @@ const issue = parseWithFallback(issueSchema, response.data, defaultIssue);
 | Go | 1.26+ | 后端编译 |
 | Node.js | 20+ | 前端构建 |
 | pnpm | 最新 | 包管理 |
+| Docker | 最新 | 自托管部署（含 Compose） |
 
 ### 快速启动
 
@@ -599,6 +711,35 @@ cd apps/web && pnpm dev
 | `STORAGE_BACKEND` | 文件存储后端（S3 / 本地） |
 | `GITHUB_APP_ID` | GitHub App 集成配置 |
 | `LARK_APP_ID` | 飞书集成配置 |
+| `RESEND_API_KEY` | 自托管登录的邮箱验证码后端（可选，不设则读后端日志中的验证码） |
+
+### 自托管部署（新增）
+
+Multica 从 8 月开始提供完整的自托管能力，两种路径：
+
+**方案 A：一键脚本（推荐）**
+
+```bash
+# 1. 安装 CLI + 拉取自托管资产 + GHCR 镜像，配置 localhost
+curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server
+
+# 2. 配置 CLI、认证、启动 daemon
+multica setup self-host
+```
+
+**方案 B：Docker Compose / Helm**
+
+```bash
+git clone https://github.com/multica-ai/multica.git && cd multica
+make selfhost        # 自动生成 .env + JWT_SECRET，Compose 拉起全部服务
+# 或 make selfhost-build  # 用本地 checkout 构建镜像
+```
+
+组件：Go 后端（单二进制）+ Next.js 前端 + PostgreSQL 17 + pgvector，各用户在自己机器上装 `multica` CLI 跑 agent daemon（`SELF_HOSTING.md`）。
+
+- **Helm 部署**：`deploy/helm/multica/`（Kubernetes）
+- **登录方式**：配置 `RESEND_API_KEY` 走邮箱验证码；否则验证码打印在后端日志
+- **`multica setup self-host`**：默认连 `localhost:8080`（后端）/ `localhost:3000`（前端），可用 `--server-url` / `--app-url` 指定 on-premise 部署
 
 ---
 
@@ -610,14 +751,14 @@ cd apps/web && pnpm dev
 |------|---------|-------|------|--------|
 | **定位** | Agent 协作任务平台 | 企业级 AI 工作平台 | LLM 应用开发平台 | Agent 编排框架 |
 | **核心抽象** | Issue + Agent + Squad | Project + Session + Worker | 工作流 + 知识库 | Agent + Task + Crew |
-| **交付形态** | 自托管 SaaS | 自托管（Server + Worker） | 自托管 SaaS | Python 库 |
-| **Agent 类型** | Claude Code / Codex CLI | Eino / Claude / Codex | 自定义 Agent | 自定义 Agent |
+| **交付形态** | 自托管 SaaS + multica CLI | 自托管（Server + Worker） | 自托管 SaaS | Python 库 |
+| **Agent 类型** | 18 种 CLI（Claude/Codex/Kimi/Qwen...） | Eino / Claude / Codex | 自定义 Agent | 自定义 Agent |
 | **任务管理** | 完整 Issue 系统（看板 + 状态 + 优先级） | Session + Task | 对话 / 工作流 | 无 |
 | **团队协作** | ✅ 多成员 + Agent 协同 | ✅ 多成员 + Agent 协同 | ✅ 多成员 | ❌ 单用户 |
 | **实时推送** | WebSocket（双 Hub 架构） | WebSocket（基于 NATS） | WebSocket | ❌ 无 |
 | **定时任务** | Autopilot（Cron / Webhook / 手动） | 无 | 工作流触发 | 无 |
 | **技能沉淀** | Skill 系统 | Skill 系统 | 插件 / 工具 | 工具 |
-| **前端** | Next.js + Electron + RN | Next.js + Electron | React | 无 |
+| **前端** | Next.js + Electron + RN + Docs | Next.js + Electron | React | 无 |
 | **消息队列** | 进程内事件总线 | NATS JetStream | Redis / Celery | 无 |
 | **Go 后端** | Chi + sqlc + pgx | Gin + GORM | Python（Flask） | Python |
 | **认证方式** | 邮箱验证码 / Google OAuth | GitHub OAuth / JWT | 邮箱 / OAuth | 无 |
@@ -626,9 +767,9 @@ cd apps/web && pnpm dev
 
 | 维度 | Multica | Leros |
 |------|---------|-------|
-| **Server-Worker 分离** | 否（单进程 + 外部 Daemon） | 是（Server / Worker 独立进程，NATS 通信） |
+| **Server-Worker 分离** | 否（单进程 + 单二进制 daemon re-exec） | 是（Server / Worker 独立进程，NATS 通信） |
 | **Daemon 协议** | WebSocket（独立 Hub） | WebSocket（Worker 注册） |
-| **Agent 执行** | 外部 CLI（Claude Code / Codex） | 内置 Eino + 外部 CLI |
+| **Agent 执行** | 18 种外部 CLI（统一 `pkg/agent.Backend` 抽象 + `execenv` 隔离） | 内置 Eino + 外部 CLI |
 | **实时中继** | Redis（可选） | NATS（必需） |
 | **数据库** | PostgreSQL + pgvector | SQLite / PG / MySQL / ClickHouse |
 | **多节点** | Redis 中继（sharded streams） | NATS 原生支持 |
@@ -641,9 +782,9 @@ cd apps/web && pnpm dev
 
 1. **任务模型差异**：Multica 以 Issue 为核心，Agent 是 Issue 的 assignee——这是"Agent 作为第一公民"的具体体现。Leros 以 Session 为核心，消息是基本工作单元。两种模型反映了不同的使用场景：Issue 模型适合工程团队的任务跟踪，Session 模型适合持续对话的 AI 工作空间。
 
-2. **架构复杂度**：Leros 采用四平面架构 + NATS 消息队列，Server 和 Worker 分离，天然支持分布式部署。Multica 采用单进程 + 外部 Daemon，架构更简洁，适合中小团队快速部署，但多节点扩容需要 Redis 中继。
+2. **架构复杂度**：Leros 采用四平面架构 + NATS 消息队列，Server 和 Worker 分离，天然支持分布式部署。Multica 采用单进程后端 + 单二进制 daemon（`selfexec` re-exec），架构简洁，但多节点扩容需要 Redis 中继。
 
-3. **Agent 运行时**：Leros 内置了基于 CloudWeGo Eino 的原生 Agent 运行时（不依赖外部 CLI），Multica 依赖外部 CLI（Claude Code / Codex）。这反映了不同的设计哲学：Leros 追求"一站式"，Multica 追求"与现有工具链集成"。
+3. **Agent 运行时**：Leros 内置了基于 CloudWeGo Eino 的原生 Agent 运行时（不依赖外部 CLI），Multica 支持 18 种外部 CLI（Claude Code、Codex、Kimi、Qwen 等），经统一的 `pkg/agent.Backend` 抽象。这反映了不同的设计哲学：Leros 追求"一站式"，Multica 追求"与现有工具链最大化兼容"。
 
 4. **Skill 系统**：两者的 Skill 系统都支持将解决方案沉淀为可复用组件，但 Multica 的 Skill 以文件 + frontmatter 形式管理，支持从本地源导入；Leros 的 Skill 与 MCP 协议集成更深。
 
@@ -665,10 +806,23 @@ cd apps/web && pnpm dev
 
 6. **事件总线作为协调中枢**：使用进程内发布/订阅替代消息队列，在单节点部署场景下减少了运维复杂度，同时保持了模块间的解耦。事件类型系统（携带 `WorkspaceID`、`Actor`、`TaskID`）让 Handler 可以精确过滤感兴趣的事件。
 
+7. **统一 Agent Backend 抽象**：用 `Backend` 接口 + `SupportedTypes` 白名单 + 编译期锁步 CHECK 约束，把「从 2 个到 18 个运行时」的扩展变成了可枚举、可测试、增量迁移的规范化流程——每个新 provider = backend 文件 + 白名单 + migration 扩展，是「为未来增长而设计」的优秀范例。
+
+8. **多 Provider 隔离框架**：把「隔离」从单一 Codex 专用策略推广为逐 provider 适配的通用框架（context 文件目标、技能目录、home 隔离、sandbox 粒度各自独立），在最大化工具链兼容（18 个 CLI）的同时保证运行时保真。见 [`memory.md`](memory.md)。
+
 ### 潜在改进空间
 
-- **Server-Worker 分离**：当前架构中后端和 Agent Daemon 是紧耦合的（通过 WebSocket 直连），如果未来需要支持云端 Agent 运行时，可能需要类似 Leros 的 Server/Worker 分离方案
-- **测试覆盖率**：从项目结构看，后端缺乏独立的测试目录（相比 Leros 有 `backend/tests/`），前端测试策略也未显式声明
+- **Server-Worker 分离**：当前架构中后端和 Agent Daemon 通过 WebSocket 直连（语义上仍绑定），如果未来需要支持云端 Agent 运行时，可能需要类似 Leros 的 Server/Worker 分离方案（`cloudruntime/` 包已出现，说明该方向在探索中）
+- **运行时多样化带来的维护面**：18 个 provider 每个都需要独立的 backend + 隔离策略 + migration，新增/升级 CLI 的适配成本较高；`resume-rejection undetectable` 白名单也依赖人工维护
+
+### 测试与质量
+
+Multica 当前的测试覆盖已相当完善（这是相对早期分析的重要更新）：
+
+- **Go 后端**：544 个 `*_test.go`，约 216K 行测试代码
+- 默认测试**绝不解析或执行用户安装的 Agent CLI**——子进程代码必须传 fake/missing 可执行路径；真实 agent 冒烟测试走 `agentintegration` build tag + `MULTICA_RUN_REAL_AGENT_SMOKE=1` 门控
+- **端到端测试**：Playwright（`e2e/*.spec.ts`），chromium 无头、单 worker、要求先运行 servers、用 `TestApiClient` 做 setup/teardown
+- **前端单测**：Vitest（`packages/*.test.ts(x)`）
 
 ### 项目信息
 

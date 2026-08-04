@@ -138,6 +138,12 @@ graph TB
 |------|------|------|------|------|
 | [OpenMeter](billing/openmeter/) | Go | AI 和 DevTool 公司的使用量计量和计费平台，实时计量 + 产品目录 + 订阅管理 + 发票生成 | Apache-2.0 | [GitHub](https://github.com/openmeterio/openmeter) |
 
+### [后台管理 (Admin)](admin/)
+
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [GoAdmin](admin/go-admin/) | Go | 面向 Go 生态的数据管理后台生成框架，声明式 table model + 15 种 Web 框架适配器 + 开箱即用 RBAC | Apache-2.0 | [GitHub](https://github.com/GoAdminGroup/go-admin) |
+
 ### [API 网关](gateway/)
 
 | 项目 | 语言 | 说明 | 协议 | 仓库 |

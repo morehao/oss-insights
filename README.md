@@ -144,6 +144,7 @@ graph TB
 |------|------|------|------|------|
 | [GoAdmin](admin/go-admin/) | Go | 面向 Go 生态的数据管理后台生成框架，声明式 table model + 15 种 Web 框架适配器 + 开箱即用 RBAC | Apache-2.0 | [GitHub](https://github.com/GoAdminGroup/go-admin) |
 | [easy-workflow](admin/easy-workflow/) | Go | 面向中国式审批场景的轻量工作流引擎：混合网关 + 会签/自由驳回 + 反射事件 + MySQL 双表归档，可内嵌库或独立 REST | MIT | [GitHub](https://github.com/Bunny3th/easy-workflow) |
+| [zero-admin](admin/zero-admin/) | Go | 基于 go-zero 的电商微服务系统：2 网关 + 8 rpc + consumer/job + goctl 代码生成，前台商城（订单/支付）+ 后台管理（RBAC），ES 搜索 + MQ 异步 | Apache-2.0 | [GitHub](https://github.com/feihua/zero-admin) |
 
 ### [API 网关](gateway/)
 
@@ -189,7 +190,7 @@ graph TB
 
 | 项目 | 语言 | 说明 | 协议 | 仓库 |
 |------|------|------|------|------|
-| [Leros](agent-product/leros/) | Go | 企业级 AI 工作协作平台，四平面架构，支持多 Agent 运行时 | Apache-2.0 | [GitHub](https://github.com/insmtx/Lework) |
+| [Lework](agent-product/Lework/) | Go+TS+Electron | 企业级 AI 工作协作平台（AI 劳动力管理），双进程事件驱动，多 Agent 运行时，Task+Asset 模型，Skill/Tool + MCP/插件，企业级权限/审计 | Apache-2.0 | [GitHub](https://github.com/insmtx/Lework) |
 | [OpenWorker](agent-product/openworker/) | Python+TS+Rust | 开源 AI 同事桌面平台，本地 sidecar 架构，审批门控 Agent 循环，连接器 + MCP + 技能系统 + 上下文压缩 | MIT | [GitHub](https://github.com/andrewyng/openworker) |
 | [Multica](agent-product/multica/) | Go+TS | 托管式 AI Agent 协作平台，Agent 作为第一公民的任务管理系统 | Apache-2.0 | [GitHub](https://github.com/multica-ai/multica) |
 | [OpenBee](agent-product/openbee/) | Go+TS | 自托管 24/7 数字员工管理平台，对话驱动，多 IM 平台集成 | MIT | [GitHub](https://github.com/theopenbee/openbee) |

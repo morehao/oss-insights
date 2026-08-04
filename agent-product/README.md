@@ -15,3 +15,4 @@
 | [DeepWiki-Open](deepwiki-open/) | Python+TS | 开源代码仓库 Wiki 自动生成平台，Next.js+FastAPI+AdalFlow，9 种 LLM Provider，RAG+Deep Research+Codemap 引用落点 | MIT | [GitHub](https://github.com/AsyncFuncAI/deepwiki-open) |
 | [Mem0](mem0/) | Python+TS | AI Agent 智能记忆层，70+ Provider 插件体系，V3 多信号检索，双模式部署 + MCP 集成 | Apache-2.0 | [GitHub](https://github.com/mem0ai/mem0) |
 | [Memos](memos/) | Go+TS | 自托管笔记应用，微博式时间线，Proto 驱动 API，双重协议（Connect RPC + gRPC-Gateway），三数据库支持，SSE 实时推送，Go+React 工程实践范本 | MIT | [GitHub](https://github.com/usememos/memos) |
+| [OpenWork](openwork/) | TS + Electron | 开源 AI 工作流分享桌面应用，Claude Cowork/Codex 开源替代；代理运行时+单一 baseUrl 透明代理，Den 企业控制平面，Drizzle+MySQL 约 80 表，MCP 两工具契约（search/execute），多云 Helm 部署 + 证据卷轴 evals | Fair Source（主体）/ ee 目录 Fair Source | [GitHub](https://github.com/different-ai/openwork) |

@@ -143,6 +143,7 @@ graph TB
 | 项目 | 语言 | 说明 | 协议 | 仓库 |
 |------|------|------|------|------|
 | [GoAdmin](admin/go-admin/) | Go | 面向 Go 生态的数据管理后台生成框架，声明式 table model + 15 种 Web 框架适配器 + 开箱即用 RBAC | Apache-2.0 | [GitHub](https://github.com/GoAdminGroup/go-admin) |
+| [easy-workflow](admin/easy-workflow/) | Go | 面向中国式审批场景的轻量工作流引擎：混合网关 + 会签/自由驳回 + 反射事件 + MySQL 双表归档，可内嵌库或独立 REST | MIT | [GitHub](https://github.com/Bunny3th/easy-workflow) |
 
 ### [API 网关](gateway/)
 
@@ -194,6 +195,7 @@ graph TB
 | [OpenBee](agent-product/openbee/) | Go+TS | 自托管 24/7 数字员工管理平台，对话驱动，多 IM 平台集成 | MIT | [GitHub](https://github.com/theopenbee/openbee) |
 | [Mem0](agent-product/mem0/) | Python+TS | AI Agent 智能记忆层，70+ Provider 插件体系，V3 多信号检索，双模式部署 + MCP 集成 | Apache-2.0 | [GitHub](https://github.com/mem0ai/mem0) |
 | [DeepWiki-Open](agent-product/deepwiki-open/) | Python+TS | 开源代码仓库 Wiki 自动生成平台，Next.js+FastAPI+AdalFlow 编排，9 种 LLM Provider，RAG+Deep Research+Codemap 引用落点 | MIT | [GitHub](https://github.com/AsyncFuncAI/deepwiki-open) |
+| [OpenWork](agent-product/openwork/) | TS+Electron | 开源 AI 工作流分享桌面应用，Claude Cowork/Codex 开源替代；代理运行时 + 单一 baseUrl 透明代理，Den 企业控制平面，Drizzle+MySQL 约 80 表，MCP 两工具契约，多云 Helm 部署 + 证据卷轴 evals | Fair Source | [GitHub](https://github.com/different-ai/openwork) |
 
 ### [即时通讯 (IM)](IM/)
 

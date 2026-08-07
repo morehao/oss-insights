@@ -10,24 +10,29 @@ PermissionEngine 是 OpenWorker 安全体系的核心——它不是简单的"�
 
 **文件:** `coworker/risk.py`
 
-每个工具调用在执行前都被分配到以下风险等级之一：
+每个工具调用在执行前都被分配到一个**风险类别（RiskClass）**，它是"内在副作用类别"，驱动权限门控（以及后续无人值守的 Inbox 路由）：
 
-| 等级 | 枚举值 | 示例工具 | 默认行为 |
-|------|--------|---------|---------|
-| **读** | `RiskLevel.READ` | 文件读、搜索、网页抓取 | 自动允许 |
-| **写** | `RiskLevel.WRITE` | 文件写、Git 操作 | 需要审批 |
-| **Shell** | `RiskLevel.SHELL` | Shell 命令执行 | 需要审批 |
-| **发送** | `RiskLevel.SEND` | Slack 消息发送 | 需要审批 |
-| **MCP** | `RiskLevel.MCP_*` | MCP 工具调用 | 按工具配置 |
+| 类别 | 枚举值 | 含义 | 判定方式 |
+|------|--------|------|---------|
+| **读** | `RiskClass.READ` | 无副作用，永远放行 | 纯读工具 |
+| **写本地** | `RiskClass.WRITE_LOCAL` | 改动工作区——路径作用域 + 模式门控 | 名单 `WRITE_TOOLS` |
+| **执行** | `RiskClass.EXEC` | 运行命令——模式门控 | 名单 `SHELL_TOOL="run_shell"` |
+| **外部** | `RiskClass.EXTERNAL` | 机器外的副作用——无人值守 Inbox 钩子 | aisuite metadata `requires_approval`→外部 |
 
 ```python
-@dataclass(frozen=True)
-class RiskLevel(Enum):
-    READ = "read"         # 无风险，自动允许
-    WRITE = "write"       # 需要审批
-    SHELL = "shell"       # 需要审批
-    SEND = "send"         # 需要审批
+class RiskClass(str, Enum):
+    READ = "read"  # no side effects — always allowed
+    WRITE_LOCAL = "write_local"  # mutates the workspace — path-scoped + mode-gated
+    EXEC = "exec"  # runs commands — mode-gated
+    EXTERNAL = "external"  # side effects off the machine — the unattended Inbox hook
+
+WRITE_TOOLS = {"write_file", "replace_in_file", "apply_patch", "apply_unified_diff"}
+SHELL_TOOL = "run_shell"
 ```
+
+`classify()`（`risk.py:39-53`）是**单一判定入口**：优先级为 `用户 override → 名单基础表（_BASE）→ aisuite requires_approval→EXTERNAL → 兜底 READ`。`is_consequential()`（`risk.py:56-58`）定义"非纯读即需要权限引擎注意"。**判据不是文档旧版的 SEND 等级**——连接器和 MCP 工具主要通过 EXTERNAL（外部副作用）被归类，而不是单独的"SEND"等级。【`coworker/risk.py:18-58`】
+
+> **演进说明(源码 HEAD 01b6f83)**：早期文档用 `RiskLevel(READ/WRITE/SHELL/SEND)` 四级枚举，与真实源码不符——真实是 `RiskClass(READ/WRITE_LOCAL/EXEC/EXTERNAL)` + 工具名单，风险从"硬编码名集合"改为"工具声明的属性，`classify` 统一读取"。发送类操作归入 EXTERNAL 语义。
 
 ### 1.2 权限模式
 
@@ -56,67 +61,71 @@ class RiskLevel(Enum):
 
 ### 1.3 审批决策树
 
+真实决策全在 `PermissionEngine.evaluate()`（`permissions.py:120-178`），按固定顺序短路。注意名字是 `evaluate` 而非旧文档的 `decision`，模式枚举是 `Mode.DISCUSS/PLAN/INTERACTIVE/AUTO/CUSTOM`：
+
 ```
 工具调用请求
     │
     ▼
-┌──────────────────────┐
-│  PermissionEngine     │
-│  decision(outcome)    │
-└──────────┬───────────┘
-           │
-    检查当前权限模式
+PermissionEngine.evaluate(tool_name, arguments, metadata)
+    │  classify() → risk (用户override > 名单 > requires_approval > READ)
     │
-    ├─ Auto → 直接 ALLOW
+    ├─ 模式为 read-only (DISCUSS/PLAN) 且 consequential → [拒] "<mode> is read-only"
     │
-    ├─ Discuss → 拒绝写/SHELL/SEND 操作
+    ├─ 写工具且 path 不在可写 root（_under_writable_root）→ [拒] "path is not writable"
     │
-    ├─ Plan → 读 ALLOW，写拒绝（只能通过 propose_plan）
+    ├─ 非 consequential（纯 READ）→ [放行] "low risk"
     │
-    ├─ Interactive (默认)
-    │    │
-    │    ├─ RiskLevel.READ → ALLOW
-    │    ├─ RiskLevel.WRITE → 检查 Override
-    │    ├─ RiskLevel.SHELL → 检查 Override
-    │    └─ RiskLevel.SEND → 检查 Override
+    ├─ Auto 模式 → [放行] "full access"
     │
-    └─ Custom → 按配置规则
-           │
-           ▼
-    ┌──────────────────┐
-    │  检查 Override    │
-    │  (风险覆盖)        │
-    └────────┬─────────┘
-             │
-    ├─ 配置了自动允许 → ALLOW
-    ├─ 配置了拒绝     → DENY
-    └─ 未配置         → NEEDS_USER (发出审批事件)
+    ├─ Interactive/Custom
+    │    ├─ shell: 命令匹配 _command_allowed / session_allow_commands → [放行]
+    │    ├─ 工具在 session_allow_tools（非 connector）→ [放行] "tool allowed for session"
+    │    └─ task standing rule 精确 target → [放行] "allowed by standing rule: tool→target"
+    │
+    ├─ Custom 且工具在 auto_allow_tools → [放行] "auto-allowed by config"
+    │
+    └─ 其他 → [需用户] Decision(needs_user=True)
 ```
+
+**路径作用域**：写工具的 `path` 参数会经 `_under_writable_root` 校验（`permissions.py:204-214`），必须落在声明为可写的 root 内——即使是 Auto 模式之前也先做此检查。
+
+**shell 白名单防注入**：`_command_allowed`（`permissions.py:216-238`）先拒绝含 shell 操作符（`; & | > < \` $( (`，见 `_has_shell_operators`）的命令，再用 `shlex.split` 做 **argv 前缀精确匹配**（`git status` 匹配 `git status -s`，但绝不匹配 `git statusfoo` 或 `git status && rm -rf ~`）。
 
 ### 1.4 审批流程
 
-当需要用户审批时，引擎：
+当 `evaluate` 返回 `needs_user=True` 时，引擎走审批流。审批结果类型是 `ApprovalOutcome`（`engine.py:30-34`），不是简单的 allow/deny：
 
-1. **发出审批事件**：`approval.requested`，包含操作详情（工具名、参数、风险等级）
-2. **等待响应**：`approver` 协程挂起当前 turn
-3. **Surface 展示**：GUI/TUI 显示审批面板（操作内容、风险说明、建议）
-4. **用户决策**：
-   - **允许本次**：仅放行当前操作
-   - **拒绝本次**：拒绝并通知引擎
-   - **总是允许此类操作**：创建 Override 规则
-5. **决策回传**：引擎恢复执行
+```python
+class ApprovalOutcome(str, Enum):
+    ONCE = "once"             # 仅放行本次
+    ALWAYS_TOOL = "always_tool"      # 会话内放行此工具
+    ALWAYS_COMMAND = "always_command"  # 会话内放行此命令（仅 shell）
+    DENY = "deny"             # 拒绝
+```
+
+流程（`_authorize`，`engine.py:673-780`）：
+
+1. `permissions.evaluate()` 判定；需要用户时**先发出 `PERMISSION_REQUIRED` 事件**（含工具名、参数、reason、category、standing_target），再审计记录（`engine.py:697-716`）
+2. `await self._interruptible(self.approver(PermissionRequest(...)))` 挂起当前 turn 等用户（`engine.py:717-728`）
+3. 用户决策：
+   - **ONCE**：仅放行当前调用，不记状态
+   - **ALWAYS_TOOL**：调 `permissions.allow_tool_for_session(tool_name)`，写入会话 allowlist，本会话内后续该工具直接放行（`engine.py:742-743`）
+   - **ALWAYS_COMMAND**：调 `allow_command_for_session(command)`，仅对 shell 有效，本会话内该命令放行（`engine.py:744-747`）
+   - **DENY**：拒绝，发 `TOOL_FINISHED: denied`（`engine.py:729-740`）
+4. 决策回传，引擎恢复执行；未知工具在 `_authorize` 末尾被拒绝并追加 tool-error 消息（`engine.py:757-767`）
 
 ```
-引擎 → UI: approval.requested {
-    tool: "file_write",
-    params: {path: "/project/main.py"},
-    risk: "write"
-}
-UI → 用户: 弹窗 "AI 想要写入文件 /project/main.py，允许吗？"
-用户 → UI: 选择 "允许本次"
-UI → 引擎: approval.resolved {decision: "allow"}
+引擎 → 表面: PERMISSION_REQUIRED {
+    name: "run_shell", arguments: {command: "git status --porcelain"},
+    reason: "requires approval", category: "", standing_target: null }
+用户: 选择处理（本次 / 此工具总允许 / 此命令总允许 / 拒绝）
+用户 → 引擎: ApprovalOutcome.ALWAYS_COMMAND
+引擎: allow_command_for_session("git status --porcelain")  # 本会话白名单
 引擎 → 继续执行
 ```
+
+> **审批结果持久化**：`ALWAYS_TOOL`/`ALWAYS_COMMAND` 产生的会话 allowlist 会被 `manager.py` 的 `_grants_of` 序列化保存（会话重建后恢复）；非 `ONCE` 的结果都落审计（`approval` 字段记录 outcome 值）。
 
 ---
 
@@ -124,38 +133,40 @@ UI → 引擎: approval.resolved {decision: "allow"}
 
 **文件:** `coworker/overrides.py`
 
-Overrides 是权限引擎的扩展点，允许用户对特定操作预设规则：
+`RiskOverrideStore` 是用户的本地风险覆盖库——核心用途是**放宽 MCP 的保守默认**：每个 MCP 工具默认 `external`，信任某 server 的用户可把其只读工具标成 `read` 以停止门控。规则按工具名 glob 匹配，最具体者胜（`overrides.py:77-85`）。
 
-### 2.1 Override 类型
+### 2.1 覆盖机制
 
-| 类型 | 说明 | 示例 |
+规则是一个 `pattern` + 一个 `RiskClass` 的映射（`overrides.py:23-27`）。`resolve` 遍历规则，用 `fnmatchcase` 匹配工具名，按 `_specificity`（字面非通配字符数，精确匹配 +1000，`overrides.py:29-33`）取最具体者：
+
+| 概念 | 说明 | 示例 |
 |------|------|------|
-| **工具级** | 对特定工具设置默认行为 | "自动允许 file_read" |
-| **路径级** | 对特定文件路径设置 | "拒绝写入 /etc/passwd" |
-| **模式级** | 按风险模式设置 | "允许所有 READ" |
-| **时间级** | 按时间窗口设置 | "工作时间内允许 Shell" |
+| **pattern** | 工具名的 glob（可用 `* ? []` 通配） | `"mcp__notion__*"` |
+| **risk** | 覆盖后的 RiskClass | `read` / `external` / `exec` |
+| **最具体胜出** | literal 字符越多越具体；精确匹配压过一切 glob | `mcp__notion__create_page` 精确规则 > `mcp__notion__*` |
 
-### 2.2 Override 优先级
-
+```python
+def resolve(self, tool_name: str) -> Optional[RiskClass]:
+    best: Optional[RiskClass] = None
+    best_score = -1
+    for r in self._rules:
+        if fnmatchcase(tool_name, r.pattern):
+            score = _specificity(r.pattern)
+            if score > best_score:
+                best, best_score = r.risk, score
+    return best
 ```
-1. 路径级 Deny (最高优先级)
-2. 路径级 Allow
-3. 工具级 Deny
-4. 工具级 Allow
-5. 模式级 Deny
-6. 模式级 Allow
-7. 权限模式默认行为 (最低优先级)
-```
 
-### 2.3 隐式 Override
+> **Evolution 说明(源码 HEAD 01b6f83)**：旧文档的"工具级/路径级/模式级/时间级"四类 Override 与真实实现不符——真实 `overrides.py` 只做**按工具名 glob 覆盖风险类别**，且**铁律是用户本地专属、persona/package 永不写它**（`overrides.py:7-9`）。路径级写文件防护由 `evaluate` 内的 `_under_writable_root` 承担（见 1.3），命令级白名单由 `_command_allowed`/会话 allowlist 承担，都不在这层。
 
-用户每次的审批决策都会记录，当用户连续多次"允许本次"同类型操作后，系统会建议创建 Override 规则：
+### 2.3 隐式授权：会话 allowlist 与 standing rule
 
-```
-用户连续 3 次允许 file_read on /project/
-→ 引擎建议: "检测到您多次允许此操作，是否设为自动允许？"
-→ 用户确认 → 创建 Override {tool: "file_read", path: "/project/", action: "allow"}
-```
+"记住并放行"这类隐式授权在真实源码里有**两种**机制，都不走 `overrides.py`：
+
+- **会话 allowlist（审批"总是允许"）**：用户审批时选 `ALWAYS_TOOL` / `ALWAYS_COMMAND`，调用 `allow_tool_for_session` / `allow_command_for_session`（`permissions.py:181-186`）写入本会话的 `session_allow_tools` / `session_allow_commands`，供后续 `_command_allowed` / 工具 allowlist 检索（见 1.4）。生命周期到会话结束。
+- **任务级 standing rule**：由自动化任务持有，规则绑定"工具 + 精确 target"（`standing_rule_candidate`，`permissions.py:62-80`），`evaluate` 里命中即自动放行并审计具体规则（`permissions.py:165-171`）——精确 target 绑定使自动化放行连接器工具也安全。**绝不用于 exec 风险**，且只从 external 风险工具提取候选。
+
+> **演进说明(源码 HEAD 01b6f83)**：旧文档"连续多次允许后系统建议建 Override"的描述与实际不符——真实是审批 UI 直接以 `ApprovalOutcome` 三态（本次/此工具/此命令）反馈，无"自动检测连续放行并提示"的逻辑。
 
 ---
 
@@ -201,23 +212,21 @@ Overrides 是权限引擎的扩展点，允许用户对特定操作预设规则�
 
 **文件:** `coworker/audit.py`
 
-所有 AI 操作记录审计日志：
+所有 AI 操作写入本地 SQLite `AuditStore`，真实 schema 是 `audit_events` 表（`audit.py:33-48`）：
 
-```python
-@dataclass
-class AuditEntry:
-    timestamp: datetime
-    session_id: str
-    agent_type: str
-    tool_name: str
-    tool_params: dict       # 脱敏后的参数
-    risk_level: RiskLevel
-    decision: str           # allow / deny / user_approval
-    user_id: str | None
-    result: str             # success / failed / denied
-```
+| 字段 | 说明 |
+|------|------|
+| `timestamp` | 默认 `CURRENT_TIMESTAMP` |
+| `session_id` / `agent` / `workspace` | 归属信息 |
+| `connector` / `tool` | 操作主体（connector 由 `connector_for_tool` 反查） |
+| `stage` | proposed / started / approval_requested / approval_resolved / finished / auto_allowed / interrupted |
+| `status` / `approval` | 结果状态 + `ApprovalOutcome` 值 |
+| `args` | **脱敏后的参数**（JSON，见下） |
+| `result_preview` / `reason` / `resource` | 结果摘要 / 原因 / 定位资源（url/repo/issue_key 等） |
 
-审计日志存储在 `state_dir/audit/`，支持导出和分析。
+**脱敏（`_sanitize_args`，`audit.py:123-137`）**：含 `token/secret/password/api_key/access_token/bot_token/app_token/raw` 等键名 → `[redacted]`；`body/content/html` → `[redacted body]`；其余递归截断（列表取前 10、dict 取前 20 键、文本 500 字符）。`resource` 从 url/owner/repo/issue_key/page_id 等参数提取（`audit.py:152-169`）。`list()` 支持按 `session_id/connector/tool` 过滤、`id DESC` 排序。
+
+> **演进说明(源码 HEAD 01b6f83)**：旧文档的 `AuditEntry` dataclass 字段（`risk_level`/`decision`/`user_id`）与真实实现不符——真实是 `audit_events` SQLite 表，列为上表，无 `risk_level`，改用 `stage`/`status`/`approval` 描述决策过程，脱敏规则也更强（键名与 body 双重防御）。审计与记忆、会话、自动化共同构成 OpenWorker 的持久化层，见 [`data-model.md`](./data-model.md)。
 
 ---
 

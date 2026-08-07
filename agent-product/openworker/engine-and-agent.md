@@ -56,23 +56,34 @@ TurnEngine 是 OpenWorker 的心脏——一个异步 agent 循环引擎，负�
 
 | 特性 | 实现方式 |
 |------|---------|
-| **并发读/顺序写** | 低风险工具并行执行（asyncio.gather）；写/Shell 串行排队 |
-| **阻塞隔离** | Provider/Tool 阻塞调用通过 `asyncio.to_thread` 包装 |
-| **审批注入** | 审批器以异步 `approver` 协程注入，等待用户响应 |
-| **迭代控制** | `max_iter` 配置上限，防止无限循环 |
+| **并行边界（`_parallel_safe`）** | 仅当工具的 metadata 标注 `risk_level=="low"` **且** 非 `requires_approval` 才并发（`engine.py:664-671`）；写/Shell/未标注工具严格按调用顺序串行 |
+| **先授权后执行** | `_handle_tool_calls` 先**串行**授权所有调用（审批是交互式的），通过后才分组执行（`engine.py:587-589`） |
+| **阻塞隔离** | 工具经 `asyncio.to_thread(self._execute_sync, tc)` 在线程池执行（`engine.py:637/648`）；provider 流经 `_astream` 桥接（见下） |
+| **审批注入** | 审批器是注入的 `approver` 协程，`_authorize` 里 `await self._interruptible(self.approver(...))` 挂起当前 turn（`engine.py:717-728`） |
+| **迭代控制** | `max_iterations` 默认 **12**（`engine.py:86`），超限发 `TURN_END: max_iterations_exceeded` 终止（`engine.py:317-322`） |
+| **可中断等待** | `_interruptible` 把 await 与自毁事件 `_cancel` 用 `asyncio.wait` 竞争，实现任意状态可停（含 kill 运行中命令的中断钩子，`engine.py:143-157`） |
 | **事件流** | 每次 LLM 输出和工具结果通过 Event 通道推送至 surface |
 
-### 1.2 context_provider
+### 1.2 context_provider 的真实机制
 
-在每次 LLM 调用前动态构建上下文，包含：
+`context_provider` 不是独立注入一个消息，而是一个**返回纯字符串的可调用体**，其输出在 `_outbound_messages` 末尾被拼成一个临时 `<system-context>` 块，追加到**最后一则 user 消息**（`engine.py:1117-1122`）。关键约束：
 
-- **System Prompt**：从 Agent Persona 获取
-- **Conversation History**：当前会话消息
-- **Tool Definitions**：当前权限模式下可用的工具（PermissionEngine 过滤）
-- **Memory Injunctions**：持久记忆中的相关条目
-- **Skills**：当前任务相关的技能定义
-- **Environment Context**：工作区路径、Shell 环境变量等
-- **Override Hints**：用户设置的风险覆盖策略
+- 若返回空串则不加块（`engine.py:1120-1121`）
+- 块是 ephemeral 的——**从不写入 `self.messages`**，因此不持久化、不进 transcript、下次调用前重算（`engine.py:1032-1033`）
+- 在装配时（`coworker/agent.py`）该可调用体每 turn 重组：计划/讨论模式的提示、工作区根目录（roots）、技能目录、以及工具禁用反制
+
+```python
+context = (
+    self.context_provider() if self.context_provider is not None else ""
+) or ""
+if not context:
+    return out
+block = f"\n\n<system-context>\n{context}\n</system-context>"
+```
+
+即主体上下文（persona 提示词、随消息历史的工具结果、记忆块）不是靠这个 provider，而是由 `agent.py` 组装进 system prompt；`context_provider` 只负责兜底追加一段每次调用都应重新对齐的"环境动态信息"。【`coworker/engine.py:1117-1122`】
+
+> **演进说明(源码 HEAD 01b6f83)**：早期文档把 context_provider 描述为"动态构建包含 persona/history/tools 的完整上下文对象"，与真实实现不符——它只是尾追加一段字符串的钩子。
 
 ---
 
@@ -177,8 +188,10 @@ class ToolDef:
     description: str       # 描述
     parameters: dict       # JSON Schema 参数定义
     handler: Callable      # 执行函数
-    risk_level: RiskLevel  # 风险等级（read/write/shell/send）
+    metadata              # 含 risk_level("low")、requires_approval、category 等
 ```
+
+> **风险标注**：工具的并行性由 metadata 的 `risk_level=="low"` 且 `requires_approval=False` 决定（`_parallel_safe`）；工具的内在副作用类别由 `risk.py` 的 `classify()`（`RiskClass`）判定（见 [`permission-and-safety.md`](./permission-and-safety.md)）。文档旧版的 `RiskLevel(READ/WRITE/SHELL/SEND)` 已是历史，真实分 `RiskClass(READ/WRITE_LOCAL/EXEC/EXTERNAL)`。
 
 ### 3.3 工具目录 (Catalog)
 
@@ -278,11 +291,11 @@ build_engine()
 
 | 场景 | 策略 | 实现 |
 |------|------|------|
-| 多工具并行（读/搜索） | 并发执行 | `asyncio.gather(*low_risk_tools)` |
-| 单轮多工具（写/Shell） | 顺序执行 | 按调用顺序逐个 await |
-| LLM 阻塞调用 | 线程池隔离 | `asyncio.to_thread` 包装同步调用 |
+| 多工具并行（低风险） | 并发执行 | `asyncio.gather(*[asyncio.to_thread(...)])`，仅 `_parallel_safe`（low 且非 requires_approval）的调用（`engine.py:636-638`） |
+| 单轮多工具（写/Shell） | 顺序执行 | 按调用顺序逐个 `await asyncio.to_thread(...)`（`engine.py:642-649`） |
+| LLM 阻塞调用 | 线程池隔离 | `_astream` 用线程 producer + `loop.call_soon_threadsafe` 把阻塞流生成器桥接为异步队列（`engine.py:535-582`）；工具经 `to_thread` |
 | 多会话 | 事件循环共享 | 每个 Session 有独立的 engine，共享 event loop |
-| 审批等待 | 异步挂起 | `approver` 协程等待用户事件 |
+| 审批等待 | 异步挂起 + 可中断 | `approver` 协程经 `_interruptible` 与 `_cancel` 竞争，等待用户事件（`engine.py:717-728`） |
 
 ---
 
@@ -290,7 +303,7 @@ build_engine()
 
 | 参数 | 默认值 | 位置 |
 |------|--------|------|
-| Agent 循环 max_iter | 可配置（通常 20-50） | `engine.py` |
+| Agent 循环 max_iter | 默认 12 | `engine.py`（`max_iterations`，L86） |
 | 工具并发上限 | 读工具并发，写工具串行 | `engine.py` |
 | Session 超时 | 可配置 | `manager.py` |
 | 记忆作用域 | GLOBAL + WORKSPACE | `memory/base.py` |

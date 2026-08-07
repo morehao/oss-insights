@@ -9,31 +9,34 @@ OpenWorker 桌面应用是**三进程拓扑**：Tauri 壳（Rust 主进程）托
 ```mermaid
 graph TB
     subgraph "进程 1：Tauri 桌面壳 (Rust)"
-        TC[ocw-stt 语音<br/>in-process 库]
+        TC["ocw-stt 语音 STT 库"]
     end
 
     subgraph "进程 2：Python openworker-server (sidecar)"
-        M[SessionManager]
-        E[TurnEngine / Subagent 引擎]
-        A[Automation Scheduler]
-        C[Connectors / Gateway]
-        MC[MCP Client]
+        M["SessionManager"]
+        E["TurnEngine / Subagent"]
+        A["Automation Scheduler"]
+        C["Connectors / Gateway"]
+        MC["MCP Client"]
     end
 
     subgraph "进程外子进程"
-        SH[持久 OS Shell /bin/bash · powershell]
-        BG[后台任务 (独立脱离进程)]
-        MCP[自定义 MCP stdio server]
+        SH["持久 OS Shell /bin/bash"]
+        BG["后台任务 (离主进程)"]
+        MCP["自定义 MCP stdio server"]
     end
 
-    TC -->|原生窗口 / 托盘| W[React GUI]
-    W -->|HTTP/WS + launch token| M
+    TC --> W["React GUI"]
+    W --> M
     M --> E
+    M --> A
     E --> SH
     E --> BG
     MC --> MCP
     M --> C
 ```
+
+**图外补叙**：`TC→W` 是原生窗口/托盘；`W→M` 是通过 localhost 端口 + per-launch token 的通信（见 §2）。
 
 **关键点**：GUI 不直接调用后端 API 细节，而是通过选定的 localhost 端口 + per-launch token 通信（见 §2）。右侧进程外部分只有三种：Shell 子进程、后台任务进程、自定义 MCP stdio 服务器。
 
@@ -204,7 +207,7 @@ OpenWorker 的隔离模型是"**权限门控 + 作用域边界**"，而非系统
 
 | 边界 | 手段 | 文件 |
 |------|------|------|
-| **操作级** | `PermissionEngine` 按 RiskLevel 门控（读/写/Shell/发送），高风险需审批 | `permissions.py`, `risk.py` |
+| **操作级** | `PermissionEngine` 按 `RiskClass` 门控（read/write_local/exec/external），纯读放行、其余审批；写工具路径须在可写 root 内 | `permissions.py`, `risk.py` |
 | **文件系统级** | `roots` 限定会话可触碰的目录 | `roots.py:1` |
 | **命令级** | `workspace_trust`：repo 提供的命令允许需用户信任该 workspace 根路径 | `workspace_trust.py:1` |
 | **网络级** | URL 守卫阻断 SSRF（loopback/CGNAT/逐跳校验） | `web/guard.py` |

@@ -2,7 +2,7 @@
 
 > **GitHub:** [github.com/anomalyco/opencode](https://github.com/anomalyco/opencode)
 >
-> **关联文档:** [系统架构深读](./architecture.md) · [LLM 四轴路由系统](./llm-route-system.md) · [Session V2 持久化编排](./session-system.md)
+> **关联文档:** [系统架构深读](./architecture.md) · [LLM 四轴路由系统](./llm-route-system.md) · [Session V2 持久化编排](./session-system.md) · [自定义供应商与模型配置指南](./provider-config-guide.md)
 
 ---
 
@@ -259,4 +259,4 @@ Prompt Admission (durable inbox) → Wake (异步调度) → Drain (串行执行
 
 ---
 
-> **关联文档:** [系统架构深读](./architecture.md) · [LLM 四轴路由系统](./llm-route-system.md) · [Session V2 持久化编排](./session-system.md)
+> **关联文档:** [系统架构深读](./architecture.md) · [LLM 四轴路由系统](./llm-route-system.md) · [Session V2 持久化编排](./session-system.md) · [自定义供应商与模型配置指南](./provider-config-guide.md)

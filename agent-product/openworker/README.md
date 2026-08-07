@@ -4,7 +4,7 @@
 >
 > **作者:** Andrew Ng（吴恩达）团队
 >
-> **关联文档:** [核心引擎与 Agent 体系](./engine-and-agent.md) · [技能（Skills）系统](./skills-system.md) · [上下文自动压缩（Compaction）](./compaction.md) · [连接器与 LLM 提供商体系](./connectors-and-providers.md) · [权限与安全模型](./permission-and-safety.md)
+> **关联文档:** [核心引擎与 Agent 体系](./engine-and-agent.md) · [技能（Skills）系统](./skills-system.md) · [上下文自动压缩（Compaction）](./compaction.md) · [连接器与 LLM 提供商体系](./connectors-and-providers.md) · [权限与安全模型](./permission-and-safety.md) · [进程与隔离模型](./process-and-isolation.md) · [多模态策略](./multimodal.md) · [数据模型](./data-model.md)
 
 ---
 
@@ -241,4 +241,15 @@ tests/                     ← 测试（84+ 文件）
 
 ---
 
-> **关联文档:** [核心引擎与 Agent 体系](./engine-and-agent.md) · [技能（Skills）系统](./skills-system.md) · [上下文自动压缩（Compaction）](./compaction.md) · [连接器与 LLM 提供商体系](./connectors-and-providers.md) · [权限与安全模型](./permission-and-safety.md)
+## 八、子文档索引
+
+- [`engine-and-agent.md`](engine-and-agent.md) — 核心引擎 TurnEngine 的 Agent 循环、并发模型与 context_provider 机制
+- [`permission-and-safety.md`](permission-and-safety.md) — 权限引擎（RiskClass）、审批流（ApprovalOutcome）、防 SSRF 与安全模型
+- [`skills-system.md`](skills-system.md) — 技能（Skills）的加载、CRUD、上传与启用体系
+- [`compaction.md`](compaction.md) — 上下文自动压缩（LLM 摘要 + 机械提取）
+- [`connectors-and-providers.md`](connectors-and-providers.md) — 25+ 连接器 Adapter 体系与 LLM Provider 路由
+- [`process-and-isolation.md`](process-and-isolation.md) — 进程拓扑与隔离模型（权限门控而非沙箱）
+- [`multimodal.md`](multimodal.md) — 多模态读图/PDF 的能力驱动适配策略
+- [`data-model.md`](data-model.md) — 持久化层数据模型（SQLite 索引 + JSON/JSONL/文件夹）
+
+> **关联文档:** [核心引擎与 Agent 体系](./engine-and-agent.md) · [技能（Skills）系统](./skills-system.md) · [上下文自动压缩（Compaction）](./compaction.md) · [连接器与 LLM 提供商体系](./connectors-and-providers.md) · [权限与安全模型](./permission-and-safety.md) · [进程与隔离模型](./process-and-isolation.md) · [多模态策略](./multimodal.md) · [数据模型](./data-model.md)

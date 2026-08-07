@@ -1,262 +1,196 @@
-# tutti 项目深度洞察报告
+# Tutti：多智能体实时共享协作空间
 
-> 分析时间: 2026-07-09
-> 项目: [tutti](https://github.com/anomalyco/tutti) — "Where people and agents build in tune."
+> 本解读按 **agent 类型规格** 产出。
+> 项目：tutti — **Where people and agents build in tune.**
+> 仓库：https://github.com/anomalyco/tutti （Apache-2.0）
 
----
+## 根因
 
-## 1. 项目概览
+Claude Code 很强、Codex 很强、Canvas 很强——但一旦真实工作流需要依赖关系和交接，**最忙的人反而是你自己**：Claude 写完 API，你要把上下文复制粘贴给 Codex 让它接前端；接了代理文档、出图、传文件给下一个 agent 再解释一遍需求。
 
-tutti 是一个**本地优先（local-first）的桌面端多智能体协作平台**。核心理念是让多个 AI 智能体（Claude Code、Codex、OpenClaw、Hermes 等）在同一实时共享工作空间中协作，无需手动复制粘贴上下文。提供应用中心、任务编排、实时共享 workspace 等功能。
+tutti 要解决的根本问题是：**把用户从"多 AI agent 之间的信使"角色中解放出来**。它提供的是多个 agent 共享、实时、可见、连接的 workspace——上下文、文件、正在跑的任务、应用都能流动，让不同厂商的 agent 像共享一个大脑一样接力，而不是靠总结与复制粘贴交接。
 
-### 关键数据
+> Tutti 不是你的编码 agent 的替代品，它是给你的 agent 们用的**实时共享工作空间**。
 
-| 维度 | 数值 |
-|---|---|
-| 技术栈 | TypeScript (前端) + Go (后端守护进程) |
-| 包管理器 | pnpm 10.11.0 + Go workspace |
-| 总源文件数 | ~2,700+ |
-| 总代码行数 | ~300,000+ |
-| API 端点 | 112 个 (OpenAPI 3.0.3) |
-| Monorepo 包数 | 27 个 npm 包 + 多个 Go 包 |
-| 测试/生产代码比 | ~52% (Go), ~37% (TS) |
+## 概览
 
----
+| 维度 | 描述 |
+|------|------|
+| 核心能力 | Real-time shared workspace / Big @（跨 agent 引用会话、文件、任务）/ "+" 引用 / 任务编排 / 应用生态（Agent 与人都能用）/ 多 provider agent 通协 |
+| 形态 | 本地优先（local-first）桌面应用：Electron 壳层 + Go 守护进程（tuttid） |
+| 生态 | 自带 App Center（image/UI/design/docs/presentation），Agent Extension 接第三方 ACP agent，Connector 接外部 CLI/MCP 能力 |
+| 适用人群 | 同时用多个 AI agent、被跨 agent 上下文搬运折磨的开发与创作者 |
 
-## 2. 架构亮点
+## 技术栈一览
 
-### 2.1 严格的分层架构
+| 层 | 技术 |
+|----|------|
+| 前端壳层 | Electron / React / Vite，contextBridge 隔离 |
+| 后端业务核心 | Go（tuttid 守护进程，标准库为主，零 ORM/DI 框架） |
+| 存储 | SQLite（modernc.org/sqlite 纯 Go）+ 本地文件系统，WAL + busy_timeout |
+| 前端状态包 | pnpm workspace monorepo，依赖关系 DAG 无环 |
+| 协议 | loopback HTTP/1.1 + WebSocket 业务事件流 + ACP（agent）/ MCP（connector） |
+| 移动端 | React Native（apps/mobile，Android/iOS），device-link 对接 |
 
-```
-┌────────────────────────────────────────────────────────────┐
-│                     apps/desktop (Electron)                 │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  ┌───────┐  │
-│  │ main/    │  │ preload/ │  │ renderer/    │  │shared/│  │
-│  │ (Node.js)│  │(桥接层)  │  │ (React UI)   │  │(契约) │  │
-│  └──────────┘  └──────────┘  └──────────────┘  └───────┘  │
-└──────────────────────┬─────────────────────────────────────┘
-                       │ HTTP/WS (127.0.0.1:4545)
-┌──────────────────────▼─────────────────────────────────────┐
-│                  services/tuttid (Go 守护进程)               │
-│  ┌─────────┐  ┌──────────┐  ┌─────────┐  ┌────────────┐  │
-│  │ api/    │→ │ service/ │→ │ biz/    │→ │ data/      │  │
-│  │(传输层) │  │(用例编排)│  │(领域模型)│  │(持久化)    │  │
-│  └─────────┘  └──────────┘  └─────────┘  └────────────┘  │
-│                    ↕ 事件发布/订阅                           │
-│              ┌────────────────────────┐                    │
-│              │  eventstream/ (消息总线)│                    │
-│              └────────────────────────┘                    │
-└────────────────────────────────────────────────────────────┘
-```
+## 规模指标（参考）
 
-核心原则：
-- **守护进程是唯一业务核心**，Electron 壳层禁止包含业务逻辑
-- **不创建模糊包**：禁止 `shared`、`common`、`utils`、`client-sdk` 等无责任边界的包名
-- **ORMs / DI 框架零依赖**：手写 `wiring.go` 做依赖组合，Go 标准库 + SQLite 驱动
+| 维度 | 数值（近似） |
+|------|------|
+| Go 守护进程源文件 | services/tuttid 下 ~1,100+ 个 .go 文件 |
+| 最重模块 | service/agent（~6 万行）、service/workspace（~2.9 万行）、service/agentstatus（~2 万行） |
+| Monorepo | 27+ npm 包 + 多个 Go module（go.work） |
+| 文档体系 | docs/architecture + docs/specs + docs/adr 持续演进 |
 
-### 2.2 包依赖 DAG (有向无环图)
+## 同领域定位对比
 
-```
-Layer 0: config-tsconfig, config-prettier
-Layer 1: event-protocol, event-stream-core, app-release-tools
-Layer 2: ui-system, ui-i18n-runtime, ui-react-hooks, ui-rich-text
-Layer 3: workbench-snapshot
-Layer 4: workbench-surface, workspace-* (TS 包)
-Layer 5: agent-gui, agent-activity-core
-Layer 6: browser-node
-```
-
-所有边方向一致，**无循环依赖** —— 这是大型 monorepo 中最难维持的纪律之一。
-
-### 2.3 Schema-first 事件协议
-
-events 包实现了真正的 schema-first 跨语言事件协议：
-
-```
-definitions/agent/agent-context.ts         # schema 定义
-definitions/workspace/workspace-context.ts
-     ↓ (自动生成)
-src/generated/contracts.ts                  # TypeScript 合约
-src/generated/validators.ts                 # 运行时验证器
-src/generated/registry.ts                   # 事件注册映射
-     ↓
-packages/events/stream-go/contract.go       # Go 端对应合约
-```
-
-Go 端和 TypeScript 端保持一致的合约定义，确保跨语言通信的类型安全。
+| 项目 | 定位 | 与 Tutti 的差异 |
+|------|------|----------------|
+| Claude Code / Codex / Canvas | 单 agent 编码/画布 | 单 agent 产物；Tutti 是跨 agent 协作层，不替代它们 |
+| OpenWorker | 本地 AI 同事桌面平台（sidecar + 审批门控） | 偏"一个带审批的 Agent 循环 + sidecar"；Tutti 更偏多 agent 实时共享 + 应用生态 |
+| OpenBee | 自托管 24/7 数字员工管理 | 偏组织态多 Agent 常驻；Tutti 偏桌面创作工作流接力 |
+| Multica | 托管式 Agent 任务管理 | 托管云；Tutti 本地优先、进程内 daemon |
+| OpenHands | 开发者控制中心（多后端切换） | 前端为控制台；Tutti 带应用生态 + Agent Extension/Connector 双边接入 |
 
 ---
 
-## 3. 代码质量分析
+## 子文档索引
 
-### 3.1 强项
+- [`memory-system.md`](memory-system.md) — 记忆系统：Local-First SQLite 分层存储、事件流投影、消息版本游标
+- [`tutti-mode-orchestration.md`](tutti-mode-orchestration.md) — 多 Agent 编排：以 SQLite 为真值的 Saga 闭环，checkpoint 节拍 + 独立审核 + 防冲突
+- [`app-ecosystem.md`](app-ecosystem.md) — 应用生态：App Center / Factory / Runner，Agent 反向造应用与子进程隔离
+- [`connector-market.md`](connector-market.md) — 连接器市场：外部 CLI/MCP 能力接入，fail-closed 验签 + 幂等安装
+- [`agent-extensions.md`](agent-extensions.md) — Agent Extension：第三方 ACP 智能体的声明式接入
+- [`transport-security.md`](transport-security.md) — 传输与安全：loopback 随机端口 + listener-info 握手 + bearer token + Electron 安全边界
 
-| 维度 | 等级 | 说明 |
+---
+
+## 架构总览
+
+tutti 采用"**单一业务权威 + 多宿主通道**"架构：tuttid 守护进程是唯一的业务核心，Electron 只是宿主。renderer 直接连 daemon 拿流式能力，main 只做监督与 OS 能力。
+
+```mermaid
+flowchart TB
+    subgraph Desktop[Electron]
+        R[renderer React UI]
+        P[preload contextBridge]
+        M[main 主进程]
+    end
+    subgraph Daemon[tuttid Go 守护进程]
+        API[server + api 鉴权编排]
+        SVC[service 业务服务]
+        BIZ[biz 领域逻辑]
+        DATA[data SQLite 文件系统]
+        EV[eventstream WS 事件]
+        OAuth[auth 账户登录]
+    end
+    subgraph Ecosystem[生态接入]
+        EXT[Agent Extension ACP]
+        CON[Connector CLI / MCP]
+        APP[App Center 应用包]
+    end
+    R -- "loopback HTTP/WS<br>bearer token" --> API
+    R -- "Electron/OS 能力" --> P --> M
+    API --> SVC --> BIZ --> DATA
+    EV -- "小脏信号 signal-and-reconcile" --> R
+    API --> EXT
+    API --> CON
+    API --> APP
+    OAuth --> API
+```
+
+模块职责对应：
+
+| 模块（services/tuttid） | 职责 | 深读 |
 |------|------|------|
-| **架构清晰度** | A | 4 层架构 (desktop) + 4 层架构 (tuttid)，职责分明 |
-| **类型安全** | A | 全量 TypeScript + 全量 Go，IPC 通道有泛型类型约束 |
-| **安全性** | A- | contextBridge 隔离、类型安全 IPC、entitlements 配置 |
-| **i18n 国际化** | A | 英文/中文双语，所有用户可见文本强制走 i18n 层 |
-| **测试覆盖** | B+ | Go 52%，TS 37%，含集成测试 |
-| **代码规范** | A | Oxlint + golangci-lint + 10+ 自定义边界检查 |
-| **文档文化** | A | 每次变更后需评估文档影响，自进化文档体系 |
+| `service/agent` | 核心 Agent 会话 / 运行 / 活动投影（最重） | [`memory-system.md`](memory-system.md) |
+| `service/agenttarget` | Agent Target（provider 统一抽象） | [`agent-extensions.md`](agent-extensions.md) |
+| `service/agentextension` | 第三方 ACP agent 扩展安装/解析 | [`agent-extensions.md`](agent-extensions.md) |
+| `service/tuttimodeplan` / `tuttimodeexecution` | Tutti Mode：目标→Plan→Issue→执行编排 | [`tutti-mode-orchestration.md`](tutti-mode-orchestration.md) |
+| `service/collabrun` | 横向协作（fork/delegate/consult/handoff）记账 | [`tutti-mode-orchestration.md`](tutti-mode-orchestration.md) |
+| `service/workspace` | workspace 应用、App Factory/Runner、包来源 | [`app-ecosystem.md`](app-ecosystem.md) |
+| `service/connectormarket` | 连接器安装/运行时/命令 broker | [`connector-market.md`](connector-market.md) |
+| `service/eventstream` | 业务事件订阅/发布、协作广播 | [`tutti-mode-orchestration.md`](tutti-mode-orchestration.md) |
+| `server` + `types/httputil` + `api/daemon_events` | HTTP/WS 服务、鉴权、事件流 | [`transport-security.md`](transport-security.md) |
+| `data/` + `packages/agent/store-sqlite` | SQLite 持久化、可嵌入 Agent 存储 | [`memory-system.md`](memory-system.md) |
 
-### 3.2 技术债务 (按优先级)
+## 启动流程与主请求链路
 
-#### P0 — AGENTS.md 硬规则违规
+```mermaid
+sequenceDiagram
+    participant M as desktop main
+    participant DB as tuttid daemon
+    participant R as renderer
 
-以下文件违反"业务代码不超过 800 行"规则：
-
-| 文件 | 行数 | 所属模块 |
-|------|------|----------|
-| `WorkspaceSettingsPanel.tsx` | **4,701** | desktop/renderer |
-| `service/agent/service.go` | 828 | tuttid/agent |
-| `service/agent/external_import.go` | 820 | tuttid/agent |
-| `service/agent/activity_projection.go` | 842 | tuttid/agent |
-| `service/workspace/app_factory.go` | 858 | tuttid/workspace |
-| `service/workspace/apps_runner.go` | 840 | tuttid/workspace |
-| `service/agentstatus/service_helpers.go` | 829 | tuttid/agentstatus |
-| `service/managedruntime/runtime.go` | 814 | tuttid/managedruntime |
-| `api/routes.go` | 886 | tuttid/api |
-| `workspaceAgentActivityService.ts` | 2,100 | desktop/renderer |
-| `desktopAgentProviderStatusService.ts` | 1,275 | desktop/renderer |
-| `desktopRichTextAtService.ts` | 1,251 | desktop/renderer |
-| `workspaceAppCenterService.ts` | 1,423 | desktop/renderer |
-| `workspaceSettingsService.ts` | 1,375 | desktop/renderer |
-| `workspaceWorkbenchHostService.ts` | 1,379 | desktop/renderer |
-| 其他 renderer 文件 10+ 个 | 800-1,500 | desktop/renderer |
-
-**总计约 30+ 个文件违反 800 行限制**。最严重的是 `WorkspaceSettingsPanel.tsx` (4,701 行)。
-
-#### P1 — 测试覆盖缺口
-
-| 薄弱环节 | 现状 | 风险 |
-|---------|------|------|
-| `apierrors/` | **0 个测试文件** | 错误映射是跨层协议关键，无测试覆盖 |
-| preload 层 | 仅 5 个测试文件 | 安全边界层测试不足 |
-| `api/` HTTP handler | 30% 覆盖 | handler 逻辑缺少集成测试 |
-| `biz/` 领域层 | 14% 覆盖 | 领域逻辑随增长需更多保障 |
-
-#### P2 — 架构体感问题
-
-1. **`agent/gui` 包边界过宽** — 暴露 23 个 subpath exports，实际承担了多个逻辑域（消息中心、AgentComposer、工作台、@面板），建议考虑拆分
-2. **`analytics/` 碎片化** — 263 个文件仅 3,034 行，每个事件一个文件，过于碎片
-3. **`buildDaemonAPI()` 函数过长** — 256 行手工 DI，建议拆分为子模块构造函数
-4. **Store 类型转型不安全** — `wiring.go` 中 `store.(workspacedata.XxxStore)` 若接口未实现会静默返回 nil
-
-#### P3 — 可优化项
-
-1. 缺少 CSP (Content Security Policy) 配置
-2. 无端到端 Electron 集成测试
-3. `src/main/` 根层 41 个文件密度偏高
-4. `agent/gui` 的 `agentGuiNode/` 目录下 53 个文件平铺在同一级
-
----
-
-## 4. 工程实践亮点
-
-### 4.1 多层次验证体系
-
-```
-pnpm check:changed       # 日常快速验证
-pnpm check:full          # CI 全量验证 (pre-push hook)
-pnpm lint:ts             # Oxlint TS 检查
-pnpm typecheck           # tsgo 增量类型检查
-pnpm check:ui-boundaries # UI 包边界检查
-pnpm check:renderer-boundaries # 渲染器特征边界
-pnpm check:i18n          # i18n 完整性检查
-pnpm check:api-generated # API 生成一致性检查
-pnpm lint:go             # golangci-lint Go 检查
+    M->>M: randomBytes(32) 生成 per-run token
+    M->>DB: spawn 并注入 TUTTID_ACCESS_TOKEN
+    DB->>DB: 绑 127.0.0.1:0 随机端口
+    DB->>DB: 写 listener.json (0600 + Rename)
+    M->>DB: 轮询取得 boundAddr
+    M-->>R: IPC getBackendConfig
+    R->>DB: HTTP Bearer 请求
+    R->>DB: WS 订阅业务事件
+    DB-->>R: 小脏信号, renderer 回 HTTP 对账
 ```
 
-**关键设计**：`check:changed` 只运行改动影响的检查，并行执行，存储全量日志到 `.tmp/check-runs/`，通过 `--tail-lines` 控制失败输出长度。这是大型 monorepo 中提升迭代速度的典型做法。
+## 关键源码入口（真源引用）
 
-### 4.2 文档自进化 (AutoSkill)
+- 服务组装入口：`main.go:58` 经 `buildTuttiServer()` 把 listener 与依赖图装配成 HTTP server。[services/tuttid/wiring.go:140-142]() 是手工组合根的起点，从环境解析 listener spec 再组装各服务。
+  <!-- snippet: func buildTuttiServer() (*http.Server, net.Listener, *tuttiWiring, error) {
+	listenerSpec, err := tuttiserver.ListenerSpecFromEnv()
+	if err != nil { -->
+- 业务事件主题目录：[services/tuttid/service/eventstream/catalog.go:18-21]() 集中声明 workspace 级事件 topic（`agent.collaboration.updated` / `connector.market.changed` / `agent.model.catalog.invalidated` 等），是信号-and-对账的"脏信号"清单源。
+  <!-- snippet: 	TopicAgentCollaborationUpdated                      = "agent.collaboration.updated"
+	TopicAgentModelCatalogInvalidated                   = "agent.model.catalog.invalidated"
+	TopicAgentQuickPromptUpdated                        = "agent.quickprompt.updated"
+	TopicConnectorMarketChanged                         = "connector.market.changed" -->
 
-团队通过 AutoSkill 四态决策（discard/improve/merge/create）维护文档：
+## 工程实践亮点
 
-> "每次代码变更后，如果影响模块职责、数据流、用户交互、公共 API/CLI 行为、运行时/配置/环境覆盖、验证命令、排错路径或目录职责，需更新对应的持久文档。"
+### Monorepo 治理
 
-这是一个值得借鉴的做法——将文档维护嵌入开发流程而非事后补救。
+pnpm workspace + Go workspace（go.work）共存，npm 包依赖关系保持 DAG 无环。大型 monorepo 中最难维持的纪律之一就是"边方向一致、无循环依赖"。
 
-### 4.3 Git Hooks 设计
+### Schema-first 跨语言契约
 
-```
-pre-commit: lint-staged (仅检查暂存文件)
-pre-push:   pnpm check:full (全量检查)
-```
+events 包做真正的 schema-first 跨语言事件协议：`definitions/` 定义 schema → 自动生成 TS 合约 + 运行时验证器 + 事件注册表 → Go 端对应合约。保证 TS 与 Go 通信类型安全。
 
-**设计思路**：pre-commit 快速反馈（仅改动的文件），pre-push 质量门禁（全量检查）。避免等待 CI 就发现问题，也不让 pre-commit 耗时过长。
+### OpenAPI Contract-First
 
----
+API 变更流程：改 `tuttid.v1.yaml` → `pnpm generate:api` 生成 Go handler + TS client → `check:api-generated` 校验一致。用 fragments 机制（`x-tutti-openapi-fragments`）组织子规范，避免单文件巨型化。
 
-## 5. 架构决策分析
+### 分层验证链
 
-### 5.1 Local-First 架构
+`pnpm check:changed` 只验改动影响项（日常），`pnpm check:full`（pre-push 全量）+ pre-commit lint-staged（只暂存文件）。go 侧 golangci-lint，TS 侧 oxlint + 自定义边界检查（UI/renderer/i18n/API-generated）。
 
-全部状态存储在本地 SQLite，路径约定：
-- 开发: `~/.tutti-dev/tuttid.db`
-- 生产: `~/.tutti/tuttid.db`
+### 文档自进化
 
-**优势**：离线可用、低延迟、用户数据主权。
-**隐含成本**：多设备同步、数据备份、冲突解决等方案需自行实现。
+团队用 AutoSkill 四态决策（discard/improve/merge/create）维护文档；每次变更若影响模块职责/数据流/用户交互/公开 API/运行时配置/验证命令，需更新对应持久文档。`docs/{architecture,specs,adr}` 持续演进是理解设计意图的金矿。
 
-### 5.2 无 DI 框架
+## 代码质量现状（重写时抽查）
 
-手写 `wiring.go` 管理 25+ 组件的依赖注入，AGENTS.md 明确禁止第三方 DI 框架。
+原 7 月解读指出 P0 级"业务代码超 800 行"违规约 30+ 文件（最重 `WorkspaceSettingsPanel.tsx` 4,701 行），且 `apierrors/` 无测试、preload 安全层测试不足。本次增量未逐文件复核最新状态，以上属历史快照；如需准确保留此节的最新准确数据，建议下次按当前 HEAD 单独深挖（`[WIP]`）。
 
-**合理性**：小型项目手写 DI 的维护成本低于学习框架成本。但当前 `buildDaemonAPI()` 已 256 行，若继续增长应考虑拆分子函数（`buildAgentModule`、`buildWorkspaceModule` 等），而非引入 DI 框架。
+## 设计亮点与风险
 
-### 5.3 OpenAPI Contract-First
+**亮点**
+- Local-First：全部状态本地 SQLite（WAL + busy_timeout），离线可用、用户数据主权、低延迟。
+- 无 DI 框架：手写 `wiring.go` + `wiring_*.go` 组合根做接口注入，API 层只认知接口、具体注入在 wiring。
+- Checkpoint 仲裁：多 agent 协作用"SQLite 真值 + checkpoint 节拍 + 源 agent 唯一决策"，刻意去除自推进，避免多 agent 跳步冲突。
+- 诚实的安全边界：App 生成器无 sandbox/VM，靠目录边界 + 二级受限 token；连接器 fail-closed 验签 + 只接无凭据能力。
 
-API 变更流程：
-1. 修改 `services/tuttid/api/openapi/tuttid.v1.yaml`
-2. 通过 `pnpm generate:api` 生成 Go handler 接口 + TypeScript 客户端
-3. 通过 `pnpm check:api-generated` 确保一致性
+**主要风险**
+- service/agent 已 ~6 万行、76+ 文件，是最大复杂度源，随更多 agent target 增长边界难管。
+- wiring.go 中 `store.(workspacedata.XxxStore)` 未检查转型，接口未实现时静默返回 nil。
+- 可移植性：Tutti · VM 计划中，Windows 支持进行中；扫码生态（mobile）仍在演进。
 
-使用 fragments 机制 (`x-tutti-openapi-fragments`) 将 `issue-manager.v1.yaml` 等片段组织到主规范，避免单一巨型文件。
+## 值得借鉴的设计（可跨项目迁移）
 
-### 5.4 跨语言契约
+1. **多 agent 协作的 Checkpoint + Run 模型**：图是数据、推进是"停→决断→再放"，比自动化 DAG 在真实多 agent 场景更可控（[`tutti-mode-orchestration.md`](tutti-mode-orchestration.md)）。
+2. **随机端口 + listener-info 文件握手**：无固定端口扫描面、无写死密码，token/地址随运行变化再原子发布（[`transport-security.md`](transport-security.md)）。
+3. **signal-and-reconcile**：事件只发"我脏了"的提示，真值永远在 SQLite 回 HTTP 对账——实时性与一致性兼得。
+4. **声明式扩展包 + 独立运行时**：Agent Extension / App 都用"manifest 描述起哪个外部进程"，平台不加载第三方可执行代码，零代码扩展避开供应链风险。
+5. **双签安全门禁**：连接器 Ed25519 域分离验签 + App dry-run 启动校验，把"可信"与"跑得起来"分开验证。
 
-| 契约层面 | TypeScript 实现 | Go 实现 | 同步机制 |
-|----------|----------------|---------|----------|
-| HTTP API | `@tutti-os/client-tuttid-ts` | `api/generated/` | OpenAPI → oapi-codegen |
-| 事件协议 | `event-stream-core` | `event-stream-go` | schema-first 手工映射 |
-| Workbench | `workbench-surface` | `workbench/service` | 共享接口定义 |
+## 总结回扣根因
 
----
-
-## 6. 项目风险与建议
-
-### ⚠️ 主要风险
-
-1. **Service 层膨胀**：`service/agent/` 已 76 个文件，是最大的复杂度来源。随着更多 agent 类型（Claude Code、Codex、Hermes 等）的加入，这一模块的边界管理将面临挑战。
-2. **Store 接口的安全转型**：`wiring.go` 中未检查的 `store.(workspacedata.XxxStore)` 转型在运行时可能 `panic`，虽然 Go 的接口检查不是大问题，但在启动阶段静默失败会增加调试难度。
-3. **agent/gui 包边界**：23 个 exports 暗示该包正在成为一个"上帝包"，建议细化为更小粒度的包。
-
-### 🎯 推荐行动项
-
-| 优先级 | 行动 | 预期效果 |
-|--------|------|----------|
-| P0 | 分解 30+ 个超 800 行文件 | 恢复 AGENTS.md 合规，提升可维护性 |
-| P0 | 为 `apierrors/` 增加测试 | 消除严重测试缺口 |
-| P1 | 增加 preload 层测试覆盖 | 加固安全边界 |
-| P1 | 拆分 `agent/gui` exports | 明确包边界，避免上帝包 |
-| P2 | 重构 `buildDaemonAPI()` 为子模块 | 提升 DI 代码可读性 |
-| P2 | 添加 CSP 配置 | 提升 Electron 安全性 |
-
----
-
-## 7. 对开源社区的启发
-
-tutti 在以下方面展现了值得学习的工程实践：
-
-1. **Monorepo 治理**：pnpm workspace + Go workspace 共存，依赖 DAG 无环，边界检查自动化
-2. **Local-First 桌面应用**：Go 守护进程 + Electron UI 的 hybrid 架构，提供低延迟本地体验
-3. **文档自进化**：AutoSkill 模型将文档维护编码为开发流程的一部分
-4. **多 Agent 编排**：支持多种 AI 智能体在同一 workspace 协作的设计模式
-5. **分层验证**：从 pre-commit 到 pre-push 的验证链，兼顾速度和安全性
-
----
-
-*本报告基于代码静态分析和目录结构推导，部分数据（如代码行数）为近似值。*
+tutti 没有发明新的单 agent 能力，它解决的是**跨 agent 协作时"上下文搬运"这一根本摩擦**。其技术含量不在任何单个模型调用，而在工程层：用 Go 守护进程做唯一业务权威、用 SQLite 做一切状态的真值、用 checkpoint 仲裁多 agent 的推进、用声明式扩展把生态无限接入而零代码注入。读懂它，读到的是"如何为多个 AI 智能体设计一个可信、实时、可扩展的协作底座"——这正是它区别于单 agent 产品的最深价值。

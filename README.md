@@ -202,6 +202,7 @@ graph TB
 | [AionUi](agent-product/aionui/) | TypeScript + Rust | 开源多 Agent 桌面 Cowork 平台：app-shell 守护外部 aioncore(Rust) 引擎，ACP 收敛几十种 CLI Agent，Team Mode 协作，Cron 24/7 + WebUI 远程 + IM 渠道，MCP 统一管理（前端壳 + 后端大脑双层架构） | Apache-2.0 | [GitHub](https://github.com/iOfficeAI/AionUi) |
 | [Tutti](agent-product/tutti/) | Go + TS (Electron) | 多 AI 智能体实时共享协作空间：loopback daemon + SQLite 真值，Tutti Mode Checkpoint 仲裁多 agent，App Center/Factory 应用生态，Connector 市场 + Agent Extension(ACP) 双边接入，signal-and-reconcile 事件流 | Apache-2.0 | [GitHub](https://github.com/anomalyco/tutti) |
 | [Eigent](agent-product/eigent/) | Python + TS (Electron) | 开源 Cowork Desktop（Multi-Agent Workforce）：CAMEL-AI 多 agent 编排（单 agent/Workforce 三车道路由 + TaskLock 队列/SSE），控制面 server / 行动面 backend 分离，记忆磁盘档案，MCP 双写总线，浏览器/终端工具，Celery 定时自动化 | Apache-2.0 | [GitHub](https://github.com/eigent-ai/eigent) |
+| [Canvas2](agent-product/canvas2/) | JS + React + PostgreSQL | 面向花型/图案设计的 AI 生图 SaaS：多租户 UIN 身份模型，计费积分（订单状态机 + 幂等账本 + 批次 FEFO），多渠道生图抽象（RunningHub/CFAPP→ComfyUI），18 迁移数据模型 | 私有 | 本地 /Users/morehao/Documents/works/yangu/muting/canvas2 |
 
 ### [即时通讯 (IM)](IM/)
 

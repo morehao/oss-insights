@@ -18,4 +18,5 @@
 | [AionUi](aionui/) | TypeScript + Rust | 开源多 Agent 桌面 Cowork 平台：app-shell 守护外部 aioncore(Rust) 引擎，ACP 收敛几十种 CLI Agent，Team Mode 协作，Cron 24/7 + WebUI 远程 + IM 渠道，MCP 统一管理 | Apache-2.0 | [GitHub](https://github.com/iOfficeAI/AionUi) |
 | [AgenticSeek](AgenticSeek/) | Python + TS | 100% 本地 Manus 替代品：双模型投票 Agent 路由、Planner 编排、Block 代码块工具协议、记忆压缩、stealth 浏览器自主上网/填表、会话持久化 | GPL-3.0 | [GitHub](https://github.com/Fosowl/agenticSeek) |
 | [Eigent](eigent/) | Python + TS (Electron) | 开源 Cowork Desktop（Multi-Agent Workforce）：CAMEL-AI 多 Agent 编排（单 agent/Workforce 三车道路由 + TaskLock 队列/SSE），控制面/行动面分离，记忆磁盘档案，MCP 双写总线，浏览器/终端工具，Celery 定时自动化 | Apache-2.0 | [GitHub](https://github.com/eigent-ai/eigent) |
+| [WeKnora](weknora/) | Go | 企业级 RAG 与知识推理平台：文档导入→语义索引→Agent/反应式 Agent 推理→自动生成 Wiki+知识图谱，多源连接器（飞书/Notion/语雀/RSS），26 LLM + 7 向量库 + 10 IM 集成，多租户 RBAC，网页挂件/桌面端部署 | MIT | [GitHub](https://github.com/Tencent/WeKnora) |
 | [PicoClaw](picoclaw/) | Go | 极致轻量 Go 原生 AI Agent 网关，<10MB 内存跑在 $10 硬件，20+ 通道 30+ LLM，MCP 集成 | MIT | [GitHub](https://github.com/sipeed/picoclaw) |

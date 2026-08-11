@@ -147,11 +147,11 @@ graph TB
 | [zero-admin](admin/zero-admin/) | Go | 基于 go-zero 的电商微服务系统：2 网关 + 8 rpc + consumer/job + goctl 代码生成，前台商城（订单/支付）+ 后台管理（RBAC），ES 搜索 + MQ 异步 | Apache-2.0 | [GitHub](https://github.com/feihua/zero-admin) |
 | [PocketBase](admin/pocketbase/) | Go | 开源 BaaS 引擎，单二进制集成 SQLite + 认证 + 文件存储 + 实时订阅 | MIT | [GitHub](https://github.com/pocketbase/pocketbase) |
 
-### [社区 / 问答平台（Community）](community/)
+### [问答平台（Q&A）](qanda/)
 
 | 项目 | 语言 | 说明 | 协议 | 仓库 |
 |------|------|------|------|------|
-| [Apache Answer](community/answer/) | Go | 开源 Q&A 知识管理平台，支持社区问答、插件系统、AI 集成 | Apache-2.0 | [GitHub](https://github.com/apache/answer) |
+| [Apache Answer](qanda/answer/) | Go | 开源 Q&A 知识管理平台，支持社区问答、插件系统、AI 集成 | Apache-2.0 | [GitHub](https://github.com/apache/answer) |
 
 ### [DevOps 平台](devops/)
 
@@ -197,6 +197,7 @@ graph TB
 | [Tutti](ai-product/tutti/) | Go + TS (Electron) | 多 AI 智能体实时共享协作空间：loopback daemon + SQLite 真值，Tutti Mode Checkpoint 仲裁多 agent，App Center/Factory 应用生态，Connector 市场 + Agent Extension(ACP) 双边接入，signal-and-reconcile 事件流 | Apache-2.0 | [GitHub](https://github.com/anomalyco/tutti) |
 | [Eigent](ai-product/eigent/) | Python + TS (Electron) | 开源 Cowork Desktop（Multi-Agent Workforce）：CAMEL-AI 多 agent 编排（单 agent/Workforce 三车道路由 + TaskLock 队列/SSE），控制面 server / 行动面 backend 分离，记忆磁盘档案，MCP 双写总线，浏览器/终端工具，Celery 定时自动化 | Apache-2.0 | [GitHub](https://github.com/eigent-ai/eigent) |
 | [AgenticSeek](ai-product/AgenticSeek/) | Python + TS | 100% 本地 Manus 替代品：双模型投票 Agent 路由、Planner 编排、Block 代码块工具协议、记忆压缩、stealth 浏览器自主上网/填表、会话持久化 | GPL-3.0 | [GitHub](https://github.com/Fosowl/agenticSeek) |
+| [WeKnora](ai-product/weknora/) | Go | 企业级 RAG 与知识推理平台：文档导入→语义索引→Agent/反应式 Agent 推理→自动生成 Wiki+知识图谱，多源连接器（飞书/Notion/语雀/RSS），26 LLM + 7 向量库 + 10 IM 集成，多租户 RBAC，网页挂件/桌面端部署 | MIT | [GitHub](https://github.com/Tencent/WeKnora) |
 | [PicoClaw](ai-product/picoclaw/) | Go | 极致轻量 Go 原生 AI Agent 网关，<10MB 内存跑在 $10 硬件，20+ 通道 30+ LLM，MCP 集成 | MIT | [GitHub](https://github.com/sipeed/picoclaw) |
 
 ### [Agent 基础设施（AI Infra）](ai-infra/)
@@ -205,7 +206,6 @@ graph TB
 |------|------|------|------|------|
 | [Mem0](ai-infra/mem0/) | Python+TS | AI Agent 智能记忆层：V3 ADD-only 记忆管线 + 多信号检索（语义+BM25+实体），四类 Provider 插件体系，双模式部署 + MCP | Apache-2.0 | [GitHub](https://github.com/mem0ai/mem0) |
 | [New API](ai-infra/new-api/) | Go | 统一 AI API 网关，聚合 40+ AI 供应商，提供统一接口、计费、权限管理 | AGPL-3.0 | [GitHub](https://github.com/QuantumNous/new-api) |
-| [WeKnora](ai-infra/weknora/) | Go | 企业级 RAG 与知识推理框架，集成 Agent、Wiki 模式、多租户 RBAC | MIT | [GitHub](https://github.com/Tencent/WeKnora) |
 
 ### [AI 生成（AIGC）](aigc/)
 

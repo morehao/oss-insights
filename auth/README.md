@@ -1,4 +1,4 @@
-# 认证授权
+# 认证授权（Auth）
 
 本目录收录认证授权（Authentication & Authorization）领域的开源项目解读。
 

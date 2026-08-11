@@ -1,6 +1,6 @@
-# 计量与计费
+# 计费与商业化后端（Billing & Monetization）
 
-本目录收录计量计费 / 使用量计费（Usage-Based Billing）领域的开源项目解读。
+本目录收录计费与商业化后端领域的开源项目解读，涵盖计量（Metering）、计费（Billing）、订阅（Subscription）、支付（Payment）、发票（Invoicing）等商业化/货币化（Monetization）领域。
 
 | 项目 | 语言 | 说明 | 仓库 |
 |------|------|------|------|

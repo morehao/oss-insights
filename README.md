@@ -221,11 +221,11 @@ graph TB
 |------|------|------|------|------|
 | [Open-IM-Server](IM/open-im-server/) | Go | 开源 IM 即时通讯服务器，微服务架构，支持 WebSocket 长连接、消息推送、多端登录 | Apache-2.0 | [GitHub](https://github.com/openimsdk/open-im-server) |
 
-### [编程语言](languages/)
+### [编程语言](programming-guides/)
 
 | 语言 | 说明 |
 |------|------|
-| [Go](languages/go/) | Go 语言规范、最佳实践与惯用法指南 |
+| [Go](programming-guides/go/) | Go 语言规范、最佳实践与惯用法指南 |
 
 ---
 

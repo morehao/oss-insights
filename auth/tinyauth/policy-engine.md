@@ -84,10 +84,10 @@ graph LR
 
 ## 在代理链路的落位
 
-策略引擎的评估结果决定代理控制器的响应。认证通过的请求会返回 200 并附带 `Remote-User`/`Remote-Email`/`Remote-Groups`/`Remote-Sub` 等头供后端使用（[internal/controller/proxy_controller.go:263-278]()，详见 [`sso_flow.md`](sso_flow.md)）。被拒绝时按 `useBrowserResponse` 决定 302（浏览器）或 JSON + `x-tinyauth-location`（API）。
+策略引擎的评估结果决定代理控制器的响应。认证通过的请求会返回 200 并附带 `Remote-User`/`Remote-Email`/`Remote-Groups`/`Remote-Sub` 等头供后端使用（[internal/controller/proxy_controller.go:263-278]()，详见 [`auth-flow.md`](auth-flow.md)）。被拒绝时按 `useBrowserResponse` 决定 302（浏览器）或 JSON + `x-tinyauth-location`（API）。
 
 ## 与其它子文档衔接
 
-- 代理链路如何按顺序触达各规则 → [`sso_flow.md`](sso_flow.md)
+- 代理链路如何按顺序触达各规则 → [`auth-flow.md`](auth-flow.md)
 - 规则中用到的用户/组来自哪些认证源 → [`oauth-broker.md`](oauth-broker.md)
 - `App` ACL 结构在 config 中的形态与演进 → [`data-model.md`](data-model.md)

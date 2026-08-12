@@ -135,10 +135,10 @@ sequenceDiagram
 
 驱动间的差异靠一个**薄转换层**抹平：sqlite/postgres 都用 `cmd/gen/sqlc-wrapper` 生成的 `Store`，把 sqlc 的 `*Queries` 包一层，并通过 `errorMap` 把 SQL 层的 `sql.ErrNoRows` 映射成统一的 `repository.ErrNotFound`（[internal/repository/sqlite/store.go:22-40]()）。Memory 驱动则直接 `sync.RWMutex` 读写两个 map（`repository/memory/store.go`）。上层（AuthService / OIDCService）只依赖 `Store` 接口，完全不感知后端。
 
-过期清理是异步的：登录会话在主流程里按需删（`GetSession` 检过期即删，见 [`sso_flow.md`](sso_flow.md)），OIDC 会话由 30 分钟定时 goroutine `DeleteExpiredOIDCSessions` 批量清理（[internal/service/oidc_service.go:801-838]()）。
+过期清理是异步的：登录会话在主流程里按需删（`GetSession` 检过期即删，见 [`auth-flow.md`](auth-flow.md)），OIDC 会话由 30 分钟定时 goroutine `DeleteExpiredOIDCSessions` 批量清理（[internal/service/oidc_service.go:801-838]()）。
 
 ## 与其它子文档衔接
 
-- 会话过期、登出、重建的完整时序 → [`sso_flow.md`](sso_flow.md)
+- 会话过期、登出、重建的完整时序 → [`auth-flow.md`](auth-flow.md)
 - `oidc_sessions` 的令牌哈希/生命周期语义 → [`oidc-provider.md`](oidc-provider.md)
 - session 的 `provider`、`oauth_groups` 如何参与授权 → [`policy-engine.md`](policy-engine.md)

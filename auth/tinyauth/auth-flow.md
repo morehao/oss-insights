@@ -186,7 +186,25 @@ sequenceDiagram
 
 实现上 `DeleteSession` 返回一个 `MaxAge:-1, Expires:time.Now()` 的 Cookie，等价于让浏览器立刻丢弃（[internal/service/auth_service.go:451-469]()）。登出前会读取会话并记录审计事件（是谁、从哪个 provider 登录的），无 cookie 时也返回成功而非报错（[internal/controller/user_controller.go:224-268]()）。
 
-> **没有独立的 `end_session` / RP-Initiated Logout 端点**。Tinyauth 是 OpenID **Basic** OP，当前规范（Basic OP 配置档）不要求 `end_session_endpoint`。因此"退出"只停用本机的会话 Cookie，不向第三方 app 广播登出——第三方应用需各自处理其持有的 access token 过期。
+> **Tinyauth 没有 SLO（Single Logout）机制**——既无 OIDC 的 RP-Initiated / Back-Channel Logout，也无 SAML SLO。这是**源码层的确定性结论**，而非规范推测：
+>
+> - **无 `end_session_endpoint`**：OIDC 发现文档（`/.well-known/openid-configuration`）只暴露 `issuer`/`authorization_endpoint`/`token_endpoint`/`userinfo_endpoint`/`jwks_uri` 五个端点，**通篇没有 `end_session`**（[internal/controller/well_known_controller.go:77-83]()）。遵循 OIDC Discovery 规范，OP 不声明的端点客户端就不该调用。
+> <!-- snippet-base64:CWlzc3VlciA6PSBjb250cm9sbGVyLm9pZGMuR2V0SXNzdWVyKCkKCWMuSlNPTigyMDAsIE9wZW5JRENvbm5lY3RDb25maWd1cmF0aW9uewoJCUlzc3VlcjogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBpc3N1ZXIsCgkJQXV0aG9yaXphdGlvbkVuZHBvaW50OiAgICAgICAgICAgICAgICAgIGZtdC5TcHJpbnRmKCIlcy9hdXRob3JpemUiLCBpc3N1ZXIpLAoJCVRva2VuRW5kcG9pbnQ6ICAgICAgICAgICAgICAgICAgICAgICAgICBmbXQuU3ByaW50ZigiJXMvYXBpL29pZGMvdG9rZW4iLCBpc3N1ZXIpLAoJCVVzZXJpbmZvRW5kcG9pbnQ6ICAgICAgICAgICAgICAgICAgICAgICBmbXQuU3ByaW50ZigiJXMvYXBpL29pZGMvdXNlcmluZm8iLCBpc3N1ZXIpLAoJCUp3a3NVcmk6ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBmbXQuU3ByaW50ZigiJXMvLndlbGwta25vd24vandrcy5qc29uIiwgaXNzdWVyKSwK -->
+
+> ```go
+> 	issuer := controller.oidc.GetIssuer()
+> 	c.JSON(200, OpenIDConnectConfiguration{
+> 		Issuer:                                 issuer,
+> 		AuthorizationEndpoint:                  fmt.Sprintf("%s/authorize", issuer),
+> 		TokenEndpoint:                          fmt.Sprintf("%s/api/oidc/token", issuer),
+> 		UserinfoEndpoint:                       fmt.Sprintf("%s/api/oidc/userinfo", issuer),
+> 		JwksUri:                                fmt.Sprintf("%s/.well-known/jwks.json", issuer),
+> ```
+>
+> - **无 Back-Channel Logout / 登出广播**：整仓 grep `backchannel`/`logout_token`/`post_logout` 无任何实现命中；登出唯一下沉在 `POST /api/user/logout`（[internal/controller/user_controller.go:53, 224-268]()），其动作只是"读 Cookie → `DeleteSession` → 下发过期空 Cookie"三步，不向任何第三方 RP 发起 HTTP 通知。
+> - **无 SAML / 无 SLO**：源码无 `SAML`（SP/IdP）实现，因此也不存在 SAML SLO 端点或 IdP-Initiated Logout。
+>
+> 后果：Tinyauth 作为 OpenID **Basic** OP，`end_session_endpoint` 本就非必需；"退出"只停用本机的会话 Cookie，**不向第三方 app 广播登出**——依赖 Tinyauth 登录的 RP 需各自处理其持有的 access token 过期（交由自身的 OAuth/RP 侧会话清理）。这与 ZITADEL 的 RP-Initiated + Back-Channel 双线登出形成鲜明对照（见 ZITADEL [`auth-flow.md`](../zitadel/auth-flow.md) 的「统一登出」章节）。
 
 ### 会话的演进（滑动过期 + 绝对上限）
 

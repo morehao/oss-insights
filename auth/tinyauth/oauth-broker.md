@@ -89,10 +89,10 @@ GitHub 提取器是"差异隔离"的典型：它内部做两次 HTTP 请求、�
 
 ## 与认证流程的衔接
 
-OAuth 的完整登录时序（挂起会话、回调校验、邮箱白名单、回跳）在 [`sso_flow.md`](sso_flow.md) 的「OAuth 登录的挂起会话」章节展开。本文聚焦的是其"后台结构"：**broker 决定用哪个提供者、preset 决定默认参数、extractor 决定怎么读 userinfo**，三者装配完成后，上层登录编排（`AuthService`）就只跟 `IOAuthService` 接口打交道，不需要为每个提供者写特判。
+OAuth 的完整登录时序（挂起会话、回调校验、邮箱白名单、回跳）在 [`auth-flow.md`](auth-flow.md) 的「OAuth 登录的挂起会话」章节展开。本文聚焦的是其"后台结构"：**broker 决定用哪个提供者、preset 决定默认参数、extractor 决定怎么读 userinfo**，三者装配完成后，上层登录编排（`AuthService`）就只跟 `IOAuthService` 接口打交道，不需要为每个提供者写特判。
 
 ## 与其它子文档衔接
 
-- OAuth 登录的端到端时序与 hooks → [`sso_flow.md`](sso_flow.md)
+- OAuth 登录的端到端时序与 hooks → [`auth-flow.md`](auth-flow.md)
 - 会话/用户上下文中 OAuth 组如何参与授权 → [`policy-engine.md`](policy-engine.md)
 - OAuth provider 配置的存储形态 → [`data-model.md`](data-model.md)

@@ -103,7 +103,7 @@ tinyauth/
 
 本解读按关注面拆分为多篇。主 README 承载概览与导读，深度内容在各子文档：
 
-- [`sso_flow.md`](sso_flow.md) — **统一登录 / 登出全流程**：授权码 + PKCE、SSO 登录、统一登出，详细到每个接口与参数（多张时序图）
+- [`auth-flow.md`](auth-flow.md) — **统一登录 / 登出全流程**：授权码 + PKCE、SSO 登录、统一登出，详细到每个接口与参数（多张时序图）
 - [`oauth-broker.md`](oauth-broker.md) — OAuth Broker 架构：prest/预设、per-provider extractor、bridge mode
 - [`policy-engine.md`](policy-engine.md) — 策略引擎：三值效果、6 条规则、静态 + 动态 ACL、路径正则语义
 - [`oidc-provider.md`](oidc-provider.md) — OIDC 提供者内核：参数校验、令牌存取、pairwise sub、密钥与 JWKS、scope 过滤
@@ -159,10 +159,10 @@ sequenceDiagram
 
 | 模块 | 职责 | 深度文档 |
 |------|------|----------|
-| ProxyController | 多代理 ForwardAuth 适配（`/api/auth/:proxy`） | [`sso_flow.md`](sso_flow.md) 端点总览 |
+| ProxyController | 多代理 ForwardAuth 适配（`/api/auth/:proxy`） | [`auth-flow.md`](auth-flow.md) 端点总览 |
 | OIDCController / OIDCService | OIDC 提供者，authorize/token/userinfo | [`oidc-provider.md`](oidc-provider.md) |
 | OAuthBrokerService | 多 OAuth 提供者管理 + extractor | [`oauth-broker.md`](oauth-broker.md) |
-| AuthService | 登录/登出/会话管理（本地/LDAP/OAuth/Tailscale） | [`sso_flow.md`](sso_flow.md) |
+| AuthService | 登录/登出/会话管理（本地/LDAP/OAuth/Tailscale） | [`auth-flow.md`](auth-flow.md) |
 | PolicyEngine + 6 规则 | 授权裁决 | [`policy-engine.md`](policy-engine.md) |
 | repository.Store | 会话/令牌存储抽象 | [`data-model.md`](data-model.md) |
 | AccessControlsService | ACL 静态 + 动态发现装配 | [`policy-engine.md`](policy-engine.md) |
@@ -176,7 +176,7 @@ sequenceDiagram
 - **Tailscale**：`tsnet` 入网，读 `Tailscale-User` 头直接建会话，支持 Funnel。
 - **Basic Auth**：`context_middleware` 解析 `Authorization: Basic` 映射到本地用户，复用会话。
 
-各方式完整时序见 [`sso_flow.md`](sso_flow.md)。
+各方式完整时序见 [`auth-flow.md`](auth-flow.md)。
 
 **代理集成**（`proxy_controller.go` 的多协议适配）：Traefik/Caddy → `ForwardAuth`；Envoy → [`ExtAuthz`, `ForwardAuth`]；Nginx → [`AuthRequest`, `ForwardAuth`]，后两者带头缺失时的回退。浏览器响应重定向、API 响应 401 + `x-tinyauth-location`（[internal/controller/proxy_controller.go:480-489]()、`349`）。
 

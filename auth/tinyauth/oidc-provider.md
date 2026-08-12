@@ -1,6 +1,6 @@
 # Tinyauth OIDC 提供者实现深读（OpenID Certified™）
 
-Tinyauth 不仅消费认证（ForwardAuth），还**自身就是 OpenID Connect 提供者**（OpenID Certified™ Basic OP，v5.1.0 起）。本文拆解 OIDC 服务器的内核实现：发现文档、授权参数校验、令牌生成、`sub` 派生、密钥与 JWKS、按 scope 过滤的 userinfo。它与 [`sso_flow.md`](sso_flow.md)（端到端时序）互补——本文讲"这个提供者端点的内部怎么算出来的"。
+Tinyauth 不仅消费认证（ForwardAuth），还**自身就是 OpenID Connect 提供者**（OpenID Certified™ Basic OP，v5.1.0 起）。本文拆解 OIDC 服务器的内核实现：发现文档、授权参数校验、令牌生成、`sub` 派生、密钥与 JWKS、按 scope 过滤的 userinfo。它与 [`auth-flow.md`](auth-flow.md)（端到端时序）互补——本文讲"这个提供者端点的内部怎么算出来的"。
 
 > **根因锚点**：做 OIDC 提供者的难点不只是"跑通授权码流程"，而是**在保持协议正确性的同时控制实现体积**。Tinyauth 用一个 `OIDCService` 类收敛令牌端点涉及的全部状态机与密码学（授权码、ID token、access/refresh token、JWKS），并把 `sessions`/`oidc_sessions` 的持久化委托给 sqlc 生成的 Store——这正是"认证提供者"与"认证消费者"在存储层汇合的地方（见 [`data-model.md`](data-model.md)）。
 
@@ -88,6 +88,6 @@ OIDC 会话生命周期由 `oidc_sessions` 表 + 一个 30 分钟定时清理 go
 
 ## 与其它子文档衔接
 
-- 授权码/token/userinfo 端点的**端到端时序与 hooks** → [`sso_flow.md`](sso_flow.md)
+- 授权码/token/userinfo 端点的**端到端时序与 hooks** → [`auth-flow.md`](auth-flow.md)
 - 密钥配置、client secret 从文件加载 → [`data-model.md`](data-model.md)
 - `oidc_sessions` 表的字段与读写路径 → [`data-model.md`](data-model.md)

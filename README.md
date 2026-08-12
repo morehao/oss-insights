@@ -206,6 +206,7 @@ graph TB
 |------|------|------|------|------|
 | [Mem0](ai-infra/mem0/) | Python+TS | AI Agent 智能记忆层：V3 ADD-only 记忆管线 + 多信号检索（语义+BM25+实体），四类 Provider 插件体系，双模式部署 + MCP | Apache-2.0 | [GitHub](https://github.com/mem0ai/mem0) |
 | [New API](ai-infra/new-api/) | Go | 统一 AI API 网关，聚合 40+ AI 供应商，提供统一接口、计费、权限管理 | AGPL-3.0 | [GitHub](https://github.com/QuantumNous/new-api) |
+| [DeepEval](ai-infra/deepeval/) | Python | LLM 评测框架（类似 pytest）：50+ Metric + LLM-as-Judge schema 判官协议，GEval/DAG 双判官，Synthesizer 造数据，@observe 非侵入 OTel 追踪，pytest 插件进 CI | Apache-2.0 | [GitHub](https://github.com/confident-ai/deepeval) |
 
 ### [AI 生成（AIGC）](aigc/)
 

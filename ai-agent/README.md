@@ -4,6 +4,7 @@
 
 | 项目 | 语言 | 说明 | 协议 | 仓库 |
 |------|------|------|------|------|
+| [DeepSeek Harness](deepseek-harness/) | TypeScript（+C11 原生） | DeepSeek 官方 Agent Harness："Everything is a plugin"，基于 vendored Cordis 插件运行时（可逆副作用），Session 事件溯源日志作为单一事实源（Model-visible means logged），可替换主循环（agent/agent-loop 解耦），capability seam 六族可交换后端（fs/subprocess/shell/terminal/sandbox/lsp，同执行世界级联迁移到 E2B），多 transport Subagent（in-process/fork/ACP/Codex/Claude Code），受控工具执行管道（pre/execute/post 瀑布+guards+approval+spill），自动上下文压缩，Landlock 原生沙箱，web/headless 双形态 | MIT | [GitHub](https://github.com/deepseek-ai/deepseek-harness) |
 | [OpenHuman](openhuman/) | Rust + TS | 本地优先 AI 超级助手桌面应用：进程内 Rust 核心（22 域族/85 模块），分脑编排（triage 四分类 + checkpointed tinyagents graph），记忆树+Obsidian/TinyCortex 记忆引擎，per-call 成本与模型路由，approval-gated 工作流，多链钱包，MCP 协议 | AGPL-3.0 | [GitHub](https://github.com/tinyhumansai/openhuman) |
 | [OpenWorker](openworker/) | Python+TS+Rust | 开源 AI 同事桌面平台，本地 sidecar 架构，审批门控 Agent 循环，5+ LLM Provider，26+ 连接器，MCP 协议，技能系统，上下文自动压缩，SSRF 防护 | MIT | [GitHub](https://github.com/andrewyng/openworker) |
 | [Lework](Lework/) | Go+TS+Electron | 企业级 AI 工作协作平台（AI 劳动力管理），双进程事件驱动，多 Agent 运行时，Task+Asset 模型，Skill/Tool + MCP/插件，企业级权限/审计 | Apache-2.0 | [GitHub](https://github.com/insmtx/Lework) |

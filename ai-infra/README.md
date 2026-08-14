@@ -8,3 +8,4 @@
 | [New API](new-api/) | Go | 统一 AI API 网关，聚合 40+ AI 供应商，提供统一接口、计费、权限管理 | AGPL-3.0 | [GitHub](https://github.com/QuantumNous/new-api) |
 | [Promptfoo](promptfoo/) | TypeScript | LLM 评估与红队测试：统一评估管线 + 百种攻击插件 + 风险定级，100+ Provider 抽象，SQLite 持久化 | MIT | [GitHub](https://github.com/promptfoo/promptfoo) |
 | [DeepEval](deepeval/) | Python | LLM 评测框架（类似 pytest）：50+ Metric + LLM-as-Judge 三层 schema 判官协议，GEval/DAG 双判官，Synthesizer 造数据，@observe 非侵入 OTel 追踪，pytest 插件进 CI | Apache-2.0 | [GitHub](https://github.com/confident-ai/deepeval) |
+| [darwin-skill](darwin-skill/) | Markdown(Agent Skill) | Agent Skill 自主优化器：9 维评分 rubric（结构59/效果35/meta6）+ paired 同-judge 多数决棘轮 + human-in-the-loop 三层守关，基于 autoresearch + 微软 SkillLens/SkillOpt | MIT | [GitHub](https://github.com/alchaincyf/darwin-skill) |

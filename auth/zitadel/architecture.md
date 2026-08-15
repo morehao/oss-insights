@@ -1,347 +1,243 @@
-# Zitadel 核心架构：CQRS + Event Sourcing 与启动管线
+# ZITADEL 架构与事件溯源核心
 
-> 事件存储、写侧、投影、启动迁移为本篇主轴。所有论断后的 `[路径:起-止]()` 引用均可点开在 Zitadel 源码仓库（`github.com/zitadel/zitadel`）下重定位验证。
+> 关注面：架构分层、Eventstore 门面、v3 事件写实现、写侧命令模式、启动管线。
+> 所有 `文件:行号` 以本地源码 `/Users/morehao/Documents/study/auth/zitadel` 为根，经程序重定位校验。
 
 ## 一句话根因
 
-Zitadel 是一套「单 PostgreSQL 内建的身份治理 / IAM 平台」，其全部业务状态都可被还原为不可变事件流：写侧只追加事件，读侧由投影把事件异步折算成可直接查询的关系表。因此它要在**事件存储（事实来源）** 与**关系投影（查询视图）** 之间做持续的拉锯与迁移，架构的演进几乎等同于事件表与投影表的演进。
+企业级 IAM 要同时满足「合规审计所需的不可变变更记录」与「高并发下可扩展的快速查询」，而直接写业务表无法在不引入双写的前提下同时达成。事件溯源 + CQRS 把每个变更铸造成不可变事件（写侧唯一真相），再用投影折算成关系表服务查询（读侧物化视图），两者解耦。
 
 ## 根因锚定：为什么是事件溯源 + CQRS
 
-身份与权限平台最棘手的不是「读写顺手」，而是**可审计、可追溯、可跨组织地理解状态为何变成这样**。传统 CRUD 直接覆盖字段，丢失了「为什么会变成这样」的过程。Zitadel 在写侧只铸造不可变事件（如 `user.added`、`group.changed`），把每次状态变迁留档，再由读侧投影把所有事件折算成关系行，供各 API 快速查询。V1/V2/V3 三版事件存储、以及「重放还原」与「关系表投影」两条读路，都是围绕这一核心取舍展开的。
+`Command` 是「存储一个事件的意图」、`Event` 是「已存储的不可变活动」，两者分离正是事件溯源「命令 → 事件」的两层模型；事件带 `Sequence`（聚合内序号）与 `Position`（全局序号），构成「不可变审计日志」的基本单元。
 
-关键权衡：事件追踪带来**完全可审计**与**可重建任何历史快照**的能力，代价是——事件不是当前状态的即时视图，读侧必须靠异步投影追赶，因此有「读可能落后于写」的最终一致性；同时事件表不断膨胀，需要全局单调的 `position` 给投影一条明确的消费顺序。
+[internal/eventstore/event.go:27-41]() Command 接口：描述「要存储的事件意图」及其 UniqueConstraints/Fields
+<!-- anchor: // Command is the intent to store an event into the eventstore ... Fields() []*FieldOperation -->
+[internal/eventstore/event.go:54-72]() Event 接口：序列/创建时间/全局位置 + Unmarshal
+<!-- anchor: // Event is a stored activity ... DataAsBytes() []byte -->
+
+读侧完全不同：查询走 `internal/query/`，数据来自 projection 折算出的关系表，而不是直接扫事件表：
+
+[internal/eventstore/eventstore.go:28-40]() 门面抽象「存储合法事件 + 过滤已存事件」，持有三种能力
+<!-- anchor: // Eventstore abstracts all functions needed to store valid events ... logger *slog.Logger -->
 
 ## 架构总览：写读两条通路的统一分层
 
-整套系统围绕「写只铸造不可变事件、读从关系投影取数」这条主线分层。`Eventstore` 是写读共用的门面，写侧由 `internal/command` 把命令折算成事件交给它，读侧由 `internal/query` + 投影处理器把事件折算成关系表再供各 API 查询：
+上层是统一门面（`internal/command` 写、`internal/query` 读），底层是多个可插拔的 eventstore 实现。门面把三种能力各委托给独立实现，实现可插拔、可并存。
 
 ```mermaid
 graph TB
-    subgraph Clients["客户端（console / apps / SDK）"]
-        C1["gRPC / connectRPC / HTTP-JSON"]
-    end
-
     subgraph API["API 层 internal/api"]
-        A1["grpc（v2/v3 handler）"]
-        A2["oidc provider internal/api/oidc"]
-        A3["login ui apps/login (Next.js)"]
+        API_CMD["命令入口: OIDC/gRPC/SAML"]
+        API_Q["查询入口"]
     end
 
-    subgraph Cmd["写侧 internal/command"]
-        B1["Commands 门面<br>校验→权限→重放聚合"]
+    subgraph CMD["写侧 internal/command"]
+        COMMANDS["Commands"]
+        REDUCER["AppendReducer / WriteModel"]
     end
 
-    subgraph ES["eventstore（门面 + v3 实现）"]
-        E1["Pusher / Querier / Searcher"]
-        E2["events2 事件表（不可变事实）"]
+    subgraph QRY["读侧 internal/query"]
+        QUERIES["Queries"]
+        PROJ["Projection / Handler"]
     end
 
-    subgraph Read["读侧 internal/query"]
-        Q1["Projection Handlers<br>按 position 增量消费"]
-        Q2["关系投影表<br>(projections / zitadel)"]
+    subgraph ESH["eventstore 门面"]
+        ES["Eventstore"]
+        PUSHER["Pusher"]
+        QUERIER["Querier"]
+        SEARCHER["Searcher"]
     end
 
-    C1 --> A1
-    A1 --> B1
-    A2 --> B1
-    C1 --> A2
-    A3 --> A1
-    B1 --> E1
-    E1 --> E2
-    E2 --> Q1
-    Q1 --> Q2
+    subgraph IMPL["实现"]
+        V3["v3 → eventstore.push 存储函数"]
+        SQLQ["repository/sql (old_es)"]
+        V4["es_v4 / backend-v3"]
+    end
+
+    DB[("PostgreSQL: events2 + 投影表")]
+
+    API_CMD --> COMMANDS
+    COMMANDS --> REDUCER --> ES
+    ES --> PUSHER & QUERIER & SEARCHER
+    PUSHER --> V3
+    SEARCHER --> V3
+    QUERIER --> SQLQ
+    QUERIER --> V4
+    V3 --> DB
+    SQLQ --> DB
+    V4 --> DB
+    API_Q --> QUERIES
+    QUERIES --> PROJ
+    PROJ --> ES
+    PROJ --> DB
 ```
 
-命令侧构造事件、`Eventstore.Push` 原子落盘后，读侧投影独立异步追赶，写读路径在物理上解耦——「写可审计、读可查询」两全的核心就在此处。图中 `Q2`（关系投影表）是读模型的主 sink：gRPC v2/v3 查询与 OIDC 的 userinfo 都直接从这些投影关系表取数，不再经事件重放。「构造事件」「按 position 增量消费」的语义由图中写读两侧在 `E1→E2` 与 `E2→Q1` 的方向上承载（不经边标签）。
+门面与实现解耦的结构基础是 `Config` 用接口注入三种能力：
 
-> 现有部署把登录 UI 从内嵌 Go 模板逐步迁到独立 Next.js `apps/login`，但 API 面（`internal/api/grpc`、`internal/api/oidc`）仍是登入发生的地方，前端只做编排，不持有身份状态。
+[internal/eventstore/config.go:7-14]() Eventstore 配置用接口注入 Pusher/Querier/Searcher/Queue
+<!-- anchor: type Config struct { ... Queue    ExecutionQueue -->
 
 ## 启动管线：initialise → setup → start 三段式
 
-生产部署的典型启动分三步，均由 `cmd` 下的 cobra 子命令承载：先 `initialise` 建库建 schema 与权限，再 `setup` 顺序执行迁移步骤（含创建首个 instance / 建事件表），最后 `start` 才真正拉起 API 服务。setup 与 start 可分开、可重复用于零停机升级（先跑新版本 setup 再平滑切换 start）。
+`main.go` 构造根命令并执行；根命令把 `initialise/setup/start/ready/...` 注册进 cobra。
 
-[cmd/start/start.go:124-134]() 启动由 cobra 命令 `startZitadel` 收口，实际业务加载在 `startZitadel` 的上下文里完成，迁移/初始化由子命令先行完成。
-<!-- snippet: func New(server chan<- *Server) *cobra.Command {
-	return &cobra.Command{
-		Use:   "start",
-		Short: "Start ZITADEL",
-		Long:  "Start the ZITADEL server with all dependencies",
-		RunE: func(cmd *cobra.Command, args []string) (err error) {
-			// ...
-			return startZitadel(cmd.Context(), config, masterKey, server)
-		},
+```go
+func main() {
+	args := os.Args[1:]
+	rootCmd := cmd.New(os.Stdout, os.Stdin, args, nil)
+	ctx := logging.NewCtx(context.Background(), logging.StreamRuntime)
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
+		os.Exit(1)
 	}
-} -->
-
-[cmd/start/start_from_setup.go:55-57]() `start --setup` 或分离的 setup 子命令先构造迁移步骤并在 startBeforeBackend 阶段执行，保证服务起来前表已就绪。
-<!-- snippet: 			setupSteps, err := setup.NewSteps(cmd.Context(), viper.New())
-			// ...
-			err = setup.Setup(cmd.Context(), setupConfig, setupSteps, masterKey) -->
-
-```mermaid
-sequenceDiagram
-    participant Op as 运维
-    participant Init as cmd/initialise
-    participant Setup as cmd/setup
-    participant ES as events2/system
-    participant DB as PostgreSQL 投影
-    participant Start as cmd/start (API) 
-
-    Op->>Init: 首次：initialise <flags>
-    Init->>DB: 建 schema + 权限（不建表）
-    Init-->>Op: 库就绪
-
-    Op->>Setup: setup（可重复/零停机）
-    Setup->>ES: 推 system.migration.started
-    loop 每个迁移步骤（01…74 + ternary）
-        Setup->>Setup: executeMigration(step)
-        Setup->>ES: 校验/推进幂等状态
-        Setup->>DB: 建事件表/投影表/补列/迁移数据
-    end
-    Setup->>ES: system.migration.done
-    Setup-->>Op: 结构就绪
-
-    Op->>Start: start
-    Start->>ES: "加载 Eventstore<br>(pusher/querier)"
-    Start->>DB: 启动投影消费者
-    Start-->>Op: API 对外
+}
 ```
+[main.go:11-19]() 入口只构造根命令并执行
+<!-- anchor: func main() { ... os.Exit(1) -->
 
-这三段式把「数据库结构的演进」与「服务进程的业务启动」在时间上解耦：setup 阶段就能用版本化迁移安全落地新表，start 阶段无需执行任何 DDL——这是零停机升级的工程基础。
+```go
+	cmd.AddCommand(
+		admin.New(), //is now deprecated, remove later on
+		initialise.New(),
+		setup.New(),
+		start.New(server),
+		start.NewStartFromInit(server),
+		start.NewStartFromSetup(server),
+		mirror.New(&configFiles),
+		key.New(),
+		ready.New(),
+	)
+```
+[cmd/zitadel.go:58-68]() 子命令装配
+<!-- anchor: cmd.AddCommand( ... ready.New(), -->
+
+`setup` 显式顺序执行迁移步骤：`s14NewEventsTable`（建 events2）、`s40InitPushFunc`（建存储函数）排最前，随后 `FirstInstance` 铸首实例事件，最后建投影表——先有事件表与写函数，投影才有数据可折算：
+
+[cmd/setup/setup.go:266-275]() 迁移步骤顺序编排：先建 events2/push 函数再铸首实例
+<!-- anchor: for _, step := range []migration.Migration{ ... steps.s5LastFailed, -->
+
+`setup` 与 `start` 都在跑迁移/启动前装配事件存储，注入 `Config.Eventstore`：
+
+[cmd/setup/setup.go:162-166]() setup 装配 Querier=old_es、Pusher/Searcher=v3
+<!-- anchor: config.Eventstore.Querier = old_es.NewPostgres(dbClient) ... eventstoreClient := eventstore.NewEventstore(config.Eventstore) -->
+
+```go
+	config.Eventstore.Pusher = new_es.NewEventstore(dbClient, new_es.WithExecutionQueueOption(q))
+	config.Eventstore.Searcher = new_es.NewEventstore(dbClient, new_es.WithExecutionQueueOption(q))
+	config.Eventstore.Querier = old_es.NewPostgres(dbClient)
+	eventstoreClient := eventstore.NewEventstore(config.Eventstore)
+```
+[cmd/start/start.go:202-207]() start 装配：Pusher/Searcher=v3、Querier=old_es
+<!-- anchor: config.Eventstore.Pusher = new_es.NewEventstore(dbClient, new_es.WithExecutionQueueOption(q)) ... eventstoreClient := eventstore.NewEventstore(config.Eventstore) -->
 
 ## 核心结构一：统一事件存储门面 Eventstore
 
-`internal/eventstore/eventstore.go` 里 `Eventstore` 是所有写读的枢纽，它不直接碰 SQL，而是把三件能力抽象为三个可替换接口：`Pusher`（写事件）、`Querier`（过滤事件到 reducer）、`Searcher`（按字段搜索）。`Eventstore` 本身只做跨切面的事：push 超时与失败重试、事件类型映射、push 后通知执行队列。这使得「用什么存储实现」能在启动或 setup 时注入，也是它能在 V3/V4 之间切换、甚至同进程混用的前提。
+门面持有三种独立能力，对外暴露统一的 `Push / Filter / Search` 等方法：
 
-[internal/eventstore/eventstore.go:30-39]() `Eventstore` 把 Pusher/Querier/Searcher 三个存储接口打包在一起，自身只处理超时、重试、映射等横切逻辑。
-<!-- snippet: type Eventstore struct {
-	PushTimeout time.Duration
-	maxRetries  int
+[internal/eventstore/eventstore.go:28-40]() 门面持有 pusher/querier/searcher
+<!-- anchor: type Eventstore struct { ... logger *slog.Logger -->
 
-	pusher   Pusher
-	querier  Querier
-	searcher Searcher
+**Pusher**（写事件，唯一写入口）是独立接口：
 
-	logger *slog.Logger
-} -->
+[internal/eventstore/eventstore.go:309-314]() Pusher 接口：Health + Push
+<!-- anchor: type Pusher interface { ... Push(ctx context.Context, client new_db.QueryExecutor, commands ...Command) (_ []Event, err error) -->
 
-写入口 `PushWithNewClient` 是整套写模型的核心：它给整个 push 挂 `PushTimeout` 超时，针对 `events2_pkey` 主键冲突（SQLSTATE 23505）做有限重试——因为 `position` 并发分配可能撞牌——再把 push 发出的事件做类型映射并 notify 订阅方。重试逻辑只在非事务调用下生效（传入事务时调用方自行重试）。
+`Push` 带**重试 + 超时 + 冲突处理**——PK 冲突（`events2_pkey` 23505）与可串行化/读已提交冲突（`CR000`/`40001`）会自动重试，这是写路径健壮性的核心：
 
-[internal/eventstore/eventstore.go:133-153]() 写侧统一入口：超时 + 主键冲突重试 + 事件映射 + 通知，业务层的并发冲突在 push 层兜底。
-<!-- snippet: retry:
-	for ; retries <= es.maxRetries; retries++ {
-		events, err = es.pusher.Push(ctx, client, cmds...)
-		// if there is a transaction passed the calling function needs to retry
-		if _, ok := client.(new_db.Transaction); ok {
-			break retry
-		}
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) {
-			break retry
-		}
-		if pgErr.ConstraintName == "events2_pkey" && pgErr.SQLState() == "23505" {
-			logging.WithError(ctx, err).Info("eventstore push retry")
-			continue
-		}
-		if pgErr.SQLState() == "CR000" || pgErr.SQLState() == "40001" {
-			logging.WithError(ctx, err).Info("eventstore push retry")
-			continue
-		}
-		break retry
-	} -->
+[internal/eventstore/eventstore.go:133-152]() 重试循环：识别特定 SQLSTATE 后 continue 重试
+<!-- anchor: retry: ... break retry -->
 
-读入口 `FilterToReducer` 不假设存储层：它把 searchQuery 交给 querier，逐事件调用 `mapEvent` 还原成强类型事件后再喂给 reducer。reducer 是写侧 WriteModel / 读侧投影共用的抽象——同一套「append 事件、再 reduce」的流式协议。
+`FilterToReducer` 是读侧核心——把事件喂给 reducer 逐条 reduce，门面负责先做 event→struct 映射，并在执行前 `ensureInstanceID` 自动注入租户过滤：
 
-[internal/eventstore/eventstore.go:253-263]() 读侧流式接口 `FilterToReducer`：逐事件映射后 append 到 reducer 并触发其 Reduce，内存友好。
-<!-- snippet: func (es *Eventstore) FilterToReducer(ctx context.Context, searchQuery *SearchQueryBuilder, r reducer) error {
-	searchQuery.ensureInstanceID(ctx)
-	return es.querier.FilterToReducer(ctx, searchQuery, func(event Event) error {
-		event, err := es.mapEvent(event)
-		if err != nil {
-			return err
-		}
-		r.AppendEvents(event)
-		return r.Reduce()
-	})
-} -->
-
-`Querier` 接口定义了读侧需要的最小能力：流式过滤、最新 position、实例 ID 列表。写侧用自己的 `Pusher` 实现，旧 `Postgres` 与 V3 各实现其一，门面据此在启动时组合出统一读写入口。
-
-[internal/eventstore/eventstore.go:296-307]() `Querier`（读）与 `Pusher`（写）是两条对称接口，门面持有两者构成统一 Eventstore。
-<!-- snippet: type Querier interface {
-	// Health checks if the connection to the storage is available
-	Health(ctx context.Context) error
-	// FilterToReducer calls r for every event returned from the storage
-	FilterToReducer(ctx context.Context, searchQuery *SearchQueryBuilder, r Reducer) error
-	// LatestPosition returns the latest position found by the search query
-	LatestPosition(ctx context.Context, queryFactory *SearchQueryBuilder) (decimal.Decimal, error)
-	// InstanceIDs returns the instance ids found by the search query
-	InstanceIDs(ctx context.Context, queryFactory *SearchQueryBuilder) ([]string, error)
-	// Client returns the underlying database connection
-	Client() *database.DB
-} -->
-
-`write_model.go` 与 `read_model.go` 定义了两种 reducer 的最小行为：`WriteModel` 服务命令侧（记录 `ProcessedSequence` 做乐观并发版本判断），`ReadModel` 服务读查询。二者都遵循「`AppendEvents` 只管收集、`Reduce` 一次性折算最新状态并清空事件列表」的约定，事件消费完即释放。
-
-[internal/eventstore/write_model.go:10-17]() WriteModel 是命令侧最小状态：靠 ProcessedSequence 标记推进到的事件，供写命令判断并发版本。
-<!-- snippet: type WriteModel struct {
-	AggregateID       string    `json:"-"`
-	ProcessedSequence uint64    `json:"-"`
-	Events            []Event   `json:"-"`
-	ResourceOwner     string    `json:"-"`
-	InstanceID        string    `json:"-"`
-	ChangeDate        time.Time `json:"-"`
-} -->
-
-[internal/eventstore/read_model.go:12-21]() ReadModel 是最小读模型，额外带全局 Position，是投影按事件流顺序消费的锚点。
-<!-- snippet: type ReadModel struct {
-	AggregateID       string          `json:"-"`
-	ProcessedSequence uint64          `json:"-"`
-	CreationDate      time.Time       `json:"-"`
-	ChangeDate        time.Time       `json:"-"`
-	Events            []Event         `json:"-"`
-	ResourceOwner     string          `json:"-"`
-	InstanceID        string          `json:"-"`
-	Position          decimal.Decimal `json:"-"`
-} -->
+[internal/eventstore/eventstore.go:252-263]() FilterToReducer：确保 instance 过滤 + 逐条 reduce
+<!-- anchor: func (es *Eventstore) FilterToReducer(ctx context.Context, searchQuery *SearchQueryBuilder, r reducer) error { ... return r.Reduce() -->
 
 ## 核心结构二：写侧 Commands 门面与「重放 + Push」命令模式
 
-`internal/command/command.go` 的 `Commands` 是命令门面：持有 eventstore、若干加密密钥、权限检查等依赖，但**核心只有一件事——把命令折算成不可变事件并 push**。绝大多数业务写方法遵循同一模板：校验参数（`IsValid`）→ 权限检查（`checkPermissionXxx`）→ 用 `getXxxWriteModelByID` 重放该聚合当前状态判断存在性 / 字段 → 构造事件 → `pushAppendAndReduce` 落盘。
+`Command` 是写侧核心抽象——一个命令代表「一个尚未落库的事件意图」。业务方法构造若干命令后统一调用 `pushAppendAndReduce`：先一次事务 `Push(cmds...)` 落库返回 `[]Event`，再把返回事件 `AppendEvents` 进 ReadModel 并 `Reduce()`：
 
-模板最核心的收口是 `pushAppendAndReduce`：先 `eventstore.Push` 落盘，再把 push 返回的事件本地 reduce 回写模型，保证命令返回值拿到最新状态。
+[internal/command/command.go:255-264]() 重放+Push：Push 落库 → AppendAndReduce 折算
+<!-- anchor: func (c *Commands) pushAppendAndReduce(ctx context.Context, object AppendReducer, cmds ...eventstore.Command) error { ... return AppendAndReduce(object, events...) -->
 
-[internal/command/command.go:255-264]() 命令侧写模板收口：Push 落盘后对对象 reduce，命令行拿到的对象即最新事件折算结果。
-<!-- snippet: func (c *Commands) pushAppendAndReduce(ctx context.Context, object AppendReducer, cmds ...eventstore.Command) error {
-	if len(cmds) == 0 {
-		return nil
-	}
-	events, err := c.eventstore.Push(ctx, cmds...)
-	if err != nil {
-		return err
-	}
-	return AppendAndReduce(object, events...)
-} -->
+`AppendReducer` 接口定义两段协约——`AppendEvents` 加事件、`Reduce` 折算：
 
-以 `CreateGroup` 为例看完整写主线：生成 ID（`idGenerator.Next`）→ `IsValid` → 校验 resource_owner → `checkPermissionCreateGroup` → `checkOrgExists` → `getGroupWriteModelByID` 重放判断「同 ID 已存在」→ `repo.NewGroupAddedEvent` 构造不可变事件 → `pushAppendAndReduce` 落盘 → 返回 `ObjectDetails`。
-
-[internal/command/group.go:67-77]() 写命令典型形态：校验 → 权限 → 重放判断 → 构造事件 → push，返回最新 details。
-<!-- snippet: 	err = c.pushAppendAndReduce(ctx,
-		groupWriteModel,
-		repo.NewGroupAddedEvent(ctx,
-			GroupAggregateFromWriteModel(ctx, &groupWriteModel.WriteModel),
-			group.Name,
-			group.Description,
-		))
-	if err != nil {
-		return nil, err
-	}
-	return writeModelToObjectDetails(&groupWriteModel.WriteModel), nil -->
-
-[internal/command/group.go:163-170]() 写命令用 FilterToQueryReducer 从事件流重放聚合当前状态，这是「命令侧读」的标准姿势。
-<!-- snippet: func (c *Commands) getGroupWriteModelByID(ctx context.Context, groupID, orgID string, userIDs []string) (*GroupWriteModel, error) {
-	groupWriteModel := NewGroupWriteModel(groupID, orgID, userIDs)
-	err := c.eventstore.FilterToQueryReducer(ctx, groupWriteModel)
-	if err != nil {
-		return nil, err
-	}
-	return groupWriteModel, nil
-} -->
-
-值得留意 `Commands` 还暴露后台入口：`asyncPush` 对纯日志类事件在 goroutine 里异步 push（用 `context.WithoutCancel` 规避请求取消，且不等结果），`Close` 等待所有异步作业收尾。这体现了「某些事件的落盘不影响业务结果、可后置」的权衡。
-
-[internal/command/command.go:378-400]() 异步 push：把纯日志事件放到后台 goroutine 落盘、请求不等它；Close 负责统一收尾。
-<!-- snippet: func (c *Commands) asyncPush(ctx context.Context, cmds ...eventstore.Command) {
-	// Create a new context, as the request scoped context might get
-	// canceled before we where able to push.
-	// The eventstore has its own PushTimeout setting,
-	// so we don't need to have a context with timeout here.
-	ctx = context.WithoutCancel(ctx)
-
-	c.jobs.Add(1)
-
-	go func() {
-		defer c.jobs.Done()
-		localCtx, span := tracing.NewSpan(ctx)
-
-		_, err := c.eventstore.Push(localCtx, cmds...)
-		if err != nil {
-			for _, cmd := range cmds {
-				logging.WithError(err).Warnf("could not push event %q", cmd.Type())
-			}
-		}
-
-		span.EndWithError(err)
-	}()
-} -->
+[internal/command/command.go:249-253]() AppendReducer：追加事件 + 折算成对象状态
+<!-- anchor: type AppendReducer interface { ... Reduce() error -->
 
 ## 核心结构三：V3 事件写实现——Postgres 存储函数批量写 events2
 
-经典 `Eventstore` 只是门面，真正落盘的在 `internal/eventstore/v3`。它实现 `eventstore.Pusher`，核心 `writeCommands` 在单个事务里依次做四件事：对实例加 `pg_advisory_xact_lock_shared` 提供读写隔离；调用 PG 存储函数 `eventstore.push` 批量插入 `eventstore.events2`；用 `handleUniqueConstraints` 处理唯一约束；用 `queueExecutions` 把命中的事件入执行（river）队列。这把「锁 → 批量插 → 约束 → 队列」的事件溯源事务完整性一次性打包。
+`internal/eventstore/v3` 的 `Push` 把一批 command 打包，调用 Postgres 存储函数 `eventstore.push`，函数内部先算 sequence/position/owner 再一次性 INSERT 进 `events2`，并通过 `RETURNING` 回读落库后的 owner/createdAt/sequence/position：
 
-[internal/eventstore/v3/push.go:32-72]() V3 写实现的四步事务：实例共享锁、批量写事件、唯一约束、执行队列。setup 未执行时降级到 pushWithoutFunc。
-<!-- snippet: func (es *Eventstore) writeCommands(ctx context.Context, client database.QueryExecutor, commands []eventstore.Command) (_ []eventstore.Event, err error) {
-	if client == nil {
-		client = es.client
-	}
+[internal/eventstore/v3/push.go:83-88]() 调存储函数 eventstore.push 并回读落库结果
+<!-- anchor: commandMapping := "eventstore.command2" ... rows, err := tx.Query(ctx, fmt.Sprintf(`select owner, created_at, "sequence", position from eventstore.push($1::%s[])`, commandMapping), cmds) -->
 
-	tx, close, err := es.pushTx(ctx, client)
-	if err != nil {
-		return nil, err
-	}
-	if close != nil {
-		defer func() {
-			err = close(err)
-		}()
-	}
+调用前包一层**事务 + 实例级 advisory 锁**，保证同一 instance 内并发写事件时读-读一致：
 
-	// lock the instance for reading events if await events is set for the duration of the transaction.
-	_, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock_shared('eventstore.events2'::REGCLASS::OID::INTEGER, hashtext($1))", authz.GetInstance(ctx).InstanceID())
-	if err != nil {
-		return nil, err
-	}
+[internal/eventstore/v3/push.go:32-48]() pushTx 事务 + instance 级共享 advisory 锁
+<!-- anchor: func (es *Eventstore) writeCommands(ctx context.Context, client database.QueryExecutor, commands []eventstore.Command) (_ []eventstore.Event, err error) { -->
 
-	events, err := writeEvents(ctx, tx, commands)
-	if err != nil {
-		return nil, err
-	}
-	if err = handleUniqueConstraints(ctx, tx, commands); err != nil {
-		return nil, err
-	}
+实际的存储函数由 setup step 40 创建。核心函数 `eventstore.commands_to_events`：对每个聚合取上一事件 sequence，用窗口函数 `ROW_NUMBER()` 原子地逐条 +1，保证聚合内 sequence 严格单调；owner 默认沿用上一次：
 
-	err = es.handleFieldCommands(ctx, tx, commands)
-	if err != nil {
-		return nil, err
-	}
+```sql
+        LEFT JOIN LATERAL (
+            SELECT
+                e.owner,
+                e.sequence
+            FROM eventstore.events2 AS e
+            WHERE e.instance_id = c.instance_id
+                AND e.aggregate_type = c.aggregate_type
+                AND e.aggregate_id = c.aggregate_id
+            ORDER BY e.sequence DESC
+            LIMIT 1
+        ) AS e ON TRUE
+```
+[cmd/setup/40/02_func.sql:53-63]() 取各聚合上一序列（SQL 侧「重放最近事件」）
+<!-- anchor: LEFT JOIN LATERAL ( ... ) AS e ON TRUE -->
 
-	err = es.queueExecutions(ctx, tx, events)
-	if err != nil {
-		return nil, err
-	}
+```sql
+        , COALESCE(e.sequence, 0) + ROW_NUMBER() OVER (PARTITION BY c.instance_id, c.aggregate_type, c.aggregate_id ORDER BY c.in_tx_order) AS sequence
+```
+[cmd/setup/40/02_func.sql:88-95]() 窗口函数原子递增聚合内 sequence
+<!-- anchor: RETURN QUERY SELECT -->
 
-	return events, nil
-} -->
+setup step 40 在跑完建表 step 14 后执行，创建类型 `command2` 与存储函数，并强制重置连接池让新类型生效：
 
-push.sql 底部就是落盘用的 INSERT：写入 `instance_id / owner / aggregate_type / aggregate_id / revision / creator / event_type / payload / sequence / created_at / position / in_tx_order`，并 `RETURNING created_at, position` 把存储层分配的创建时间与全局位置读回来写进事件对象。`position` 是投影消费顺序的全局时钟。
+[cmd/setup/40.go:45-59]() 执行存储函数 SQL 并重置空闲连接
+<!-- anchor: statements, err := mig.prepareStatements(ctx) ... conn.Release() -->
 
-[internal/eventstore/v3/push.sql:1-18]() 写事件的目标表与返回列：position 由数据库侧生成，作为投影消费顺序的全局时钟。
-<!-- snippet: INSERT INTO eventstore.events2 (
-    instance_id
-    , "owner"
-    , aggregate_type
-    , aggregate_id
-    , revision
+## 设计决策：Why / 权衡 / 对比
 
-    , creator
-    , event_type
-    , payload
-    , "sequence"
-    , created_at
+### 为什么事件溯源而非直接写关系表
 
-    , "position"
-    , in_tx_order
-) VALUES
-    %s
-RETURNING created_at, "position"; -->
+传统方案把业务对象当前状态直接存表，会丢失「它怎么变成这样」的过程；IAM 的合规审计、账号找回、误操作回滚都依赖这段过程。事件溯源把「状态」降级为「事件的 reduce 副产物」，真相永远是可重放的事件流，任何投影随时可从头重放。
 
+权衡代价：
+- 一次读当前状态需重放历史事件（除非有投影缓存），延迟高——这是读侧必须引入 projection 的根本原因（事件溯源与 CQRS 是配套关系）。
+- 事件模型已发布难修改，需 revision/迁移策略；ZITADEL 让事件携带 `revision`，并让存储函数向后兼容 `eventstore.command` 与 `eventstore.command2` 两种结构：
+
+[internal/eventstore/v3/push.go:83-86]() 兼容新旧 command 类型结构
+<!-- anchor: commandMapping := "eventstore.command2" ... commandMapping = "eventstore.command" -->
+
+### 为何兼容多套事件写实现
+
+因为事件溯源落地难、演进快，不同阶段采用不同方案。ZITADEL 用接口化门面把实现决策推迟到装配期，使「写用什么、读用什么、搜用什么」可独立演进、甚至并存——同一进程同时注入 old_es、v3、es_v4 三个实现。
+
+权衡代价：三套实现 = 三套 SQL、三套类型注册、三套事务语义，主成本是维护与测试；门面层为平滑迁移保留了不少兼容分支（重试、events2 不存在回退）。
+
+### 重放命令模式的利与弊
+
+**利**：写侧代码极简统一，所有「变更域对象」收敛到 `push + AppendAndReduce` 一个模式；天然支持批量/原子（多命令一次 Push 单事务，全成或全不成）；事件即审计，无需额外审计表。
+
+**弊**：顺序强约束——同一聚合并发写会因 sequence 冲突而频繁重试；重放成本——长历史对象 reduce 开销大，需投影与缓存兜底；并发安全依赖事务与锁——V3 把逻辑推进 Postgres 存储函数内保证原子性，正说明「应用层重放不可靠、需下推到 DB」。
+
+## 不足 / 风险
+
+1. **版本命名漂移严重**：`internal/eventstore/v3`、`repository/sql`（old）、`internal/v2/eventstore`（es_v4）、表名 `events2`、step 40 自称 v4，彼此无法对应。
+2. **多套读实现并存**：old_es 与 es_v4 同时装配，查询语义/测试双份维护，是迁移期技术债。
+3. **主键冲突重试依赖 SQLSTATE 字符串匹配**：`events2_pkey`/`CR000`/`40001` 魔术值散落，换存储或 Postgres 行为变化时重试逻辑会静默失效。
+4. **读路径延迟来自重放 + 投影追尾**：写后读侧关系表靠投影异步折算，存在一致性滞后（最终一致）。
+5. **owner 推断依赖约定而非类型强制**：`commands_to_events` 默认继承上一事件 owner，只有 `enforce_owner` 时才强制覆盖；忘记设置即可能写入错误 resource owner。
+
+## 参考注记（命名澄清）
+
+`internal/eventstore/v3/`（包名 `eventstore`）承担 Pusher + Searcher；`internal/eventstore/repository/sql`（别名 `old_es`）承担 Querier；另有 `internal/v2/eventstore`（别名 `es_v4`）与新增 `backend/v3/` 关系存储作为新读实现。`events2` 是 PostgreSQL 中事件表实际表名，与「V2/V3」版本编号无稳定对应。

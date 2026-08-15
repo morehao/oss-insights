@@ -17,6 +17,7 @@
 - [`planning-and-orchestration.md`](planning-and-orchestration.md) — 规划/目标/调度/工作流：goal、plan-mode、schedule、workflow 引擎
 - [`apps.md`](apps.md) — CLI 与 Web 应用层：web/headless 双形态、host-browser 连接、启动流程
 - [`llm.md`](llm.md) — LLM 适配与流式：ctx.llm seam、StreamChunk 协议、重试、凭证解析
+- [`system-prompt.md`](system-prompt.md) — 核心提示词装配：identity/persona/tool-guidance 三段、变量插值、作用域遮蔽、complete 段
 - [`skill-system.md`](skill-system.md) — Skill 技能体系：catalog 前缀 + 按需加载、provider 注册表 seam
 
 ## 概览

@@ -1,313 +1,345 @@
-# LLM 适配层与流式协议（LLM Adapter & Streaming）
+# LLM 能力层：消息/流式词汇与适配器 seam
 
-> 对应关注面：`packages/llm/`（llm / llm-deepseek / llm-pi-ai / llm-retry / token-meter）与 `packages/credentials/`——把「任意 LLM provider」变成「接口后可热插拔接缝」的核心模块。
-> 源码根 `deepseek-harness/`。
+> 子文档之一，聚焦 `ctx.llm`。覆盖 `packages/llm/*`（llm、llm-deepseek、llm-pi-ai、llm-retry、token-meter）。整体哲学见 [README](README.md)；本文位居「契约/词汇」能力面，上承 [architecture.md](architecture.md)（运行时装配）、下接 [agent-loop-runtime.md](agent-loop-runtime.md)（消费 `llm/stream`）。
 
-## 在项目中的角色（去掉它会怎样）
+核心主张：模型调用是 agent 里唯一一台「会变」的外接机器——新 provider、新模型系列、新 thinking 模式、新重试语义几乎每天在变。若把 DeepSeek 的 HTTP 细节、SSE 解析、thinking 字段焊进内核，内核就会成为「DeepSeek 专用」。因此 LLM 必须作为一个 seam 存在：**内核只定词汇和注册契约，模型生产实现由插件供给，消费方只依赖抽象**。
 
-`ctx.llm`（`LlmRuntime`）同时是：
-- **词汇中心**：`Message`/`ContentBlock`/`StreamChunk`/`FinishReason`/`TokenUsage` 这套 provider-neutral 语言，被 agent-loop、session、compaction、token-meter、tools 共享。
-- **adapter 注册处**：`registerAdapter` 绑定 provider 路由到实现，`registerConfigurableProviders`/`registerModelDiscovery` 供配置面展示休眠 provider。
-- **瀑布拦截点**：`llm/stream` waterfall 让重试、回放、路由、语法校验都能包裹每次模型调用而不用改 loop。
-- **错误归一化边界**：把 provider 的 throw / in-band 错误折叠成统一 `LlmFailure`，供 `agent/request-error` 恢复。
+## 角色 / 根因：为什么 LLM 是"可交换 seam"而非硬编码 DeepSeek API
 
-没有它，agent-loop 会硬编码一个 SDK——`step()` 里的 `stream`（[packages/core/agent-loop/src/agent.ts:345-345]()）就得换手写 OpenAI/DeepSeek/pi-ai 分支，落盘、错误恢复、token 计量全部按 provider 分叉——把「语义恒量」焊死进「物理差异」，正是本仓库刻意避免的。
-<!-- snippet:       const stream = preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request) -->
+DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个主张最先落到 LLM 上：模型调用是 agent 里唯一一台"会变"的外接机器——有新的 provider、新的模型系列、新的 thinking 模式、新的计费与重试语义，且几乎每天在变。若把 DeepSeek 的 HTTP 细节、SSE 解析、thinking 字段焊进内核，内核就会成为"DeepSeek 专用"而失去插件骨架的意义；任何新 provider 都要改内核。因此 LLM 必须作为一个 seam 存在：**内核只定词汇（Message/ContentBlock/StreamChunk）和注册契约，模型生产实现由插件供给，消费方（agent loop）只依赖抽象**。
 
-## 解决什么问题、根因
+- 抽象 `llm` 服务：`LlmRuntime` 被声明为 Cordis `Context` 上的 `ctx.llm`，是一个"适配器注册表 + 可瀑布拦截的流式调用 API"，`LlmAdapter` 是给 provider 后端的抽象基类。内核不绑定任何具体厂商，只持有这两个抽象符号。
 
-根因注释在类型文件头：Canonical provider-neutral message and streaming vocabulary for the loop, session log, and plugins. Adapters alone translate provider wire messages; mapped interfaces make the content, source, and finish unions extensible（[packages/llm/llm/src/types.ts:1-5]()）。
-<!-- snippet: /**
- * Canonical provider-neutral message and streaming vocabulary for the loop,
- * session log, and plugins. Adapters alone translate provider wire messages;
- * mapped interfaces make the content, source, and finish unions extensible.
- */ -->
+  `[packages/llm/llm/src/index.ts:284-284]()` 类声明 `export class LlmRuntime extends Service`
+  <!-- anchor: 调用
+  export class LlmRuntime extends Service -->
+  `[packages/llm/llm/src/index.ts:46-49]()` 挂到 `Context.llm`
+  <!-- anchor: 调用
+  interface Context {
+    llm: LlmRuntime
+  -->
 
-具体问题：
-1. loop 不能依赖任何 provider 线协议；否则每换一个模型供应商就得改 driver。
-2. 流式协议既要表达 interleaved 输入（多 tool-call + text + reasoning 交错），又要表达退化完成（空响应、max-tokens 截断、中途断流）。
-3. 错误必须先归一化再上抛：401/429/500、断流、JSON 畸形、超时若以 provider 原文传恢复层，重试策略与用户诊断都无法跨 provider 移植。
-4. 每个 provider 的「空完成」与「max-tokens 截断的未执行 tool-call」必须语义一致，否则 loop 无法安全决定要不要重跑。
-5. credential 与配置要能在不重启下轮换：配置只携带 secret 引用，providers 拥有值，每次操作解析。
+- **必给证据**——唯一必需方法是 `LlmAdapter.stream()`（第 214-244 行区间内，`abstract stream` 在 index.ts:232），其余全部是带默认实现的"可选能力描述"（`providerInfo`/`providerRetryPolicy`/`listModels`/`resolveModel`）。这让最小适配器只有 1 个方法要写，是"零摩擦接入"的根因。
 
-## 设计思路（seam + Map 扩展）
+  `[packages/llm/llm/src/index.ts:227-232]()` 唯一必需方法
+  <!-- anchor: 调用
+   * Stream one model call as raw chunks. The only required method.
+   abstract stream(options: GenerateOptions): AsyncIterable<StreamChunk>
 
-### 抽象只画最小面，provider 通过 adapter 注入
+- LLM 也是"Capability Seam 三件套"的一个实例：**Definition**（`packages/llm/llm`，定义 Message/stream 词汇与 `LlmAdapter`）+ **Provider**（`llm-deepseek`/`llm-pi-ai` 插件实现）+ **Consumer**（`packages/core/agent-loop/agent.ts`，消费 `llm/stream`，用 `BlockAssembler` 组装）。每一个都是插件位，可替换而不动另两类。
 
-`LlmAdapter` 完整类是 [packages/llm/llm/src/index.ts:180-183]()（指纹区，完整类见 180-233），其中**只有一个抽象方法** `stream`（[packages/llm/llm/src/index.ts:232-232]()），其余 `providerInfo`/`providerRetryPolicy`/`listModels`/`resolveModel` 都有带默认值的实现。
-<!-- snippet: export abstract class LlmAdapter {
-  /**
-   * Describe one provider route owned by this adapter.
-   * @param provider - a route passed to `registerAdapter()` for this instance. -->
-<!-- snippet:   abstract stream(options: GenerateOptions): AsyncIterable<StreamChunk> -->
+- 具体厂商如何变成"一个插件"：`llm-deepseek` 就是一个声明了 `name`+`inject` 的插件，在 `apply()` 里把 `DeepSeekAdapter` 注册到 `ctx.llm` 上（`registerAdapter(['deepseek-official'], adapter)`）。注册是 effect-based（随 plugin 生命周期 dispose），符合"一切皆插件"的 HMR/卸载语义。
 
-新 provider 最小成本 = 实现 `stream()` + 提供 metadata。`registerAdapter(providers, adapter)` 一个实例可托管多条路由；重复路由 fail atomically（`DUPLICATE_ADAPTER`，[packages/llm/llm/src/index.ts:380-380]()，完整 `prepareRoutes` 见 374-396）。
-<!-- snippet:       throw new LlmError(`an adapter for provider "${provider}" is already registered`, 'DUPLICATE_ADAPTER') -->
+  `[packages/llm/llm-deepseek/src/index.ts:41-47]()` 插件名与依赖
+  <!-- anchor: 调用
+  export const name = 'llm-deepseek'
+  export const inject = ['llm']
+  -->
+  `[packages/llm/llm-deepseek/src/index.ts:256-256]()` 注册 provider 路由
+  <!-- anchor: 调用
+  const registration = ctx.llm.registerAdapter([PROVIDER], adapter)
+[UNVERIFIED]: `PROVIDER = 'deepseek-official'` 常量定义于 index.ts:47。
 
-**放弃的替代方案「仅 DeepSeek 专用」**：本仓库用两个生产 adapter 证明它是通用 seam——`llm-deepseek`（手写 fetch+SSE）与 `llm-pi-ai`（复用 `@earendil-works/pi-ai` 库）。wire 差异全部压缩在各自 adapter 内；loop、session、token-meter 只看到同一个 `StreamChunk`。
+---
 
-### Map → derived-union + declaration merging 扩展
+## 设计思路：词汇抽象 + Adapter seam（Definition/Provider/Consumer）
 
-三种被反复消费的联合（content、source、finish）不是写死的字面量，而是从 `Map` 接口派生（[packages/llm/llm/src/types.ts:99-105]()，ContentBlockType/ContentBlock 见同文件 107-110）：
-<!-- snippet: export interface ContentBlockMap {
-  'text': TextBlock
-  'reasoning': ReasoningBlock
-  'image': ImageBlock
-  'tool-call': ToolCallBlock
-  'tool-result': ToolResultBlock
-} -->
+### 消息与内容词汇：一份共享的 provider-neutral 表示
 
-`FinishReasonMap` 同理（[packages/llm/llm/src/types.ts:116-119]()，FinishReason union 见 124-125）；`MessageSourceMap` 同理。外部插件通过 `declare module` 给这些 Map 追加键即「零改核心」加一种 content block / source / finish reason。消费端按 `never.ts` 约定：merge-extensible 的 union 要显式 fall-through。
-<!-- snippet: export interface FinishReasonMap {
-  'stop': { kind: 'stop' }
-  'tool-calls': { kind: 'tool-calls' }
-  'max-tokens': { kind: 'max-tokens' } -->
+与"Provider 只在自己的 wire 格式里自由"相反，harness 强约束一份**内核词汇**：一条 `Message` 是"id + role + 若干 typed `content` block + 来源 `source`"四元组。所有 provider、session log、模型请求共享同一种表示（`message.ts:128-138`），provider 只在 adapter 内部翻译成自己的 wire 格式（见 `serialize.ts`）。这带来两件事：（1）session log 里的历史即模型请求的输入，可重建，符合"重建性 Agent Note"；（2）切换 provider 不需要改写会话历史，因为历史是 provider-neutral 的。
 
-### StreamChunk：一个大 discriminated union（流式协议）
+- `Message` 的一份不可变表示，跨 delivery/durable history/model request 共享。
 
-`StreamChunk` 是一个大 union（[packages/llm/llm/src/types.ts:291-297]()，StreamChunk 完整体见 291-303）：块用 `index` 关联交错 delta，`block-end` 携带完整 `ContentBlock`（消费者无需自拼），`finish` 携带 `replayState`。`assertNever` 保证新增 variant 在未处理处编译失败。
-<!-- snippet: export type StreamChunk =
-  | { type: 'block-start'; index: number; blockType: ContentBlockType }
-  | { type: 'text-delta'; index: number; text: string }
-  | { type: 'reasoning-delta'; index: number; text: string }
-  | { type: 'tool-call-delta'; index: number; id: CallId; name?: string; argumentsDelta: string }
-  | { type: 'block-end'; index: number; block: ContentBlock }
-  | { type: 'usage'; usage: TokenUsage } -->
+  `[packages/llm/llm/src/message.ts:128-138]()` 消息结构
+  <!-- anchor: 调用
+  /** One immutable message representation shared by delivery, durable history, and model requests. */
+  export interface Message {
+  -->
 
-## 关键数据结构（精简）
+- `ContentBlockMap` + `ContentBlock` 是 **merge-extensible** 的联合：`text`/`reasoning`/`image`/`tool-call`/`tool-result` 五类基础块，插件可增删条目；新增块须同步 adapter/UI/compaction 支持（type 注释）。`switch on type + assertNever` 保证新增变体会在编译期强制所有消费方处理（closed union），这是 dsh 对整个词汇层的统一手法。
 
-### Message 与 MessageSource（属主 + 可回放状态）
+  `[packages/llm/llm/src/types.ts:96-110]()` map + 派生联合
+  <!-- anchor: 调用
+   * Merge-extensible content blocks keyed by `type`. New core blocks must land
+  export interface ContentBlockMap {
+  -->
 
-`Message`（[packages/llm/llm/src/message.ts:22-24]() 的 `ModelMessageSource`；完整 `Message` 见 129-138）携带 `id`/`role`/`content`/`source`。`ModelMessageSource extends AssistantProvenance`（`kind: 'model'`）；`AssistantProvenance` 带 `provider`+`model`，还带 `replayState?: unknown` —— adapter 私有、lossless-JSON、用于重放成功响应。
-<!-- snippet: export interface ModelMessageSource extends AssistantProvenance {
-  kind: 'model'
-} -->
+- 不可变性是"重建性"的载体：`createMessage` 给每条新消息打上 `MessageId(crypto.randomUUID())` 后 `deepFreeze(structuredClone(...))` 冻结；`LlmRuntime.prepareCall` 也 `deepFreeze(structuredClone(config))`。冻结使会话日志与请求输入成为一个纯函数关系（日志即请求，请求即日志），中间无可变状态漂移。
 
-### LlmFailure（可序列化的 provider 边界事实）
+  `[packages/llm/llm/src/message.ts:169-185]()` 冻结 + 建号
+  <!-- anchor: 调用
+  export function freezeMessage<T extends Message>(message: T): T {
+      return deepFreeze(structuredClone(message))
+  -->
 
-`LlmFailure`（[packages/llm/llm/src/types.ts:40-43]()，LlmFailure 完整体见 40-51）携带 `message`/`code`/`status?`/`providerRetryAfterMs?`/`requestId?`，code 是稳定 provider-neutral 机器路由码（`AUTH`/`RATE_LIMIT`/`SERVER`/`TIMEOUT`/`TRANSPORT`/`CONTEXT_WINDOW_EXCEEDED`/`EMPTY_RESPONSE`…，见 `error.ts:24-48` 规范常量与 `isContextWindowExceededError`/`isQuotaExceededError` 分类器）。
-<!-- snippet: export interface LlmFailure {
-  readonly message: string
-  /** Stable provider-neutral machine-routing code. */
-  readonly code: string -->
+- 三件套中的**装配件**：`BlockAssembler` 把原始 `StreamChunk` 增量折叠回 `ContentBlock[]` + `usage` + `finish` + `replayState`，是唯一 canonical 组装算法。agent-loop 边消费边把 raw chunk 写入 session log（`assistant/chunk`），同时喂给同一个 assembler（`agent.ts:347-351`）；流结束后从 assembler 读取组装结果（`assembler.blocks()`/`finish`/`replayState`/`usage`）。这实现了"日志存原始 chunk，消费时再用同一算法组装"——保证 replay 与在线组装逐字节一致。
 
-### RetryPolicy（normal / always 二分）
+  `[packages/llm/llm/src/assembler.ts:36-41]()` 装配器状态
+  <!-- anchor:
+  export class BlockAssembler {
+    private partials = new Map<number, PartialBlock>()
+  -->
+  `[packages/core/agent-loop/src/agent.ts:343-351]()` loop 边入日志边装配
+  <!-- anchor:
+  const assembler = new BlockAssembler()
+  const chunkSeqs: number[] = []
+  -->
+  `[packages/core/agent-loop/src/agent.ts:373-380]()` 组装经 source 回原始 provider
+  <!-- anchor:
+  const message = createAssistantMessage({
+    content: assembler.blocks(),
+  -->
 
-`RetryPolicyConfig = NormalRetryPolicyConfig | AlwaysRetryPolicyConfig`，`ResolvedRetryPolicy` 同理（[packages/llm/llm/src/retry-policy.ts:57-57]() 与 79）。`normal` 带有限 `maxRetries`+`retryableCodes`+backoff；`always` 只带 backoff、无限重。默认 retryable codes 固定为 `['EMPTY_RESPONSE','RATE_LIMIT','SERVER','TIMEOUT','TRANSPORT']`（[packages/llm/llm/src/retry-policy.ts:14-24]()）。
-<!-- snippet: export type RetryPolicyConfig = NormalRetryPolicyConfig | AlwaysRetryPolicyConfig -->
+### Adapter seam：Definition / Provider / Consumer 三件套各司其职
 
-### TokenUsage（disjoint，cache 分离）
+**Definition（`dsh-llm`）**：`LlmRuntime` 内部持有三个注册表——`adapters`（provider route → adapter registration）、`directory`（configurable provider）、`discoveries`（settingsNs → 端点探测函数）——它们共同构成"provider 拓扑"。
 
-`TokenUsage`（[packages/llm/llm/src/types.ts:135-139]()，TokenUsage 完整体见 135-141）：`inputTokens` 不含 cache，billed input = 三者之和；`reasoningTokens` 已含在 `outputTokens`，总量不得再加。两种 adapter 都执行此契约。
-<!-- snippet: export interface TokenUsage {
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens?: number
-  cacheWriteTokens?: number -->
+- `LlmRuntime` 的三个表：route 注册、可配置目录、模型探测。
 
-## 核心流程（Mermaid）
+  `[packages/llm/llm/src/index.ts:285-290]()` 注册表三件
+  <!-- anchor:
+  private adapters = new Map<string, AdapterRegistration>()
+  private directory = new Map<string, LlmConfigurableProvider>()
+  -->
 
-### (1) agent/request → llm/stream 瀑布 → StreamChunk 逐块 assistant/chunk 时序
+- 注册 `registerAdapter` 返回一个 **handle**（disposer + 原子 `replace`）。disposer 随 fiber/plugin 卸载；`replace` 支持"同一 adapter 实例切换路由集"且不产生空窗口——这对 user-configurable 路由（pi-ai 的动态 provider 列表）是必要的，因为 route 集是运行时可变的。
+
+  `[packages/llm/llm/src/index.ts:330-367]()` registerAdapter + handle
+  <!-- anchor:
+   * Register an adapter for the given provider routes. Throws `LlmError` with code
+   * `DUPLICATE_ADAPTER` if any provider already has an adapter (all-or-nothing).
+  -->
+  `[packages/llm/llm/src/index.ts:405-413]()` 单同步段交换并广播
+  <!-- anchor:
+  private commitRoutes(owned: Set<string>, registrations: readonly AdapterRegistration[]): void {
+    for (const provider of owned) this.adapters.delete(provider)
+  -->
+
+- 每一条 route 在注册时**捕获一份不可变 retry policy**（`providerRetryPolicy()` 或默认），并随配置快照 stored。这是"路由注册即上下文快照"：在途失败的 recovery 策略不会因后续路由变更而漂移（agent.ts 用 `preparedCall.retryPolicy` 携带）。
+
+  `[packages/llm/llm/src/index.ts:386-393]()` 按路由捕获策略
+  <!-- anchor:
+  const retryPolicy = adapter.providerRetryPolicy(provider)
+        ?? resolveRetryPolicy(undefined, `llm: provider "${provider}" retryPolicy`)
+  -->
+
+- 顶层事件：`'llm/adapters-updated'`（emit，payload-free，注册拓扑变化通知，观察者失败被隔离不能否决提交）与 `'llm/stream'`（waterfall，围绕每次流式调用的拦截点，retry/replay/routing 都挂这里）。
+
+  `[packages/llm/llm/src/types.ts:12-24]()` adapters-updated 事件
+  <!-- anchor:
+  declare module '@deepseek-ai/cordis' {
+    interface Events {
+  -->
+  `[packages/llm/llm/src/index.ts:62-63]()` llm/stream waterfall 事件
+  <!-- anchor:
+   * @mode waterfall
+   */
+    'llm/stream'(this: LlmRuntime, options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>
+  -->
+
+**Provider（`llm-deepseek` / `llm-pi-ai`）**：实现方把 provider 专有细节锁在包内。DeepSeek 是"direct fetch + SSE"实现，模块分职责：`serialize.ts`（h→wire）、`sse.ts`（字节→data payload）、`translate.ts`（wire→StreamChunk）、`adapter.ts`（组装 + 传输边界）——呼应 cookbook 要求的"wire types / serialization / parsing / translation / adapter 分离"。这是"seam 的内侧"，内核不知晓任何 wire 拼写。
+
+**Consumer（`agent-loop`）**：唯一消费抽象。`buildRequest` 用 `prepareCall`（绑定一次 adapter registration 贯穿能力解析/日志/dispatch，防 HMR 混用），`stream()` 走 waterfall；必要时回退 `ctx.llm.stream`（middleware 可接管未注册路由）。`loadContext`/`assemble` 之后把组装消息连同 provider/model source 与 replayState 写回 session log。
+
+- consumer 的 `prepareCall` 绑定 + 可选回退，见前述 `agent.ts:449,345`。
+
+### 如何新增一行新 provider（cookbook 逆向）
+
+`docs/cookbook/adding-an-llm-adapter.md` 给出了"实现一个 `LlmAdapter.stream()` + `registerAdapter`"的最小契约。核心要点：register 是 effect-based、同一 provider 重复注册抛 `DUPLICATE_ADAPTER`、多路由 all-or-nothing；`options.provider` 选 adapter、`options.model` 是 provider 内模型 id（动态 catalog 无需重启）；错误只有两条 sanctioned path（THROW 或 `finish {kind:'error'|'aborted'}`）；`stop`/能力缺口必须显式 `UNSUPPORTED` 而非静默丢弃。
+
+- cookbook 的 shape 与协议义务。
+
+  `[docs/cookbook/adding-an-llm-adapter.md:23-23]()` 注册是 effect-based、重复抛错、多路由全有全无
+  <!-- anchor:
+  Registration is effect-based (HMR-safe); one adapter per provider route — duplicates throw, and multi-route registration is all-or-nothing. `options.provider` selects the adapter and `options.model` is the provider model id, so a dynamic catalog adapter can serve new models without lifecycle reconfiguration.
+  -->
+  `[docs/cookbook/adding-an-llm-adapter.md:30-30]()` 两条错误路径
+  <!-- anchor:
+  - Errors have exactly two sanctioned paths: THROW from `stream()` (transport and protocol failures — use `LlmError` with a stable code), or end the stream with `finish {kind: 'error' | 'aborted'}` (provider in-band failures). Consumers handle both; pick per failure class and document it.
+  -->
+  `[docs/cookbook/adding-an-llm-adapter.md:32-32]()` 不能 honor 的字段显式拒绝
+  <!-- anchor:
+  - A `GenerateOptions` field your provider cannot honor (e.g. a `stop` list on a provider without stop sequences): throw `LlmError(..., 'UNSUPPORTED')` rather than silently dropping it.
+  -->
+
+---
+
+## 核心流程：一次流式模型调用（标注适配器如何被选中/注册）
+
+适配器选择逻辑：内核按 `options.provider` 在 `adapters` Map 里查注册（`adapterStream` 的 `registration(options.provider)`），而该注册是"注册时"由某插件（deepseek/pi-ai）写进 Map 的。middleware 可借 `llm/stream` waterfall 在真正 lookup 之前短路/改写 request。完整 flow 如下。
 
 ```mermaid
-sequenceDiagram
-  participant AgentLoop as "agent-loop step()<br>agent-loop/src/agent.ts:344"
-  participant Req as "agent/request waterfall<br>agent-loop/src/agent.ts:356"
-  participant Prepare as "llm.prepareCall()<br>llm/src/index.ts:779"
-  participant Stream as "llm/stream waterfall<br>llm/src/index.ts:64,917"
-  participant Adapter as "adapter.stream()<br>(DeepSeek/PiAi)"
-  participant Assem as BlockAssembler
-  participant Session as "session.append()"
-
-  AgentLoop->>Req: "deepFreeze(seedConfig) →<br>waterfall next()"
-  Req-->>AgentLoop: "proposedConfig（replacement<br>可换 provider/model）"
-  AgentLoop->>Prepare: "prepareCall(proposedConfig)<br>→ 绑定 registration"
-  Prepare-->>AgentLoop: "preparedCall{config, retryPolicy,<br>context, stream}"
-  AgentLoop->>Stream: "preparedCall?.stream(req)<br>或 llm.stream(req)"
-  Stream->>Adapter: "(terminal continuation)<br>解析 registration →<br>adapter.stream()"
-  Adapter-->>Stream: "AsyncIterable<StreamChunk>"
-  rect rgb(245,247,250)
-  Note over Stream,Session: "逐块 append"
-  Stream-->>AgentLoop: "block-start / *-delta /<br>block-end / usage"
-  AgentLoop->>Session: "append('assistant/chunk',<br>{turn,step,chunk}) → chunkSeqs"
-  AgentLoop->>Assem: "assembler.push(chunk)"
-  Adapter-->>Stream: "finish{reason,replayState}"
-  end
-  AgentLoop->>Assem: "finish/usage/blocks/replayState"
-  alt "finish.kind in {error, aborted}"
-    AgentLoop->>Req: "request-error waterfall<br>(agent-loop/src/agent.ts:356)"
-    alt "action.kind === 'retry'"
-      AgentLoop-->>AgentLoop: "continue（重试，回 5.1 顶）"
-    else
-      AgentLoop->>AgentLoop: "throw LlmError(finish.failure)（终局）"
-    end
-  else max-tokens
-    AgentLoop->>AgentLoop: "blocks 过滤掉 tool-call（无法安全执行）"
-  end
-  AgentLoop->>Session: "append('assistant/message',<br>{message,usage},{surfaceOp:'append',<br>sourceEventSeqs:chunkSeqs})"
+flowchart TD
+    A[agent-loop step] --> B[buildRequest]
+    B --> C["llm.prepareCall(config)<br>解析精确模型能力 + 冻结 config + 绑定某次注册"]
+    C --> D[markAgentLoopRequest deepFreeze 构造 GenerateOptions]
+    D --> E{"prepareCall 成功?"}
+    E -- 是 --> F["preparedCall.stream(request)"]
+    E -- 否回退 --> G["ctx.llm.stream(request)"]
+    F --> M
+    G --> M["streamWithRegistration<br>ctx.waterfall('llm/stream', ..., next)"]
+    M --> H["middleware 按顺序包裹/短路<br>any -> main (看 next)"]
+    H --> I["adapterStream：registration(options.provider)<br>从 adapters Map 选注册"]
+    I --> J["registration.adapter.stream(options)<br>(adapter 实例是某次 registerAdapter 注入)"]
+    J --> K["DeepSeek：fetch /chat/completions + SSE<br>-> translate -> StreamChunk"]
+    K --> L["chunk* : assistant/chunk(入日志) + assembler.push 同时"]
+    L --> N{"finish? kind"}
+    N -- ok/stop/tool-calls/max-tokens --> O["assistant/message 组装<br>createAssistantMessage(source=provider/model)"]
+    N -- error/aborted --> P["agent/request-error waterfall<br>llm-retry 可能 {kind:'retry'}"]
+    P -- retry --> A
+    P -- 否则 --> Q["throw LlmError(finish.failure) 终结该步"]
 ```
 
-**为何 `preparedCall?.stream ?? llm.stream` 二选一**：`prepareCall` 在异步 exact-model 解析前就捕获 registration（[packages/llm/llm/src/index.ts:779-779]()，prepareCall 完整体见 779-814），one-shot `PreparedLlmCall.stream()` 保证「capability 解析用的 adapter == 最终 dispatch 的 adapter」（HMR 不会把 A 的能力结果配给 B 的 dispatch），含 `INVALID_PREPARED_CALL` 二次 dispatch / config 变更防护（[packages/llm/llm/src/index.ts:779-814]()）。
-<!-- snippet:   async prepareCall(config: LlmCallConfig, signal?: AbortSignal): Promise<PreparedLlmCall> { -->
+路由注册的源码证据（"注册如何进入 Map 并被选中"）：
 
-loop 优先走它（[packages/core/agent-loop/src/agent.ts:345-345]()）；`llm/stream` 瀑布 = `ctx.waterfall(this, 'llm/stream', options, () => this.adapterStream(options, prepared))`（[packages/llm/llm/src/index.ts:917-920]()，streamWithRegistration 完整体见 917-927），其中 `adapterStream` 把「adapter 选取、dispatch、迭代」失败统一折叠成终局 finish chunk。事件声明在 [packages/llm/llm/src/index.ts:64-64]()：loop 请求带 `markAgentLoopRequest` 身份且 deep-frozen，listener 只能读不能改写。
-<!-- snippet:       const stream = preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request) -->
-<!-- snippet:   private streamWithRegistration(
+- 注册写入：`registerAdapter` → `commitRoutes` 把 `registration.provider.id -> registration` 设入 `this.adapters`。
+
+  `[packages/llm/llm/src/index.ts:408-416]()` 写 Map 并广播
+  <!-- anchor:
+  for (const registration of registrations) {
+    this.adapters.set(registration.provider.id, registration)
+  -->
+
+- 选中读取：`adapterStream` 用 `options.provider` 从 Map 取注册（prepared 时用已绑注册，否则现场查）。
+
+  `[packages/llm/llm/src/index.ts:849-849]()` adapter 选择
+  <!-- anchor:
+  const registration = prepared?.registration ?? this.registration(options.provider)
+  -->
+  `[packages/llm/llm/src/index.ts:816-820]()` 查不到抛 NO_ADAPTER
+  <!-- anchor:
+  private registration(provider: string): AdapterRegistration {
+    const registration = this.adapters.get(provider)
+  -->
+
+- waterfall 装配：`streamWithRegistration` 把 adapterStream 作为 `next()` 传给 `llm/stream` waterfall——middleware（retry/replay/routing）在适配器被选中前生效。
+
+  `[packages/llm/llm/src/index.ts:921-931]()` waterfall 包裹
+  <!-- anchor:
+  return this.ctx.waterfall(
+    this,
+    'llm/stream',
+  -->
+
+- consumer 侧把 waterfall 返回的 stream 遍历：逐 chunk 入 session log + 喂 assembler；失败 `finish` 触发 `agent/request-error` 可重试。
+
+  `[packages/llm/llm/src/index.ts:843-871]()` adapter 边界转为 finish chunk
+  <!-- anchor:
+  private async * adapterStream(
     options: GenerateOptions,
     prepared?: { registration: AdapterRegistration; config: LlmCallConfig },
-  ): AsyncIterable<StreamChunk> { -->
-<!-- snippet:     'llm/stream'(this: LlmRuntime, options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk> -->
+  -->
+  `[packages/llm/llm/src/index.ts:930-931]()` 抛错归一化为终态 chunk
+  <!-- anchor: /** Convert one adapter throw into the stream protocol's terminal outcome. */ … function adapterFailureChunk(error: unknown, signal?: AbortSignal): StreamChunk { -->
 
-**关键消费者 `llm-invariant`**：以 `prepend:true, global:true` 包裹每个 provider stream，校验语法（未 open 就 delta、重复 block-start、usage 多于一次、非 error 有 open block 结束、缺终局 finish）（[packages/llm/llm/src/invariant.ts:87-88]()，install 完整体见 87-103）。若请求自带 `signal`/`maxTokens` 等则其配置需精简。
-<!-- snippet: const install: InvariantInstaller = (ctx, fail) => {
-  ctx.on('llm/stream', (_options, next) => validateStream(next(), fail), { global: true, prepend: true }) -->
+---
 
-### (2) llm-deepseek：直接 fetch + SSE 的 adapter（流式 + 错误归一化）
+## 设计决策
 
-```mermaid
-sequenceDiagram
-  participant Ad as "DeepSeekAdapter.stream()<br>llm-deepseek/src/adapter.ts"
-  participant Opts as "options() thunk<br>llm-deepseek/src/index.ts"
-  participant Key as "resolveApiKey<br>llm-deepseek/src/index.ts"
-  participant Fetch as "fetch /chat/completions<br>adapter.ts"
-  participant SSE as "parseSse<br>sse.ts"
-  participant TR as "translate<br>translate.ts"
-  participant R as "LlmRuntime.adapterStream<br>llm/src/index.ts:843"
+### 决策一：索引相关的块级流式词汇（`StreamChunk` 的 block-start/delta/block-end + usage + finish）
 
-  Ad->>Opts: "const connection = this.config.options()<br>（每次 stream 一次）"
-  Ad->>Key: "resolveApiKey(connection)<br>→ credentialRef 本次解析"
-  Key-->>Ad: "assertUsableApiKey 或 MISSING_CREDENTIAL"
-  Ad->>Ad: "idleWatchdog() 包住 whole request<br>（超时→TIMEOUT，<br>abort→ABORTED）"
-  Ad->>Fetch: "body=serializeRequest(),<br>headers(auth+attribution+<br>sessionId+purpose)"
-  alt "!response.ok"
-    Fetch-->>Ad: "非 2xx"
-    Ad->>Ad: "httpErrorCode(status)→<br>AUTH/RATE_LIMIT/SERVER/..."
-    Ad-->Ad: "throw LlmError(message, code,<br>{status,providerRetryAfterMs,<br>requestId})"
-  else ok
-    Fetch-->>SSE: "200 stream"
-    SSE-->>TR: "data payloads（[DONE] 终值；<br>EOF 前置 [DONE]→STREAM_CLOSED）"
-    TR-->>R: "block-start/*-delta 实时；<br>block-end/usage/finish<br>延迟到 [DONE]"
-  end
-  Note over R: "外层统一折叠 adapter 抛错<br>→ finish error/aborted chunk"
-```
+**Why**：一次响应可能交织多个"块"——同时出现的 text、前置于文本的 thinking reasoning、多个并行 tool call。若只传 `delta`（token 片段），消费方无从知道哪个片段属于哪个逻辑单元、何时结束一个单元；若直接传 `block`（整块），又丢掉了流式首 token 延迟。所以协议拆成"`block-start`(index,type) → N 个 `*`-delta(index) → `block-end`(index, 完整 ContentBlock)"，用 `index` 关联同一块的所有 delta 与闭合。`block-end` 直接携带已组装好的 `ContentBlock`，消费方不必自己拼，但 `BlockAssembler` 也容忍"delta-only"协议（无 start/end）。
 
-- **每请求解析一次连接 facts + credential**（[packages/llm/llm-deepseek/src/adapter.ts:215-217]()）：`connection` 与 `apiKey` 在**同一个快照**解析冻结，杜绝「这一代 URL 配上一代 key」；`idleWatchdog` 只在 iterator `next()` outstanding 时武装。
-  <!-- snippet:     // One resolution per stream call: connection facts and the credential
-    // freeze here and hold for this whole request, so an in-flight stream
-    // never observes a configuration change and the next call re-resolves. -->
-- **错误归一化的两层**：HTTP 层在 `request()`（`adapter.ts:321-339`）：`retry-after` → `providerRetryAfterMs`，`x-request-id` → `requestId`，`httpErrorCode` 映射稳定 code；传输层在 `stream()`（`adapter.ts:246-258`）：idle→`TIMEOUT`、abort→`ABORTED`、`LlmError` 透传、未知包成 `TRANSPORT`。
-- **流式翻译**（[packages/llm/llm-deepseek/src/translate.ts:86-118]()）：reasoning 先于 text，空串首 chunk 不开 block；`[DONE]` 统一 flush `block-end`→`usage`→`finish`。退化完成：`stop`/缺 finish 且无 block → `EMPTY_RESPONSE` error finish。usage 做 disjoint 减法。
+**权衡/关键不变式**：
+- `index` 按首见顺序分配、同一块复用（translate 用 `nextIndex` 递增，tool-call 用 wire `call.index` 映射到块的 index）。
+- **closed union + 位置不变式**：`order/push` 后 `assertNever`；usage 必须在 finish 前且只出现一次、finish 后不能再有 chunk、除非 error/aborted 否则 finish 时不能还有 open block——这些由 invariant 插件在 `llm/stream` 外面（prepend）逐 chunk 校验。它把协议文法变成运行时可验证的强约束，而不是只靠类型。
+- 好处：任一 provider 的"流式差异"（提前 flush 的 usage-only、[DONE] 前的空 reasoning 首帧）都在 adapter 内磨平，内核词汇保持稳定。
 
-### (3) llm-pi-ai：库支撑的多 provider adapter（第二注册范式）
+  `[packages/llm/llm/src/types.ts:283-303]()` StreamChunk 联合
+  <!-- anchor:
+   * Raw streaming protocol emitted by adapters.
+   * Block indexes correlate interleaved deltas, and `block-end` carries the
+  -->
+  `[packages/llm/llm-deepseek/src/translate.ts:127-149]()` 首见分配 index 并产出 delta
+  <!-- anchor:
+  for (const choice of chunk.choices ?? []) {
+    const delta = choice.delta
+  -->
+  `[packages/llm/llm/src/invariant.ts:36-84]()` 逐 chunk 校验文法
+  <!-- anchor:
+  async function* validateStream(
+    source: AsyncIterable<StreamChunk>,
+    fail: InvariantFailure,
+  -->
+  `[packages/llm/llm/src/types.ts:96-107]()` 合并扩展块联合
+  <!-- anchor:
+  * Merge-extensible content blocks keyed by `type`. New core blocks must land
+  export interface ContentBlockMap {
+  -->
 
-不同只在 wire 侧——用 `@earendil-works/pi-ai` 的 `Models` 应对多 provider。核心差异是 **immutable snapshot**（[packages/llm/llm-pi-ai/src/adapter.ts:199-203]()，current snapshot 完整体见 199-206）：
-<!-- snippet:   private current(): PiAiSnapshot {
+### 决策二：多 provider 分派——"路由注册表 + provider 内模型自由"，而非每厂商一服务
+
+**Why**：与其为每厂商开一个 `ctx.xxx` 服务（DeepSeekService、AcmeService…），不如一份"provider route → adapter 实例"的注册表，`GenerateOptions.provider` 每次调用选择一路。这样 consumer（agent-loop）只面对一个 `ctx.llm`，provider 间的切换/路由/routing middleware 天然收敛到一个点；新增厂商 = 新增一条 route，不新增服务。
+
+**权衡/关键不变式**：
+- **一个 adapter 实例可持多条 route**：deepseek 只持 `deepseek-official` 一条；pi-ai 在配置变更时用 `handle.replace(routes)` 原子重写整个 route 集（路由集是 user-configurable 的）。这要求注册表有"同实例原子换路由"能力，设计上通过 `prepareRoutes`（先全量校验，失败不动旧态）+ `commitRoutes`（单同步段交换 + 广播）达成。
+- **重复 route 全有全无**：`prepareRoutes` 里发现与既有注册冲突抛 `DUPLICATE_ADAPTER`，整组不落盘。
+- **pi-ai 的多 provider**：用"一个瞬时快照"统一持有 profiles + 由 profiles 构建的 `Models` 集合；一次操作在任何 `await` 前捕获整个快照，配置变更只产生新快照，在途流始终用旧快照——这就是 `prepareCall` 冻结能一路保持到底的原因所在：切换发生在下一步，绝不发生在在途响应中间。
+- **listModels/resolveModel 是 advisory**：路由仍按键查 adapter，adapter 可接受 catalog 外的 model id（catalog 不进请求校验、不挡路由）。
+
+  `[packages/llm/llm/src/index.ts:374-396]()` 全量校验 + 全有全无
+  <!-- anchor:
+  private prepareRoutes(providers: string[], adapter: LlmAdapter, owned: ReadonlySet<string>): AdapterRegistration[] {
+    const unique = new Set<string>()
+  -->
+  `[packages/llm/llm-pi-ai/src/index.ts:262-272]()` 动态路由集原子替换（或不注册）
+  <!-- anchor:
+  const routes = [...profiles().keys()]
+    if (registration === undefined) {
+  -->
+  `[packages/llm/llm-pi-ai/src/adapter.ts:199-206]()` 按 profiles 身份 memoize 快照
+  <!-- anchor:
+  private current(): PiAiSnapshot {
     const profiles = this.config.profiles()
     if (this.snapshot?.profiles === profiles) return this.snapshot
-    const models: MutableModels = createModels()
-    for (const profile of profiles.values()) models.setProvider(profile.piProvider) -->
+  -->
+  `[packages/llm/llm/src/types.ts:143-148]()` provider 元信息
+  <!-- anchor:
+  /** Display metadata for one registered provider route. */
+  export interface LlmProviderInfo {
+  -->
 
-因为 `Models.streamSimple()` 懒——provider 在流首次消费时才解析，若注入时直接改 collection，会让「某配置下开始的请求在另一配置下结束」。每个操作捕获整个 snapshot（含 credential）再 await，配置变更只影响下个请求。
+### 决策三：错误/超时/重试——提供方中立的错误归一化 + 传输级看门狗 + 事件扩展点上的重试
 
-错误归一化在 `stream.ts` 的 `toStreamChunks`/`mapStopReason`：pi-ai 用**终局 error 事件**而非 throw，映射成 error/aborted finish chunk（[packages/llm/llm-pi-ai/src/stream.ts:196-200]()`case 'error'` 分支）——即「in-band」这条 sanctioned 错误路径。`maxRetries:0` 显式禁掉库内重试：「一次 adapter 调用 = 一次 provider attempt」。
-<!-- snippet:       case 'error':
-        // In-stream error delivery (pi-ai's style) → error finish chunk
-        // (the harness's other sanctioned error path besides throwing).
-        yield { type: 'usage', usage: mapUsage(event.error.usage) }
-        yield { type: 'finish', reason: mapStopReason(event.error, contextWindow) } -->
+**Why**：每个 provider 的错误词汇（HTTP status、SDK exception、SSE 内联错误）各不相同，而 loop 只有一套恢复语义。因此设计"**每个失败最终都是同一份可序列化 `LlmFailure`**"，并让"失败是否该重试"从"发生了什么"里解耦出来——策略层单独决定。错误通路只有两条 sanctioned path（THROW 或 `finish {kind:'error'|'aborted'}`），`adapterStream` 把任一条统一折叠为终态 `finish`（`adapterFailureChunk`），consumer 据此驱动恢复。
 
-### (4) llm-retry：重试策略执行（agent/request-error 消费者）
+**关键不变式**：
+- **归一化**：`normalizeLlmFailure` 拒绝陌生 SDK 的 code（只有 Harness 自己的 `HarnessError.code` 被信任），验证 status/retryAfter/requestId 后剥离出不可变 `LlmFailure`。错误码是跨 provider 的共享分类（`AUTH`/`RATE_LIMIT`/`NO_ADAPTER`/`EMPTY_RESPONSE`/`CONTEXT_WINDOW_EXCEEDED` 等），routing 按 code 不按文案。
+- **传输级看门狗**：DeepSeek 与 pi-ai 都在 `idleWatchdog` 上只对"iterator `next()` 尚未返回"的期间武装（`MAX_TIMEOUT`），用一个 stable signal 覆盖整个请求，自身到期映射为 `TIMEOUT`，更早的 caller abort 仍为 `ABORTED`。这避免了"挂死的 TCP 流让整个调用永远悬空"。
+- **重试放在事件扩展点上，不在内核**：`llm-retry` 插件监听 `agent/request-error`，读 `preparedCall.retryPolicy`（注册时捕获的不可变策略），normal 模式按 `retryableCodes` 过滤 + 有界退避（指数 + 抖动 + `providerRetryAfterMs`），always 模式无界；每次调度前先落 `llm/retry` 事件入 session log（durable before cancellable wait），取消与 lifespan 信号都可中断。重试在代理层面开启"新的 durable 编号轮次"，而不是吞掉失败。
+- **空响应是错误而非成功**：provider 给出"正常完成但零内容"时，DeepSeek/pi-ai 都映射为 `EMPTY_RESPONSE` 错误（见 llm-streaming.md 契约），`llm-retry` 默认重试它——因为空消息会静默终结回合且无可行动内容。
+- **agent-loop 的代理级恢复**：`finish.kind==='error'|'aborted'` → 发 `agent/request-error` waterfall；无 retry 则 `throw new LlmError(finish.failure...)` 终结该步且不提交 assistant 消息/工具副作用。
 
-`llm-retry` 自己是 `agent/request-error` 的 waterfall listener（[packages/llm/llm-retry/src/index.ts:210-219]()）：
-1. **过滤**：无 policy → `next()`；`normal` 且 code 不在 `retryableCodes` → `next()`。
-2. **幂等**：从 session 日志找同一 `turn/step/provider/policyKey` 的前次 `llm/retry`，以 `previousRetry`+1 决定 `retry`，`RetryId` 跨尝试复用——「重试可止」的依据：`maxRetries` 到即 terminal。
-3. **退避**：`localDelay` = bounded exponential + symmetric jitter；provider 给 `providerRetryAfterMs` 用之（`normal` 下超过 `maxDelayMs` → 不重试走 `next()`）。
-4. **持久化 + 可取消延时**：先 `append('llm/retry',...)`（durable）再 `cancellableDelay`——「每个 retry 在可取消等待前已 durable」，等待中 abort 则不返回 retry。
+  `[packages/llm/llm/src/adapter-failure.ts:16-28]()` 归一化为 LlmFailure
+  <!-- anchor:
+  export function normalizeLlmFailure(value: unknown): LlmFailure {
+    const error = value instanceof Error
+  -->
+  `[packages/llm/llm/src/error.ts:13-22]()` HarnessError 提供稳定 code
+  <!-- anchor:
+  export class HarnessError extends Error {
+    /** Stable machine-routable failure class (e.g. `RATE_LIMIT`); route on this, never by parsing `message`. */
+  -->
+  `[packages/llm/llm-deepseek/src/adapter.ts:227-227]()` 每次改流的 idle 看门狗
+  <!-- anchor:
+  using watchdog = idleWatchdog(upstream, connection.streamIdleTimeoutMs, STREAM_IDLE_TIMEOUT_CODE)
+  -->
+  `[packages/llm/llm-retry/src/index.ts:156-208]()` agent/request-error 上的重试调度
+  <!-- anchor:
+  async function recover(
+    { agent, turn, step, provider, failure, retryPolicy: policy, signal }: Parameters<Events['agent/request-error']>[0],
+  -->
+  `[packages/llm/llm-retry/src/index.ts:150-153]()` 先落 durable 事件再等
+  <!-- anchor:
+      agent.session.append('llm/retry', eventData)
+    if (!await cancellableDelay(delayMs, fusedSignal)) return
+  -->
+  `[packages/core/agent-loop/src/agent.ts:354-371]()` consumer 驱动恢复
+  <!-- anchor:
+  if (finish.kind === 'error' || finish.kind === 'aborted') {
+    const action = await this.dispatch.waterfall(
+  -->
 
-`agent/request-error` 签名（[packages/core/agent/src/runtime-types.ts:260-261]()）：payload 带 `failure`、`retryPolicy`、`signal`；listener 返回 `{kind:'retry'}` 或委托，默认 terminal。
+## 全局关联：LLM seam 是「可交换」哲学的始发站
 
-### (5) 错误归一化在 agent-loop 的接入点
-
-`agent-loop` 消费终局 finish，把 `failure`+`retryPolicy` 塞进 `agent/request-error` 瀑布（[packages/core/agent-loop/src/agent.ts:356-356]()，request-error 瀑布见 354-370）；否则对 error/aborted 外的 `finish` 组装 assistant message 并落盘（[packages/core/agent-loop/src/agent.ts:382-382]()，assistant/message 落盘见 382-389）。
-<!-- snippet:           'agent/request-error', { -->
-<!-- snippet:         'assistant/message', -->
-
-
-## 与其他模块协同
-
-- **agent-loop（消费）**：见 5.1。
-- **session（落盘所有 chunk）**：每个 chunk `append('assistant/chunk',{turn,step,chunk})`，`assistant/message` 带 `surfaceOp:'append'`+`sourceEventSeqs:chunkSeqs`（[packages/core/agent-loop/src/agent.ts:347-350]()）——使流可重放。
-- **token-meter（回放重估）**：消费 `assistant/chunk`，用 `new BlockAssembler()` 重放 cited chunk seqs 估算 provider 输出并与 `usage` 锚定（[packages/llm/token-meter/src/index.ts:277-309]()）——证明 StreamChunk 协议+BlockAssembler 是「一次产出、多方复用」。
-- **compaction（复用 llm 重生成）**：`summarizer.ts` 直接 `ctx.llm.stream(options)` 跑压缩调用，带 `purpose:'compaction'`（[packages/compaction/compaction-basic/src/summarizer.ts:161-164]()）；deepseek 据此加 `thinking disabled` 与 compact header。
-- **credentials / settings（每次操作解析）**：见措辞「每次操作解析」。
-- **scope（agent-scoped routing）**：`agent/request`、`agent/request-error` 是 `Scoped<Agent>` 瀑布。
-
-## 关键设计决策（Why）
-
-### Why StreamChunk 是「大 union」而非小接口？
-
-一个流同时携带 text+reasoning+多个 tool-call，chunk 天然多形态——`index` 关联交错 delta。小接口（delta/text/tool_call 各一对象）会把交错关系推给消费者。union+`index`+`block-end`（自带完整 block）让消费者不重写组装，统一用 `BlockAssembler`。`assertNever` exhaustiveness：新增 variant 让所有未处理 `switch` 编不过。文档明说 closed union。
-- trade-off：union 较冗长，且**不可 declaration merging 扩展**（新增 chunk 类型=改核心），但换语法级穷尽——与 content/source/finish 的 merge-extensible 定位刻意相反（chunk 协议应封闭）。
-
-### Why llm/stream 是 waterfall（谁拦截、谁委托）？
-
-拦截点唯一：`ctx.waterfall(this,'llm/stream',options,()=>this.adapterStream(...))`（[packages/llm/llm/src/index.ts:917-920]()，streamWithRegistration 完整体见 917-927）。listener 可 `next()` 委托真实 adapter，或 yield 自产 chunk 短路（重试/回放/路由）。安全：`adapterStream` 把「adapter 选取、dispatch、迭代」失败统一 `yield adapterFailureChunk(...)` 变终局 finish（[packages/llm/llm/src/index.ts:843-846]()）；middleware/consumer 自身失败保持 throw——错误归属清晰。短路由 waterfall 提供：retry、replay、语法校验（invariant prepend）。
-<!-- snippet:   private streamWithRegistration(
-    options: GenerateOptions,
-    prepared?: { registration: AdapterRegistration; config: LlmCallConfig },
-  ): AsyncIterable<StreamChunk> { -->
-<!-- snippet:   private async * adapterStream(
-  options: GenerateOptions, -->
-
-### 重试策略如何设计（解析、退避、幂等）？
-
-- 解析：provider 注册时把 `resolveRetryPolicy` 结果捕获进 `AdapterRegistration`（[packages/llm/llm/src/index.ts:387-387]()，捕获逻辑见 387-392）；默认 normal+retryable codes（[packages/llm/llm/src/retry-policy.ts:18-24]() 的 `DEFAULT_RETRYABLE_CODES`）。`providerRetryPolicy` 读当前（[packages/llm/llm/src/index.ts:566-568]()）——改 policy 需 `replace`。
-  <!-- snippet:       const retryPolicy = adapter.providerRetryPolicy(provider) -->
-  <!-- snippet: const DEFAULT_RETRYABLE_CODES = Object.freeze([
-  EMPTY_RESPONSE_CODE,
-  'RATE_LIMIT',
-  'SERVER',
-  'TIMEOUT',
-  'TRANSPORT',
-]) -->
-  <!-- snippet:   providerRetryPolicy(provider: string): ResolvedRetryPolicy { -->
-- 退避：bounded exponential（指数上限 1024）`Math.min(initial*2^retry, maxDelay)`，乘 `1±jitterRatio` 对称抖动（[packages/llm/llm-retry/src/index.ts:58-63]()）；provider `retry-after` 优先。
-- 幂等：不靠请求幂等（LLM 调用不可全局幂等），靠**会话内重试计数 durable**——同一 `turn/step/provider/policyKey` 的 `llm/retry` 事件决定是否还有额度，`RetryId` 贯穿整链。可见最大重试=`maxRetries`（或 always 无限直到 dispose/abort）。
-
-### Credentials 每次操作解析 vs 长期持有的权衡？
-
-每次操作解析（`llm-deepseek/src/index.ts:225-228`、`llm-pi-ai/src/adapter.ts:292`，seam 注释 `credentials/src/index.ts:73`）。
-- **得**：旋转的 credential（CI 注入、Models 页写入）直达下一次 request，无需重启；配置面只看 reference 不碰值。
-- **失**：每次 stream 多一次（通常内存级）`resolve(ref)`；若长期持有则失实时轮换并引入「脏值」管理。dsh 明确选前者，并让端点和 key 出自同一快照，杜绝 URL/secret 跨代错配。`credentials-local` 分层 `env > 可信文件 > 项目 .env > 用户 .env`（[packages/credentials/credentials-local/src/index.ts:2-22]()），继承环境只读胜出、Models 页写 0600 文件热发布。
-
-### 错误归一化（LlmFailure）对 request-error 恢复的意义？
-
-保证恢复层 provider-neutral：code 是稳定机器路由码，重试策略按码白名单匹配，不解析 provider 文案；归一化发生在最终 adapter 边界（`adapterStream` 的 `adapterFailureChunk`，[packages/llm/llm/src/index.ts:868-868]()），连「未注册 provider/参数畸形/被 abort」也折叠成统一 finish；loop 把 `failure`+`retryPolicy`（serving registration 不可变故）+`signal` 交给 `agent/request-error`——恢复逻辑跨 provider 移植。`normalizeLlmFailure`（[packages/llm/llm/src/adapter-failure.ts:16-28]()）只信任 Harness 自有 code，跨包拷贝的 `failure` 需校验一致才采纳，第三方 SDK code 一律 `UNKNOWN`。
-
-### Map → union + declaration merging 让外部加模型类型零改核心？
-
-是。`ContentBlockMap`/`MessageSourceMap`/`FinishReasonMap` 是全局接口，外部 `declare module` 追加键即扩展 union。两组 switch 约定不同：core chunk（封闭）必须 `assertNever`；merge-extensible union（content/source/finish）处理已知后显式 fall-through——这是全 repo 的 switch 约定在 LLM 层的体现。
-
-## 亮点与问题
-
-### 亮点
-
-- **接缝被两个生产 adapter 证明**：dsh-llm 不绑定 provider；llm-deepseek（手写 fetch+SSE）与 llm-pi-ai（库支撑、多 provider）落在同一 `LlmAdapter` 契约。
-- **两条 sanctioned 错误路径**（throw 与 in-band finish 并存），配 `normalizeLlmFailure` 兜底，恢复层永远拿 `LlmFailure` 而非裸异常。
-- **退化完成的显式语义**：空完成=可重试 `EMPTY_RESPONSE`（[packages/llm/llm/src/error.ts:39-39]()）、截断掉未执行 tool-call（[packages/llm/llm/src/assembler.ts:136-138]()）——避免 loop 静默空转。
-- **运行时轮换与一致性并重**：连接 facts/credential 每操作解析（热更新）但一次请求内快照冻结（一致性）；adapter 可 `replace`。
-- **BlockAssembler 单点复用**：agent-loop 落盘 chunk 同时推给 assembler；token-meter 用同一 assembler 从日志重放估算——「一次流、多方消费」。
-
-### 问题 / 值得质疑处
-
-- **StreamChunk 不可外部扩展**：新增 delta（音频/文件）要改核心而非 merging。属刻意取舍（协议应封闭），但新 modality 落地成本高（adapter+UI+compaction+回放都要动）。是否与「内容块可扩展」目标形成长期张力待观察。
-- **`emitAdaptersUpdated` 的 INVARIANT 后置 rethrow**（[packages/llm/llm/src/index.ts:297-297]()，emitAdaptersUpdated 完整体见 297-322）：从 emit listener 收集 invariant 失败最终同步抛给 `commitRoutes` 调用方——若由 settings 回调触发，可能把配置变更异常地传到配置层。
-  <!-- snippet:   private emitAdaptersUpdated(): void { -->
-- **pi-ai 错误分类靠正则文本匹配**（[packages/llm/llm-pi-ai/src/stream.ts:39-62]()），源码注释自承 upstream pi-ai 把 cause 摊平所致——段「次优但被迫」的 text 匹配是接缝已知折衷。upstream 修复后是否预留 code/cause 分支待观察。
-- **TokenUsage.cacheWriteTokens 仅 pi-ai 报**，deepseek 只报 cacheRead（`translate.ts:53-62` 无 cacheWrite 映射），两 provider 覆盖不对称——统计消费需容忍可选字段。
-
-## 已知的文档-实现漂移
-
-- **`preparedCall?.stream ?? llm.stream` 是 loop 的取流主路径**：草稿 Mermaid 早期把 `llm/stream` 瀑布标在 `index.ts:917`，实际 `stream()` 方法起于 911（`adapterStream` 在 843、瀑布在 917-927）；agent.ts 的 `stream` 行是 345（`for await` 循环自 347）。正文以 345/917-927 为准。
-- **agent/request-error 瀑布在 agent.ts 的 356**（不是草稿 438）：438 是 `agent/request` 的 seedConfig deepFreeze 区；`agent/request-error` 消费 finish 的失败分支在 354-370。
-- **`index.ts:232` 是 `LlmAdapter.abstract stream` 单行**，完整 `LlmAdapter` 类是 180-233（草稿对「一个抽象方法」的描述与实现一致，但把「complete class 180-233」写成外部说明，本文以 232 作定位行、180-233 作文本补充）。
+LLM 是最早、也最彻底贯彻「无特权内核 + Capability Seam 三件套」的能力面：Definition（词汇与 `LlmAdapter`）、Provider（llm-deepseek/llm-pi-ai 插件）、Consumer（agent-loop）清晰分离，新增厂商 = 在 `ctx.llm` 注册一条 provider route（`llm-deepseek` 以 `registerAdapter(['deepseek-official'])` 落地，`[packages/llm/llm-deepseek/src/index.ts:47-47](),256`），不新增服务。索引相关的块级流式词汇（block-start/delta/block-end + usage + finish）把各 provider 的流式差异在 adapter 内磨平，内核词汇保持稳定；错误归一化为统一 `LlmFailure`、重试挂在 `agent/request-error` 事件扩展点上而非内核。这份「内核只定词汇、实现由插件供给」的坚持，与 [architecture.md](architecture.md)（插件树装配）、[agent-loop-runtime.md](agent-loop-runtime.md)（`llm/stream` 消费）一脉相承，是理解 dsh 一切「可交换后端」的起点。

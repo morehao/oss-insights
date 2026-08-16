@@ -1,377 +1,208 @@
-# Subagent 体系：多 provider 委派与续接编排
+# 多 Agent / Subagent：统一接口下的多 transport 委派
 
-> 对应关注面：`ctx.subagents` 服务（named-provider registry + capability 校验 + 一次性 start + 续接 startContinuable/followup/interrupt/reportFrom）、`SubagentProvider` transport 抽象、in-process（`spawn`/`fork`）＝ 子 agent、out-of-process（`acp`/`codex`/`claude-code`/`dsh-sdk`）＝ 委派到另一进程产品、model-facing 消费侧（`tool-subagent` 一次性/续接委派、`tool-subagent-control` 的 send_message/interrupt/list_agents、`tool-subagent-report` 的 report）、Activation 续接编排（continuation manager）、durable descriptor + 投影枚举。
+> 子文档之一，聚焦如何在同一个 harness 内委派/嵌套另一个 agent。覆盖 `packages/subagent/*` 与 `packages/acp`。整体哲学见 [README](README.md)；本文上承 [sandbox-capability-seams.md](sandbox-capability-seams.md)（同级隔离能力）、衔接 [tools.md](tools.md)（委派由 delegation tool 驱动）。
 
-## 在项目中的角色（去掉它会怎样）
+Subagent 让同一个 harness 能委派/嵌套另一个 agent，且不把「委派」焊死在某种执行方式上——它本身也是一个可交换的 capability seam。
 
-`ctx.subagents` 是 agent 的「委派能力缝（capability seam）」，与 `ctx.shell`/`ctx.fs` 同级。它与那些缝的关键差异在于：**这里允许多个 provider 按名字共存**（`ctx.subagents` 是注册表），而 bash 每 context 只允许一个 executor。去掉它意味着：
+## 项目中的角色
 
-- **主 agent 失去"把活交给独立子 agent"的能力**：模型只能把结果塞回自己的上下文，focused work（研究、独立实现、复核）全部就地完成——上下文被无关中间步骤吞噬。`tool-subagent` 正是靠多 provider 把 work offload 到子 agent 的独立 context。
-- **与 bash/shell 一样，"委派"成为能力缝而非 agent-loop 的一部分**：loop 不感知委派——它只看到"工具被调了"。这正是该缝的类型定义放在 `packages/subagent/subagent` 而非 core 的原因（[docs/subsystems/subagent.md:5-5]()）。
-  <!-- snippet: The subagent seam lets an agent delegate work to a child agent. -->
-- **long-running 委派消失**：continuable（续接）子 agent 是一段"可被中断后冷恢复、可多次 followup"的持久会话，靠 continuation manager + session persistence + `subagent/descriptor` 投影达成。去掉它后"后台跑一个子 agent、主 agent 继续干别的、稍后再交付"这种编排不复存在。
-- **跨产品委派消失**：`acp`（Agent Client Protocol）、`codex`、`claude-code`、`dsh-sdk` 让主 harness 能在子进程里驱动另一套独立产品/协议当 child——这是"delegate to another turn inside another product"落地的地方。
+dsh/subagent 让同一个 harness 内能**委派/嵌套另一个 agent**，且不把"委派"焊死在某种执行方式上。
 
-一句话：**`ctx.subagents` 是把"委派子 agent"这件事统一成一条 transport seam（registry + capability 校验 + 续接编排），让 in-process 子 agent 与 out-of-process 产品委派用同一套 model-facing 契约。** 它和 fs/shell provider 一样，是同一"能力缝"思想的延伸。
+去掉它系统会怎样（反向推演）：
+- 复杂任务只能由单一 agent **线性**地自己做完，无法把"研究 X""实现 Y"切成并行的子任务分给子 agent。中大型任务要么耗尽主会话上下文，要么全程串行 —— 这是 Claude Code / Codex 之所以做成 harness 的核心痛点会整体回归。
+- 多 transport（in-process 共享内存 / fork 子会话 / ACP 外部协议 / Claude Code 子进程）在启动模型上差异巨大：没有统一的 `SubagentProvider` 接口，每次接一种子 agent 产品就要改 agent 循环本身。`[docs/architecture.md:102]()` 明言 subagent provider 背后是「from a fresh child agent to a delegated turn in another product」的宽变更面。
+<!-- anchor: Subagent providers vary just as widely behind one interface -->
 
-## 解决什么问题、根因
+它不存在的核心损格：subagent 也就不是"能力 seam"，而会退化成核心机制 —— 违反"无特权内核、一切皆插件"的总哲学。
 
-**根因**：agent 要 delegate 时，"子 agent"的实现形态极多样——可以是同一进程里新建的 agent、继承了父历史的 agent、另一个 ACP 协议的进程、另一个产品的 CLI、甚至另一个完整的 Harness 运行时。如果把这些形态各自的接线写死在主 agent 或 loop 里，委派会与具体 transport 强耦合；而如果只保留"最简单那条"（总是 in-process spawn），就丢失了"委派给别的产品/另一完整运行时"的能力。
+## 根因
 
-这个缝要解决四个具体问题：
+要回答的根本问题是：**如何把"另一个 agent 执行"抽象成可交换的 seam，同时让子 agent 与宿主共享同一可信执行世界。**
 
-1. **多 transport 共存且可互换**：一个 context 里多个 provider 按名注册、调用方按名选择，shape 镜像 LLM adapter registry（`llm-streaming`），而非单一 bash executor。这样 `spawn`/`fork`/`acp`/`codex` 等可以并存。官方文档明确"multiple provider implementations coexist"、registry follows the LLM adapter registry（[docs/subsystems/subagent.md:5-5]()）。
-   <!-- snippet: it is **one optional capability**, not part of the agent loop, so its types live here rather than in [core.md](core.md) -->
-2. **capability 必须在委派前被拒绝**：provider 在 `start` 前声明 `SubagentCapabilities`；调用方请求了 provider 不支持的输出 schema/深度/工具过滤/persona，就必须 loud fail（`UNSUPPORTED_CAPABILITY`），绝不"接受了再忽略"。`SubagentCapabilities` 四个布尔旗标与 `SubagentStartRequest` 选项一一对应（[packages/subagent/subagent/src/types.ts:86-91]()）。
-   <!-- snippet: export interface SubagentCapabilities {
-  readonly outputSchema: boolean
-  readonly depthLimit: boolean
-  readonly toolFilter: boolean
-  readonly persona: boolean
-} -->
-3. **one-shot vs long-running（continuable）两种委派语义**：一次性 `start` 拿一个结果；continuable `startContinuable` 建立一持久子会话，可多轮 followup、可冷恢复、可被 interrupt、可让子 agent `reportFrom` 回父——两者在同一个缝里。
-4. **out-of-process 子进程必须共享进程 seam 而非法外之地**：ACP/Codex/Claude Code/SDK 的子进程都经 `ctx.subagents` 里的 `ctx.subprocess.spawn`，复用 scrub/env 清理、进程树 teardown、生命周期——而不是各写一个 `child_process.spawn`。
+三个张力催生设计：
+1. **可交换性 vs 保真度**：子 agent 可以由同进程内新建 agent、父会话 fork、外部 ACP 子进程、甚至另一个商业产品（Claude Code）驱动。它们对"子 agent"的资源、上下文、权限、结果的定义各不相同，但消费方（模型调用的 delegation tool）只想要一个统一结果。
+2. **委派边界的两面性**：委派既是"隔离"（子 agent 不该污染父会话的执行世界），又是"共享"（子 agent 要与父共享 cwd、lineage、部分策略、甚至完成轮历史）。`[docs/architecture.md:98-102]()` 的三角色 seam；`sandbox`（同级隔离能力）处理的是"同一 agent 内的能力边界"，而 subagent 处理的是"跨 agent 的边界"，两者叙事相邻。
+3. **child 状态从何而来**：子 agent 是一个独立 Session；它的初始"子状态"必须能从父会话派生，且这种派生必须持久可重放（否则冷恢复只能从零开始，像没委派过一样）。
+
+整体设计哲学的落点：subagent 自己也是一个**可交换的 seam** —— 三件套（Service Definition `ctx.subagents` / Service Provider 各 transport 包 / Consumer tool 包）齐全，见 `[docs/subsystems/subagent.md:5-7]()`。于是"委派"不是一个被写进循环的能力，而是和其它能力平行的一块拼图。
 
 ## 设计思路
 
-### transport 抽象
+### seam 形状：多 provider 注册表而非单 executor
 
-核心是 `SubagentProvider` 接口（[packages/subagent/subagent/src/types.ts:285-289]()，完整接口见同文件 285-324）：一个**同进程可信的命名 transport**，暴露 `name`、`capabilities`、`inheritsParentContext`、`start()` 一次性路径，以及可选的 `prepareContinuable()`（方法存在即 capability）。服务对 provider 做 capability 校验、生成 durable descriptor、然后把 `ResolvedSubagentStartRequest` 交给 provider 的 `start()`。
-<!-- snippet: export interface SubagentProvider {
-  /** Unique registry name (e.g. `spawn`, `fork`, `acp`). */
-  readonly name: string
-  /** The start-time features this provider supports (see {@link SubagentCapabilities}). */
-  readonly capabilities: SubagentCapabilities -->
+bash seam 是"每 context 一个 executor，二次加载抛错"；subagent **反其道而行** —— 多个 provider 可以在同一 `ctx` 内共存，各自注册一个唯一名字，调用方按名字挑选。形状对齐 LLM adapter 注册表（`LlmRuntime.registerAdapter`），不是单服务 executor `[docs/subsystems/subagent.md:5]()`。
+`[packages/subagent/subagent/src/index.ts:369-385]()` <!-- anchor-base64: NzogICBpZiAodGhpcy5wcm92aWRlcnMuaGFzKG5hbWUpKSB7CjM4NDogIn0sICdzdWJhZ2VudHMucmVnaXN0ZXJQcm92aWRlcigpJyk= --> `registerProvider` 用 Cordis effect 包裹，HMR 安全。
 
-关键设计点：
+每个 provider 是 `SubagentProvider`：`name` + `capabilities`（start 期能力位）+ `inheritsParentContext`（模型可读的"是否继承会话历史"描述）+ `start()`（one-shot）+ 可选 `prepareContinuable()`（continuable 能力，方法存在即能力）`[packages/subagent/subagent/src/types.ts:285-323]()`。
 
-1. **先校验后委派，fail loud**（[packages/subagent/subagent/src/index.ts:414-416]()）：`start()` 里先 `assertCapabilities` → `assertSubagentMaxDepth` → `assertObjectJsonSchema`（若请求了 outputSchema）→ `snapshotSubagentDescriptor`，才交给 provider（`provider.start(resolved)` 在 425，完整流程见同函数 414-426）。请求了不支持的 capability 直接 `UNSUPPORTED_CAPABILITY` 抛错。
-   <!-- snippet:   async start(name: string, request: SubagentStartRequest): Promise<SubagentRun> {
-    const provider = this.expectProvider(name)
-    this.assertCapabilities(provider, request) -->
-2. **descriptor 是 durable 身份，由服务快照、provider 落 log**：`src/index.ts` 的 `snapshotSubagentDescriptor` 拆出 `mode`/`provider`/`label`（一次性）或 + `agentProvider/agentModel/persona/toolFilter`（续接）的版本化 JSON，provider 在子 agent 的 initial turn 里 append（[packages/subagent/subagent/src/child-agent.ts:163-175]()）。它不进模型历史、`surfaceOp` 无、可跨 compaction 存活。官方文档明确这三点。
-   <!-- snippet: export function applyChildComposition(
-  childCtx: Context,
-  parent: Agent,
-  composition: ChildComposition,
-): void {
-  childCtx.get('agentPresets')?.composeFrom(childCtx, parent.ctx)
-  // Order 120: after the sandbox:policy (110) and approval:policy (115) sentences.
-  childCtx.systemPrompt.context({ name: 'subagent:delegation', order: 120, text: SUBAGENT_DELEGATION_CONTEXT })
-  if (composition.persona !== undefined) {
-    childCtx.systemPrompt.section({ name: 'deployment:persona', order: 0, text: composition.persona })
-  }
-  if (composition.toolFilter !== undefined) childCtx.tools.restrict(composition.toolFilter)
-} -->
-3. **provider 是 trusted typed collaborator**：请求/描述符/结果/生命周期 payload 都是借用不可变值；hostile-input 校验放在真实 process/persistence/model 边界（[packages/subagent/subagent/src/index.ts:26-29]()）。续接 child 的三个关键转移点刻意设计成一段不再回传 provider。
-   <!-- snippet:  * Same-process providers are trusted typed collaborators. Requests, provider
-  * descriptors, results, and lifecycle payloads are borrowed immutable values;
-  * serialization and hostile-input validation belong at real process, worker,
-  * persistence, and model boundaries. -->
-   - Continuable child 成立后，provider 只贡献一次 detached `ContinuableCreateSpec`（目前仅可选 seed），**看不到 child 的 Agent、handle、turn、teardown**（[packages/subagent/subagent/src/types.ts:316-319]()；`prepareContinuable` 完整区块见同文件 308-323）；冷恢复根本不走 provider，由 manager `ctx.agents.resume()`。
-     <!-- snippet:    * This is the provider's ONLY participation in a continuable child. The
-    * continuation manager owns identity reservation, composition, Agent
-    * creation, prompt delivery, cold resume, ownership, and disposal, so a
-    * provider never sees the child's Agent, handle, turns, or teardown. -->
-   - 结果与 lifecycle 事件观察分开：`result` 归 run handle，`subagent/start·end` 事件由服务封装好的 observer 发布（父子 scope 过滤到该委派）。
+### boundary：能力位校验先于委派
 
-### provider 形态的分类
+start 请求若需要某能力而所选 provider 不具备，service 在调 `start` **之前**就抛 `UNSUPPORTED_CAPABILITY` 拒绝，绝不"先接收后忽略"（fail loud）。`[packages/subagent/subagent/src/index.ts:481-496]()` 的 `assertCapabilities` 逐位对账 `outputSchema/depthLimit/toolFilter/persona`。四个位与 `SubagentStartRequest` 选项一一对应（`maxDepth`↔`depthLimit`，其余同名），`[packages/subagent/subagent/src/types.ts:76-91]()` 与 `[packages/subagent/subagent/src/types.ts:100-149]()`。
 
-| provider | 形态 | child 是否 in-process | 继承父历史 | 能力 |
-|---|---|---|---|---|
-| `spawn` | 全新 in-process agent | 是 | 否 | outputSchema/depthLimit/toolFilter/persona 全支持 |
-| `fork` | 继承父 completed-turn 前缀的 in-process agent | 是 | 是 | 同上 |
-| `acp` | ACP 协议子进程 agent | 否 | 否 | 无（`NO_START_CAPABILITIES`） |
-| `codex` | 真实 Codex `app-server --stdio` 子进程 | 否 | 否 | 无 |
-| `claude-code` | 官方 Claude Agent SDK 驱动的 CLI 子进程 | 否 | 否 | 无 |
-| `dsh-sdk` | 独立 Harness 运行时子进程（stdio JSON-RPC） | 否 | 否 | 无 |
+#### in-process 位：全能力
 
-out-of-process provider 的"零能力"是刻意的诚实声明：`NO_START_CAPABILITIES` 把四个旗标全部冻结为 `false`，服务在 `start` 前就拒绝需要任一 option 的请求（[packages/subagent/subagent/src/out-of-process.ts:25-30]()）。
-<!-- snippet: export const NO_START_CAPABILITIES: SubagentCapabilities = Object.freeze({
-  outputSchema: false,
-  depthLimit: false,
-  toolFilter: false,
-  persona: false,
-}) -->
+`spawn` 与 `fork` 共享 `startInProcessRun`，两者都把 `outputSchema/depthLimit/toolFilter/persona` 全部置 true：
+- spawn：`[packages/subagent/subagent-spawn-in-process/src/index.ts:41-44]()`
+- fork：`[packages/subagent/subagent-fork-in-process/src/index.ts:61-64]()`
 
-### 放弃的替代方案
+#### out-of-process 位：零能力
 
-- **只用 in-process 单一 transport**：丢失"委派给另一完整产品/运行时"的能力；`codex`/`claude-code`/`dsh-sdk` 的存在证明了多 transport 是实际需求不是过度设计。
-- **每个 out-of-process provider 自己 `child_process.spawn`**：会脱离进程 seam 的 scrub/env/树 teardown，测试与安全边界不一致（因此统一走 `ctx.subprocess.spawn`，`out-of-process.ts` 只保留 cwd 决议与 result 归一化）。
-- **把 continuation 做成 Task 或 result-bearing wrapper**：会引入第二个"队列/结果载体"，无法复用 agent inbox 作为唯一 turn 队列（因此续接 child 无 Task、无 run，由 manager 直接持 `AgentHandle`，[packages/subagent/subagent/src/continuation.ts:7-13]()）。
-  <!-- snippet:  * A continuable child has one durable Session and at most one process-local
-  * {@link Activation} — one residency epoch for a reconstructed child Agent. An
-  * Activation is not a request, result, cancellation, or Task boundary: it may
-  * execute many FIFO turns and stays resident while descendants it created are
-  * still running. The Agent inbox is the only turn queue, so this manager owns
-  * residency while the Agent loop owns all turn ordering and execution. No
-  * continuable path creates a Task or an intermediate result-bearing wrapper. -->
-- **followup 由外部 listener 来决定 child 是否 settle**：一个外部 `subagent/end` listener 无法正确判定——payload 不携父、child handle 已 dispose、父的 settlement 触发点已过（[packages/subagent/subagent/src/continuation.ts:15-19]()）。settlement 交付必须是 manager 自己的职责（`notifySettlement`）。
-  <!-- snippet:  * Because residency is this manager's alone to end, telling the parent that a
-  * child settled is its job too. An external `subagent/end` listener cannot do
-  * it correctly: that payload names no parent, the child handle is already
-  * disposed by then, and the release that wakes the parent's own settlement
-  * watcher has already run. -->
+ACP/Claude Code 子进程无法执行父侧强制的 start 特性，故 `[packages/subagent/subagent/src/out-of-process.ts:25-30]()` 全 false，service 据此在 `start` 前拒绝任何需要它们的请求；ACP 引用 `[packages/subagent/subagent-acp/src/index.ts:146-149]()`；Claude Code 引用 `[packages/subagent/subagent-claude-code/src/index.ts:54]()`。
 
-## 关键数据结构（精简）
+### 多 transport 如何映射到同一接口
 
-### `SubagentProvider`（[packages/subagent/subagent/src/types.ts:285-287]()，完整接口 285-324）
-<!-- snippet: export interface SubagentProvider {
-  /** Unique registry name (e.g. `spawn`, `fork`, `acp`). */
-  readonly name: string -->
+| Transport | 子 agent 形态 | 上下文 | 能力 | inheritsParentContext | 关键文件 |
+|---|---|---|---|---|---|
+| spawn（in-process） | 同一 cordis ctx 新建的独立 Agent，零父上下文 | 独立会话/独立 system prompt | 全量 | false | `packages/subagent/subagent-spawn-in-process/src/index.ts:41-64` |
+| fork（in-process） | seed 了父会话已完成轮前缀的子 Agent | 继承父已完成轮 | 全量 | true | `packages/subagent/subagent-fork-in-process/src/index.ts:61-89` |
+| acp（out-of-process） | 独立进程，跑 Agent Client Protocol | 只读父 cwd | 无 | false | `packages/subagent/subagent-acp/src/index.ts:146-170` |
+| claude-code（out-of-process） | 官方 Claude Agent SDK 拉起的真 CLI 进程 | 只读父 cwd | 无 | false | `packages/subagent/subagent-claude-code/src/index.ts:52-92` |
 
-`start()` 交给一个已发布 run（`SubagentRun`）；可选 `prepareContinuable()` 只贡献 detached seed。`inheritsParentContext` 描述性（仅对话播种，`fork: true`，`spawn`/`acp`: false），供模型-facing wording 使用，不含工具/服务/权限继承断言（[packages/subagent/subagent/src/types.ts:290-295]()）。
-<!-- snippet:   /**
-   * Whether the child sees the parent's completed-turn prefix. This is descriptive, not a
-   * service-validated start capability: the model-facing tool derives truthful wording from it.
-   * It says nothing about tool registration, injected services, or authority inheritance.
-   */
-  readonly inheritsParentContext: boolean -->
+共性落在 `ResolvedSubagentStartRequest` 与 `SubagentRun` 两处：
+- `start()` 都要在 publish 前完成子 agent 建立，publish 即所有权转移边界（`[packages/subagent/subagent/src/types.ts:297-307]()`）。
+- 返回的 `SubagentRun` 统一 `id`/`localAgent`/`result`/`dispose()`。本地 run 的 `localAgent` 是确切内进程子 agent；远程 run 为 `undefined`（`[packages/subagent/subagent/src/types.ts:249-275]()`）。in-process driver 用 `drivePublishedRun` 统一包装 `AgentHandle`（`[packages/subagent/subagent-in-process-driver/src/index.ts:154-205]()`）；out-of-process 用 `subprocessRunHandle` 统一包装（`[packages/subagent/subagent/src/out-of-process.ts:201-215]()`）。
+- 结果停止原因收敛到 merge-extensible 的 `SubagentStopReason`：`completed/aborted/error/max-tokens/refusal`（`[packages/subagent/subagent/src/types.ts:200-214]()`）。in-process 从 `TurnEndReason` 映射（`[packages/subagent/subagent-in-process-driver/src/index.ts:48-65]()`），ACP 从 ACP `StopReason` 映射（`[packages/subagent/subagent-acp/src/run.ts:135-157]()`），Claude Code 只认 SDK 严格 success（`[packages/subagent/subagent-claude-code/src/run.ts:92-104]()`）。
 
-### one-shot 委派 `SubagentRun`
+### 委派播种（delegation seed）
 
-一次一次性前台委派、一个结果（[packages/subagent/subagent/src/types.ts:249-253]()，完整接口见同文件 249-275）。本地 run 的 `id`＝发布 child session id，`localAgent` 指向精确 in-process child；远端 provider 返回 parent-scoped id、`localAgent: undefined`。`result` 在 child 级失败时**不 reject**（flat 成 `stopReason: 'error'`，见同接口 262-269 注释），只有不可表征的基础设施故障才 reject；`dispose()` 幂等、必被调用以达 quiescence。续接会话**没有 run**——manager 直接持 `AgentHandle`。
-<!-- snippet: export interface SubagentRun {
-  /**
-   * Parent-scoped run id. For a local run, this MUST equal the published child
-   * session id, whose `parentSession` records `request.parent.session.id`; a
-   * remote provider mints an id unique in the parent namespace. -->
+子状态从父会话派生的机制集中在两处：
 
-### 续接委派 `Activation`（[packages/subagent/subagent/src/continuation.ts:191-240]()）
+**one-shot（in-process）**：`startInProcessRun` 在子 agent 创建窗内做四件事：
+1. `[packages/subagent/subagent/src/child-agent.ts:48-57]()` `resolveChildDepth` 从父算深度 +1；
+2. `[packages/subagent/subagent/src/child-agent.ts:199-204]()` `captureDelegatedPolicyOverrides` 捕获父 sandbox 覆盖 + 将 approval 钉死 `'never'`——子 agent 只在委派时固定的权限范围内行动；
+3. `[packages/subagent/subagent/src/child-agent.ts:215-225]()` `appendDelegatedPolicyOverrides` 把策略作为 `source:'delegation'` 事件写到子自己的日志；
+4. `[packages/subagent/subagent/src/child-agent.ts:102-120]()` `childSessionMeta` 记 cwd/`parentSession`/`origin:'subagent'`/`delegationDepth`/`seedLength`。
 
-"一个持久子 Session 至多一个 process-local Activation（一段重建 child Agent 的驻留 epoch）"。一个 Activation 可执行多个 FIFO turn、在它创建的 descendants 仍在跑时保持驻留。`AgentHandle`、`parentSession`（结算交付要解析）、`ancestry`（WeakSet 精确活体 lineage）、`ownedChildren: Set<SessionId>`（阻塞 settle）、`disposal` memoized 事务、`announced`。**状态 `running/waiting/settled` 从 Agent quiescence + owned-child set 派生，而非第二套状态机**（[packages/subagent/subagent/src/continuation.ts:159-159]()）。
-<!-- snippet: type ActivationState = 'running' | 'waiting' | 'settled' -->
+`[packages/subagent/subagent/src/child-agent.ts:163-175]()` `applyChildComposition` 统一给子 agent 装配：加入父 preset、登记"委托范围已固定"语句、应用 persona/toolFilter 遮蔽。
 
-### durable descriptor `SubagentDescriptorData`（[packages/subagent/subagent/src/descriptor.ts:60-88]()）
+**fork 的上下文继承**：fork 把父日志 `完成轮前缀`（到最后一个 `turn/end` 为止，跳到未完成轮因为无法作合法子会话 seed）作为 `CreateAgentOptions.seed` 传给子 agent（`[packages/subagent/subagent-fork-in-process/src/index.ts:48-54]()`、`[packages/subagent/subagent-fork-in-process/src/index.ts:68-75]()`）。seedLength 记录注入边界，供后续投影判断"哪些事件属于子自己"（`[packages/subagent/subagent/src/child-agent.ts:112-118]()`）。
 
-`mode: 'one-shot' | 'continuable'` + `provider`；续接额外带 resumed 所需的 resolved `agentProvider/agentModel/persona/toolFilter`。刻意快照显式字段而非 merge-extensible `AgentOptions`（无关扩展值不会让续接失败）；省略 `subagentDepth`（冷恢复信 persisted header 的 `delegationDepth` 作单调下限）与 `outputSchema`（一次性 run/Activation 的结果契约，不是 durable 身份，[packages/subagent/subagent/src/descriptor.ts:8-10]()）。`maxTokens` 等 per-activation 预算也刻意不保存——冷恢复用 resumed route 的默认。
-<!-- snippet:  * The descriptor deliberately snapshots explicit fields rather than the
-  * merge-extensible `AgentOptions` object: an unrelated extension value cannot
-  * make continuation fail merely because it is not JSON -->
+**continuable 的 descriptor 播种**：`[packages/subagent/subagent/src/descriptor-seed.ts:23-31]()` `seedDescriptorTurn` 用 `Session.create(childId, seed)` 暂存继承轮，再 append `subagent/descriptor` 事件，拿到连续从 seq 0 起始、lossless-JSON 的完整 seed。`continuation.ts` 在 `[packages/subagent/subagent/src/continuation.ts:403-457]()` `startContinuable` 中据此装配：计算 depth、快照描述符、调用 provider 的 `prepareContinuable` 拿 detached seed，最终 `materialize`。
 
-### 委派类型 one-shot vs continuable（[packages/subagent/tool-subagent/src/index.ts:247-265]()）
+### descriptor：子 agent 的持久身份
 
-`Config.backgroundMode: 'one-shot' | 'continuable'`。one-shot 默认前台（`run_in_background` 默认 false），后台走 `jobs` Task；continuable 默认后台（`run_in_background` 默认 true），走 `startContinuable` 返回 durable `childId`，不 collect 结果。`resolveDelegationRun` 按 background 开关分派到三条路径（前台/one-shot-job/continuable），其中 `runInBackground: request.run_in_background ?? options.continuable`（continuable 无显式声明时默认后台）。
-<!-- snippet:   return {
-    // Continuable work is independently scheduled unless the caller explicitly
-    // needs the result before its next action. One-shot policy keeps its existing
-    // foreground default because its background result requires Task collection.
-    runInBackground: request.run_in_background ?? options.continuable,
-  } -->
+`[packages/subagent/subagent/src/descriptor.ts:28-39]()` `subagent/descriptor` 是 model-hidden 的 SessionEvent，标识每个 session-backed 子 agent 并记录 one-shot/continuable 模式。关键设计（`[packages/subagent/subagent/src/descriptor.ts:8-19]()` 注释 + `[packages/subagent/subagent/src/descriptor.ts:47]()` `SUBAGENT_DESCRIPTOR_VERSION=2`）：
+- 显式快照字段而非 merge-extensible 的 `AgentOptions`，避免无关扩展值因非 JSON 而破坏 continuation；新增组合输入必须显式升版本。
+- 省略 `subagentDepth`（冷恢复信任持久 header 的 `delegationDepth` 作为单调下限）与 `outputSchema`（激活的结果契约，非 durable 身份）。
+- fold 时第一个 `[packages/subagent/subagent/src/descriptor.ts:308-314]()` `foldSubagentDescriptor` 权威，version 不匹配返回 undefined（无法分类）。
 
-## 核心流程（Mermaid）
+### 投影：child 状态查询与回读
 
-### 主 agent 委派子 agent（in-process vs out-of-process 两路径）
+session projection 提供两种纯函数视图（`[packages/subagent/subagent/src/projection.ts:44-86]()` 与 `[packages/subagent/subagent/src/projection.ts:142-156]()`）：
+- `subagent`（身份）：从 `subagent/descriptor` 折叠 mode/label/seq，last-wins——fork seed 重放的祖先 descriptor 会被子自己的覆盖；损坏/未知版本 fold 到可序列化的 `null` 哨兵而非抛错。
+- `subagentTiming`（计时）：折叠 descriptor 之后已结算 turn 的 `settledMs` 与当前活动 turn 区间。
+
+`[packages/subagent/subagent/src/index.ts:311-360]()` `listChildren/listDescendants` 不加载/不恢复 Agent，直接合并 live session store 与可选持久化，经三级阶梯（watermark snapshot / projection-cache own-suffix seq gate / persistence inspect）服务每个子 agent 的 mode/label，从 `subagent` 投影单位读取。
+
+**结果投影回父会话**：one-shot 结果经 `[packages/subagent/tool-subagent/src/index.ts:167-197]()` `settleForegroundRun` 收集 `run.result.output` 返回父模型。continuable 子 agent 主动用 child-scoped 的 `report` 工具向父投递（`[packages/subagent/tool-subagent-report/src/index.ts:94-103]()`），并由 `[packages/subagent/subagent/src/continuation.ts:583-653]()` `reportFrom` 框架该内容为 `subagent-report` user message，按 quiet/wakeup 调度。Activation 结算还会发一条 `subagent-settled` notice 给父（`[docs/subsystems/subagent.md:212]()` 声明）。生命周期对：`subagent/start` / `subagent/end` 按委派父做 scoped dispatch（`[packages/subagent/subagent/src/lifecycle.ts:133-162]()`）。
+
+### depth/loop 防护
+
+`[packages/subagent/subagent/src/depth.ts:28-36]()` `delegationDepthOf` 读取确切深度 = `max(header.delegationDepth, runtime.subagentDepth)`，header 持据权威且单调，运行时可加深但不可降低；`[packages/subagent/subagent/src/child-agent.ts:48-57]()` `resolveChildDepth` 计算 `parent+1` 并校验安全整数，超出 `maxDepth` 抛 `SubagentDepthError`。`[packages/subagent/subagent/src/depth.ts:42-51]()` `assertSubagentMaxDepth` 拒绝非法 cap。in-process 与 continuation 的 start 处都调用 `resolveChildDepth`（`[packages/subagent/subagent-in-process-driver/src/index.ts:109]()`、`[packages/subagent/subagent/src/continuation.ts:410]()`）。
+
+## 关键数据结构
+
+- `[packages/subagent/subagent/src/types.ts:285-323]()` `SubagentProvider`：注册表里一个具名 transport，`capabilities` 位 + `inheritsParentContext` + `start()` + 可选 `prepareContinuable`（`[packages/subagent/subagent/src/types.ts:308-323]()` 方法存在即能力）。
+- `[packages/subagent/subagent/src/types.ts:100-149]()` / `[packages/subagent/subagent/src/types.ts:155-158]()` `SubagentStartRequest` / `ResolvedSubagentStartRequest`：one-shot 委派请求；后者在 service 解析描述符后加 `descriptor` 字段传给 provider。
+- `[packages/subagent/subagent/src/types.ts:249-275]()` `SubagentRun`：已发布 one-shot 子的消费句柄（id/localAgent/result/dispose），`dispose` 幂等。
+- `[packages/subagent/subagent/src/descriptor.ts:60-88]()` `SubagentDescriptorData`：`subagent/descriptor` 事件载荷，mode 判别联合（one-shot 可选 label；continuable 强制 label + agentProvider/agentModel/persona/toolFilter）。
+- `[packages/subagent/subagent/src/child-agent.ts:228-236]()` + `[packages/subagent/subagent/src/child-agent.ts:102-120]()` `ChildCreateInputs` + `childSessionMeta`：in-process 子创建的 identity/lineage 输入与持久 meta。
+- `[packages/subagent/subagent/src/projection-types.ts:26-47]()` / `[packages/subagent/subagent/src/projection-types.ts:8-18]()` delegations 投影视图 `SubagentIdentityProjection`（含 `seq`，证明 own-suffix）与 `SubagentTimingProjection`。
+
+## 核心流程
+
+下面 Mermaid 描绘**父 agent 经 tool-subagent 委派 → 选 provider → 派生 child 状态 → 执行 → 结果投影回父会话**的主干。
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant M as 主 agent (exec.agent)
-    participant T as tool-subagent.execute
-    participant S as ctx.subagents
-    participant P as provider
-    participant SUB as "ctx.subprocess<br>(out-of-proc only)"
-    participant C as 子 agent (流程内)
+flowchart TD
+  A[父 agent 调用 delegation tool] --> B[tool-subagent execute]
+  B --> C{run_in_background?}
+  C -- 否 / one-shot 前台 --> D[ctx.subagents.start provider]
+  C -- 是 / continuable --> E[ctx.subagents.startContinuable]
 
-    M->>T: "subagent tool call<br>{description,prompt}"
-    T->>T: "解析 runInBackground/continuable<br>(resolveDelegationRun)"
-    T->>S: "ctx.subagents.start(provider, request)<br>或 startContinuable"
-    S->>S: "assertCapabilities→maxDepth→descriptor<br>(index.ts:414-426)"
+  subgraph one-shot in-process [one-shot in-process: spawn/fork]
+    D --> D1[assertCapabilities + assertSubagentMaxDepth]
+    D1 --> D2[snapshotSubagentDescriptor]
+    D2 --> D3[startInProcessRun]
+    D3 --> D4[resolveChildDepth / captureDelegatedPolicyOverrides / childSessionMeta]
+    D4 --> D5[parent.ctx.agents.create + applyChildComposition + attachDescriptorAppend]
+    D5 --> D6[drivePublishedRun: followup + whenIdle + readResult]
+  end
 
-    alt 前台一次性 (in-process)
-        S->>P: "provider.start(resolved)<br>(index.ts:425)"
-        P->>C: "startInProcessRun → agents.create<br>(session,meta,seed?,setup)"
-        C->>C: "applyChildComposition(preset/filters/<br>persona) · append descriptor"
-        P-->>S: "SubagentRun{id, localAgent: C,<br>result}"
-        C->>C: "one turn → dispose<br>· readResult"
-        P-->>T: "{kind:'foreground', output}"
-    else 前台一次性 (ACP/Codex/ClaudeCode/SDK)
-        S->>P: provider.start(resolved)
-        P->>SUB: "ctx.subprocess.spawn(argv,cwd,env...)"
-        SUB-->>P: SubprocessHandle
-        P->>SUB: 协议初始化 + 建 session/thread
-        P-->>S: "SubagentRun{id(parent-scoped),<br>localAgent: undefined}"
-        P->>SUB: "跑 turn → 收集 output<br>→ 归一 stopReason"
-        P-->>T: "{kind:'foreground', output}"
-    end
-    T->>M: "返回结果 (settleForegroundRun<br>后 dispose)"
+  subgraph one-shot remote [one-shot out-of-process: acp / claude-code]
+    D --> R1[resolveChildCwd]
+    R1 --> R2[startAcpRun 或 startClaudeCodeRun]
+    R2 --> R3[spawn 子进程 + 建立会话]
+    R3 --> R4[settleRunResult / subprocessRunHandle]
+  end
+
+  subgraph continuable [continuable: in-process]
+    E --> E1[reserve childId + resolveChildDepth + snapshot descriptor]
+    E1 --> E2[host.prepareContinuable → detached seed]
+    E2 --> E3[seedDescriptorTurn: 继承轮 + descriptor 事件]
+    E3 --> E4[materializeTracked → ctx.agents.create/resume seed+meta+setup]
+    E4 --> E5[submitMaterialized: 初始 prompt 进入 inbox]
+  end
+
+  D6 --> G[SubagentResult.output / structured]
+  R4 --> G
+  E5 --> H[子 agent 多轮执行: Activation]
+  H --> I2[child 用 report 工具 或 结算 notice 投影回父]
+
+  G --> J[tool-subagent settleForegroundRun 返回父模型]
+  I2 --> J
+  I2 --> K[list_agents: 经 subagent 投影枚举 child 状态]
 ```
 
-in-process 路径：`startInProcessRun` 在（[packages/subagent/subagent-in-process-driver/src/index.ts:102-102]()，startInProcessRun 完整实现见同文件 102-148）经 `parent.ctx.agents.create` 建 child、在 child 的 creation window 里调 `applyChildComposition`（index.ts:122）join 父 preset 并装 filters/persona。
-<!-- snippet: export async function startInProcessRun( -->
-ACP 子进程的 spawn 委托给进程 seam：Connector 把 `spawn: spec => this.ctx.subprocess.spawn(spec)` 注入，而非 provider 直接 `child_process.spawn`（[packages/subagent/subagent-acp/src/index.ts:162-162]()）；teardown 走 `disposeAcpChild` 的 `treeExitsWithin` → `terminate()` → `waitForExit` 协作阶梯（[packages/subagent/subagent-acp/src/run.ts:114-126]()）。
-<!-- snippet:      spawn: spec => this.ctx.subprocess.spawn(spec), -->
+各步源码定位：
+- D2/B→D：`[packages/subagent/tool-subagent/src/index.ts:369-429]()`
+- service 校验与 start：`[packages/subagent/subagent/src/index.ts:414-426]()`
+- one-shot in-process driver：`[packages/subagent/subagent-in-process-driver/src/index.ts:102-148]()`（start）、`[packages/subagent/subagent-in-process-driver/src/index.ts:154-205]()`（drive）
+- spawn/fork 具体 seed 差异：`[packages/subagent/subagent-fork-in-process/src/index.ts:48-75]()`
+- acp：`[packages/subagent/subagent-acp/src/run.ts:199-318]()`
+- claude-code：`[packages/subagent/subagent-claude-code/src/run.ts:203-289]()`
+- continuable：`[packages/subagent/subagent/src/continuation.ts:403-457]()`（startContinuable）、`[packages/subagent/subagent/src/continuation.ts:986-1023]()`（materializeTracked，内含 child resume/create）、`[packages/subagent/subagent/src/continuation.ts:883-932]()`（coldResume）
+- report 工具：`[packages/subagent/tool-subagent-report/src/index.ts:94-103]()`
+- list_agents：`[packages/subagent/tool-subagent-control/src/list-agents.ts:164-190]()`
 
-### 续接（continuable）编排——Activation 生命周期
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant M as 主 agent
-    participant T as tool-subagent
-    participant S as ctx.subagents
-    participant CM as continuation manager
-    participant P as "provider<br>(prepareContinuable only)"
-    participant PP as sessionPersistence
-    participant C as 续接子 agent
-
-    T->>S: "startContinuable(provider,label,<br>request,signal)"
-    S->>CM: "requireContinuations()<br>.startContinuable"
-    CM->>CM: "assertAdmitting → requirePersistence<br>→ snapshot descriptor"
-    CM->>P: "host.prepareContinuable(spec)<br>→ {seed}"
-    CM->>CM: "materialize(create#seed=descriptor<br>turn + meta) (continuation.ts:438-455)"
-    CM->>C: "ownerCtx.agents.create(session,seed,<br>meta,setup) (continuation.ts:996-1023)"
-    CM->>CM: "observer.start + watchSettlement<br>+ acquireOwnership"
-    CM-->>T: "{childId, messageId}<br>(inbox 接受即返回，不等 turn)"
-    T-->>M: "{kind:'continuable', subagentId}"
-
-    rect rgb(238,240,246)
-    Note over M,CM: "主 agent 稍后 followup<br>/ 子 agent report / settle"
-    M->>T: "send_message<br>(tool-subagent-control)"
-    T->>CM: "followup(parent, childId, content,<br>source) (continuation.ts:476)"
-    alt 有驻留 Activation
-        CM->>C: "同 Activation 入 inbox<br>（wake when waiting）"
-    else 无驻留 Activation (冷恢复)
-        CM->>PP: persistence.inspect(childId)
-        CM->>C: "ownerCtx.agents.resume(session)<br>→ fold descriptor → 提交 turn"
-    end
-    C->>CM: "子 agent 主动 reportFrom(child)<br>→ 父被唤醒 (continuation.ts:583-593)"
-    C->>CM: "轮结束 → watchSettlement<br>见 quiescent+childless → dispose<br>(continuation.ts:1233-1268)"
-    CM->>M: "notifySettlement(subagent-settled<br>notice, 不 wake closing 父)<br>(continuation.ts:1400-1449)"
-    end
-```
-
-- `startContinuable` 端到端：materialize 在（[packages/subagent/subagent/src/continuation.ts:436-438]()，materialize/submit 完整区块见同函数 436-456）构造 `seed = seedDescriptorTurn(...)` 后 `agents.create`，`submitMaterialized` 入 inbox，`{ childId, messageId }` 在 456 返回、不等 turn。关键区见 436-456。
-  <!-- snippet:     const lineageSeedLength = prepared.seed?.length ?? 0
-    const seed = seedDescriptorTurn(childId, prepared.seed, descriptor)
-    const messageId = await this.locks.run(childId, async () => { -->
-- materialize 建 Agent 的双路径：冷恢复 `agents.resume`（1009-1015），首次创建 `agents.create`（1016-1023），`setup` 里 `applyChildComposition` + append 委派策略（996-1005，[packages/subagent/subagent/src/continuation.ts:1009-1011]()，materialize 建 Agent 完整代码见同文件 996-1023）。
-  <!-- snippet:     const handle: AgentHandle = create === undefined
-      ? await this.ownerCtx.agents.resume({
-        resumeSessionId: childId, -->
-- `followup` 分派 alive/absent：`activation === undefined ? this.coldResume(...) : this.submitAdmitted(...)`，且对 disposal 已开的事务等待后冷恢复（lost-race，`v8 ignore` 标注，[packages/subagent/subagent/src/continuation.ts:485-488]()，alive/absent 分派完整逻辑见同函数 476-505）。
-  <!-- snippet:         const activation = this.activations.get(childId)
-        if (activation === undefined) return this.coldResume(parent, childId, content, options)
-        // A delivery that arrives after the disposal transaction began must not
-        // reach a handle being torn down; wait for release, then cold-resume. -->
-- 子 agent `reportFrom`：`authorizeReporter`（exact live Agent 凭据）→ `resolveReportParent` → `deliverReport`（[packages/subagent/subagent/src/continuation.ts:583-589]()，reportFrom 完整体见 583-593）。
-  <!-- snippet:   async reportFrom(
-    child: Agent,
-    content: ContentBlock[],
-    options: SubagentReportOptions,
-  ): Promise<MessageId> {
-    options.signal.throwIfAborted()
-    this.assertAdmitting(child) -->
-- 结算：`watchSettlement` 在 child lock 内判 `stateOf === 'settled'` 后 `dispose`（whenIdle 观察，[packages/subagent/subagent/src/continuation.ts:1233-1237]()，完整实现见 1233-1268）。
-  <!-- snippet:   private watchSettlement(activation: Activation): void {
-    void (async () => {
-      while (disposalOf(activation) === undefined) {
-        const poked = activation.poke.promise
-        await Promise.race([activation.handle.agent.whenIdle(), poked]) -->
-- `stateOf` 由 Agent status + accepted set + ownedChildren 派生（[packages/subagent/subagent/src/continuation.ts:870-874]()）。
-  <!-- snippet:   private stateOf(activation: Activation): ActivationState {
-    if (activation.handle.agent.status === 'running' || activation.accepted.size > 0) return 'running'
-    if (activation.ownedChildren.size > 0) return 'waiting'
-    return 'settled'
-  } -->
-- 结算交付：`notifySettlement` 用 `subagent-settled` notice（1400-1414）；父 teardown 已开始则 `parent.inject`（不 wake，避免浪费一次 model request），否则 idle 父 `followup`、busy 父 `steer`（1429-1442，[packages/subagent/subagent/src/continuation.ts:1400-1401]()，notifySettlement 完整逻辑见同函数 1400-1449）。
-  <!-- snippet:   private notifySettlement(activation: Activation, terminal: ActivationTerminal): void {
-    if (!activation.announced) return -->
-- 持久化依赖：冷恢复 `coldResume` 里 `persistence.inspect` + `agents.resume` + fold descriptor（883-932）；`requirePersistence` 缺 `sessionPersistence` 抛 `PERSISTENCE_UNAVAILABLE`（[packages/subagent/subagent/src/continuation.ts:1470-1473]()，完整见 1470-1479）。
-  <!-- snippet:   private requirePersistence(): SessionPersistence {
-    const persistence = this.ctx.get('sessionPersistence')
-    if (persistence === undefined) {
-      throw new SubagentError( -->
+`materializeTracked`（`[packages/subagent/subagent/src/continuation.ts:986-1023]()`）在子创建窗内调用 `applyChildComposition` + `setupRegistry.apply`（`:996-1004`）、`ctx.agents.resume`/`create`（fresh 创建、cold 恢复，`:1009-1023`），随后 `submitMaterialized`（`[packages/subagent/subagent/src/continuation.ts:943-958]()`）把初始/继续 prompt 送入 inbox——即"child 状态投影成父可追踪的执行起点"。cold resume 路径（`:883-932`）先 `persistence.inspect` 读持久 Session，再 `foldSubagentDescriptor(own-suffix)`（`:905`）、`authorizeLineage`（`:901`），再 materialize + submit——故冷恢复能精确重建 child 状态且不把 fork seed 的祖先 descriptor 当子身份。
 
 ## 与其他模块协同
 
-- **依赖 `ctx.agents` / agent-loop 的 `agent.ctx` scoped world**：in-process child 与续接 child 都是通过 `parent.ctx.agents.create`/`resume` 在父的 context 树上建子 agent（`child-agent.ts` 的 `applyChildComposition` 在 child 的 creation window 里 join 父 preset、注册 scope-local 项）。`@deepseek-ai/dsh-subagent` 服务靠 `ctx.inject(['agents'],…)` 才挂载 continuation manager，Manager 无 agents 时抛 `CONTINUATION_UNAVAILABLE`（[packages/subagent/subagent/src/index.ts:186-187]()，inject 挂载块见 186-196）。
-  <!-- snippet:     ctx.inject(['agents'], (childCtx: Context) => {
-      const manager = new SubagentContinuationManager(childCtx, { -->
-- **out-of-process 走 `ctx.subprocess` seam**：所有远端 provider `inject: ['subagents','subprocess']`，spawn 统一经 `ctx.subprocess.spawn`（scrub/env/树 teardown），out-of-process.ts 只负责 cwd 决议（override 否则父 session cwd，[packages/subagent/subagent/src/out-of-process.ts:114-115]()，resolveChildCwd 完整见 114-120）与 never-reject 的 result 归一化（[packages/subagent/subagent/src/out-of-process.ts:156-175]()）。
-  <!-- snippet: export function resolveChildCwd(prefix: string, configured: string | undefined, parentCwd: string | undefined): string {
-  if (configured !== undefined) return configured -->
-- **agent-presets 的 `composeFrom`**：`applyChildComposition` 里 `childCtx.get('agentPresets')?.composeFrom(childCtx, parent.ctx)`——子 agent join 父 preset（[packages/subagent/subagent/src/child-agent.ts:168-168]()），否则 child 只见空 tool registry。agent-presets 一篇会细讲，这里聚焦 transport 边界。
-  <!-- snippet:   childCtx.get('agentPresets')?.composeFrom(childCtx, parent.ctx) -->
-- **session 持久化**：续接 child 依赖 `ctx.sessionPersistence`（cold inspect/resume、final flush），缺则 `PERSISTENCE_UNAVAILABLE`。durable 枚举 `listChildren/listDescendants` 合并 live session store + 可选 persistence（live-preferred，[packages/subagent/subagent/src/list-children.ts:228-232]()，corpus 合并完整见 226-240），模式/label 经注册的 `subagent` 投影单元三档读取（registry watermark → projection cache 的 seq 门 → persist inspect 折叠，[packages/subagent/subagent/src/list-children.ts:243-294]()）。
-  <!-- snippet:   const corpus = new Map<SessionId, CorpusRecord>()
-  for (const header of persistedHeaders) corpus.set(header.id, { header, live: undefined })
-  for (const session of sessions.list()) {
-    corpus.set(session.header.id, { header: session.header, live: session })
-  } -->
-- **代理工具/任务链**：one-shot 后台经 `ctx.jobs` Task（`tool-subagent` 的 `settleStart` 把 `start` 的 promise 折叠成 `JobOutcome` 后注册，jobs.start 在 `tool-subagent/src/index.ts:406` 附近）。
+- **tools 的 delegation Consumer**：`tool-subagent` 是委派 Consumer，按 provider lifecycle 挂/卸 tool（`[packages/subagent/tool-subagent/src/index.ts:267-466]()`）；`tool-subagent-control` 提供全局 `send_message`/`interrupt_agent`/`list_agents`（`[packages/subagent/tool-subagent-control/src/index.ts:25-120]()`、`[packages/subagent/tool-subagent-control/src/list-agents.ts:91-191]()`）；`tool-subagent-report` 给每个 in-process continuable 子装 child-scoped `report`（`[packages/subagent/tool-subagent-report/src/index.ts:136-142]()`）。
+- **sandbox 同级隔离**：`[packages/subagent/subagent/src/child-agent.ts:199-225]()` `captureDelegatedPolicyOverrides`/`appendDelegatedPolicyOverrides` 把父 sandbox 覆盖继承、approval 钉死 `'never'`；`applyChildComposition` 里组装 `delegation:persona`、`tools.restrict`。身份即权限边界 —— 子只在委派时固定范围内行动。（跨模块：与 sandbox 模块的深层互操作细节（sandbox 策略覆盖、工具 restrict 的精细语义））
+- **session 派生子状态**：子 Session 经 `ctx.agents.create`/`resume`、`[packages/subagent/subagent/src/child-agent.ts:102-120]()` `childSessionMeta` 落 `parentSession/delegationDepth/seedLength/origin`；投影从 `[packages/subagent/subagent/src/index.ts:197-200]()` `sessionProjections` 注册的 `subagent`/`subagentTiming` 单位服务查询。（跨模块：session 模块 `Session.create`/`prepare({seed})` 的 seed 契约，见 docs `core.md#creation-and-ownership`，需引 session 源码）
+- **acp 外部协议**：`[packages/subagent/subagent-acp/src/run.ts:199-318]()` `startAcpRun` 用 `ClientSideConnection`+`ndJsonStream` 驱动独立子进程，经 `[packages/subagent/subagent-acp/src/run.ts:209-215]()` `ctx.subprocess.spawn` 共享 scrub / 树级 teardown。（跨模块：`dsh-subprocess` 的 spawn/scrub/teardown 契约）
+- **agent 核心（所有权/循环）**：in-process driver 与 continuation manager 都经 `parent.ctx.agents`/私有 `ownerCtx.agents` 创建/恢复 Agent，`AgentHandle` 是唯一 quiescent 生命周期所有者（`[packages/subagent/subagent-in-process-driver/src/index.ts:132-139]()`、`[packages/subagent/subagent/src/continuation.ts:1009-1012]()`）。（跨模块：AgentHandle 所有权、Agent 循环 turn 排序契约）
+- **jobs 后台任务**：one-shot 后台经 `ctx.jobs.start` 包装，`[packages/subagent/tool-subagent/src/index.ts:111-120]()` `settleStart` 中转 `[packages/subagent/subagent/src/run-settlement.ts:49-63]()` `settleRun`（`[packages/subagent/tool-subagent/src/index.ts:400-422]()`）。（跨模块：jobs seam 的 Task/outcome 语义）
 
 ## 关键设计决策
 
-### Why 多 transport 而非统一 in-process？
+**决策 1：统一单接口、多 transport（spawn/fork/acp/claude-code 同一 `SubagentProvider`）**
 
-根本原因是委派的目标形态多样到无法用一个实现覆盖：一个 seam 背后可以是从**全新子 agent**、**继承父历史的子 agent**、到**另一产品内委派的一轮 turn**。in-process provider（spawn/fork）是"capability 最能被父强制"的形态（outputSchema/depthFilter/persona 全支持），而 out-of-process provider 物理上无法 honor 父强制的 start 特性，所以诚实广告 `NO_START_CAPABILITIES`（[packages/subagent/subagent/src/out-of-process.ts:25-30]()），请求需要任一即被拒——不假装能 apply。注册表让这些 provider 并存，调用方（tool-subagent 配置的 `provider`）按名选。这镜像了 LLM adapter 的多 provider 而不是 bash 的单 executor。
+- Why：把"子 agent 形态"从调用方解耦。只要实现 `SubagentProvider`，任何执行方式都能接入；Consumers（model-facing tool）只依赖 bound → 结果。`[docs/subsystems/subagent.md:7]()` 列举一整套 sibling provider 包。
+- 权衡：接口取交集，能力由 capability 位显式声明，缺失即 fail-loud。代价是每个新 transport 都要重实现 `start`+run 生命周期；共享的 in-process driver 与 out-of-process 工具函数（`NO_START_CAPABILITIES`、`resolveChildCwd`、`settleRunResult`、`subprocessRunHandle`，见 `[packages/subagent/subagent/src/out-of-process.ts:19-30,101-215]()`）为同一接口收敛共性。
+- 连回哲学：subagent 是可交换 seam —— provider swap 不触及循环。
 
-### in-process vs fork vs out-of-process 资源/隔离/成本权衡
+**决策 2：in-process 与 out-of-process 的能力/上下文权衡**
 
-| 维度 | spawn（in-process） | fork（in-process） | acp/codex/claude-code/dsh-sdk（out-of-process） |
-|---|---|---|---|
-| 成本 | 最低：复用 `agents.create` 的 quiescent teardown，无进程边界 | 略高于 spawn（多一份 completed-turn seed） | 最高：每 run 一个子进程 + 协议初始化 |
-| 上下文继承 | 全新（`inheritsParentContext=false`） | 继承父 completed-turn 前缀（`=true`；fork 取到最后一个 `turn/end`） | 全新（`=false`，不跨进程边界） |
-| 隔离 | 同进程共享 Cordis context | 同进程 | 独立进程，自身 model/session/tools |
-| 父可强制能力 | outputSchema/depthLimit/toolFilter/persona | 同上 | 无（`NO_START_CAPABILITIES`） |
-| 使用场景 | 便宜、独立、频繁 | 需要站在既有对话上下文上 | 委派给一个完整独立产品/运行时 |
+- in-process（spawn/fork）：共享同一 cordis ctx，**能**执行 `outputSchema`（child-scoped 结构输出工具 `structured_output`，`[packages/subagent/subagent-in-process-driver/src/structured.ts:19,99-103]()`）、`depthLimit`（可构造子所以可强推绝对 cap）、`toolFilter`/`persona`（scoped restrict + persona 遮蔽）。优点是能力全 + 真共享执行世界（继承 preset、工具、策略）。
+- out-of-process（acp/claude-code）：独立进程，无法信任父侧强制，于是**零能力位**（`[packages/subagent/subagent/src/out-of-process.ts:25-30]()`），且只读父 `cwd`（去程边界唯一穿越值），上下文不跨进程。优点是真实产品边界隔离、不占用 harness 事件循环，代价是能力与"共享世界"都让位。
+- 权衡核心：**fail-loud 而非静默降级**——请求要 `outputSchema` 而选了个远程 provider，service 在 `start` 前就拒绝，绝不"接受后当无事发生"（`[packages/subagent/subagent/src/index.ts:481-496]()`）。
 
-### Why out-of-process 也走 `ctx.subprocess`？
+**决策 3：child 状态从父日志派发并持久派生（seed + delegation policy 事件 + descriptor）**
 
-子树进程的生命周期（credential scrub、env 白名单、whole-tree teardown/timer）属于进程 seam 的职责，不应让每个产品 provider 各自为政。out-of-process provider 只注入 `subprocess`，spawn 用 `ctx.subprocess.spawn`，并在 `dispose` 里通过 `treeExitsWithin`/`terminate()`/`waitForExit` 的协作 teardown 阶梯到达 whole-tree 退出（[packages/subagent/subagent-acp/src/run.ts:114-126]()）。cwd 决议是唯一"读父 session"的地方，且只读 workspace（[packages/subagent/subagent/src/out-of-process.ts:114-115]()，resolveChildCwd 完整见 114-120）。
+- 子 Session 不是凭空建：fork 继承父完成轮前缀（`[packages/subagent/subagent-fork-in-process/src/index.ts:48-54]()`），策略以 `source:'delegation'` 事件写子日志（`[packages/subagent/subagent/src/child-agent.ts:215-225]()`），身份以 `subagent/descriptor` 事件固化（`[packages/subagent/subagent/src/descriptor.ts:28-39]()`），`seedLength`/`delegationDepth` 记 header（`[packages/subagent/subagent/src/child-agent.ts:118]()`）。所有派生态**从子自己的日志可重放** → cold resume 只折 own-suffix（`[packages/subagent/subagent/src/continuation.ts:905]()`）。
+- 为什么 logs-only + scheme：descriptor 不进 model history、无 `surfaceOp`、经 append-only log 跨 compaction 保留（`[docs/subsystems/subagent.md:285]()`）。这保持"Session 事件日志是唯一事实源"的根哲学——child 身份与策略是事件，不是旁路状态。
+- 权衡：手动维护派生一致性表较繁琐，但换来冷恢复与枚举（list_agents）无需加载 Agent 即可精确重建。
 
-### continuation orchestration 的价值（long-running 委派续接而非一次性）
+**决策 4：depth 单调防护防递归失控**
 
-一次性 `start` 是"前台 one turn 一个结果"，主 agent 必须等到结果。续接（`startContinuable`+`followup`）让主 agent **当场拿到 durable childId 就继续自己干活**，稍后再给子 agent 交付新 turn——即"后台跑、多轮对话、可冷恢复"的委派。关键设计：**agent inbox 是唯一 turn 队列**，无第二个 Task/结果载体；每续接消息变一个 FIFO turn，一个观察序，无法重定向进行中的 turn。Activation 驻留/冷恢复统一由 manager 决策（`followup` 的 alive/absent 分派，[packages/subagent/subagent/src/continuation.ts:485-488]()，alive/absent 分派完整逻辑见同函数 476-505），冷恢复走 `ctx.agents.resume()` 而非 re-fork（不会用父的更新历史覆盖子自己的持久转录）。
+- `delegationDepthOf = max(header, runtime)`，header 权威、runtime 可加深不可降低（`[packages/subagent/subagent/src/depth.ts:28-36]()`）；每个 start 校验 + 可设绝对 `maxDepth`（default 3，`[packages/subagent/tool-subagent/src/index.ts:98]()`）。冷恢复后 runtime 归零也不至于被当顶层 —— header 兜底单调。
+- 为什么 max 而非自身：resume 的子带着 fresh options 到达，若只数 runtime 会从 0 开始冒充顶层无限委派；取 max 使持久 header 成为单调地板（`[packages/subagent/subagent/src/depth.ts:18-23]()` 注释）。
 
-### tool-subagent 的 one-shot vs continuable 如何影响会话
+## 全局关联：委派也是可交换 seam 的完整自证
 
-- **one-shot 前台**：阻塞等结果，`result` 里的 output 回到父模型；无持久子会话，父需在 prompt 里给全上下文。
-- **one-shot 后台**：返回 jobId，父可用 `job_output`/`job_kill` 管理；仍是"一次任务拿一个结果"。
-- **continuable 后台**：默认后台，返回 durable `subagentId`，父可 `send_message` 续话、`interrupt_agent` 停、`list_agents` 列、子 `report` 主动回报；settle 时 runtime 发 `subagent-settled` 通知父（一键结算含 child 结果/摘要）。这个配置差异直接改变"child 是否持久可续、父能否异步收集"，对 agent 编排方式影响最大。
+subagent 用「统一单接口 + 多 transport（spawn/fork/acp/claude-code 同一 `SubagentProvider`）」把「另一个 agent 如何执行」抽象成可交换能力，能力位相缺则 fail-loud，绝不静默降级；child 状态从父会话派发（fork 继承完成轮、策略以 `source:delegation` 事件写子日志、身份以 `subagent/descriptor` 固定），所有派生态从子自己的日志可重放，故 cold resume 只折 own-suffix。这与 [session.md](session.md) 的「日志即事实源」紧密呼应——child 身份与策略是事件而非旁路状态；又与 [tools.md](tools.md)（delegation tool 驱动）、[sandbox-capability-seams.md](sandbox-capability-seams.md)（委派边界继承沙箱覆盖）在「可交换 + 可审计」两条主线上汇合。
 
-## 亮点与问题
-
-### 亮点
-
-1. **capability 先声明、先校验的 fail-loud 纪律**：`SubagentCapabilities` 四个旗标（[packages/subagent/subagent/src/types.ts:86-91]()）把 provider 能力静态化，`assertCapabilities` 在 `start` 前拒绝一切不支持的请求（[packages/subagent/subagent/src/index.ts:481-483]()，完整校验逻辑见 481-496）；续接更是用"方法存在即能力"（`prepareContinuable` 存在才算支持）+ TS narrowing 做发现机制。杜绝"接受了再悄悄忽略"。
-   <!-- snippet: export interface SubagentCapabilities {
-  readonly outputSchema: boolean
-  readonly depthLimit: boolean
-  readonly toolFilter: boolean
-  readonly persona: boolean
-} -->
-   <!-- snippet:   private assertCapabilities(provider: SubagentProvider, request: SubagentStartRequest): void {
-    const needs: { when: boolean; cap: keyof SubagentCapabilities }[] = [ -->
-2. **续接编排不搞第二套状态机**：`running/waiting/settled` 从 Agent quiescence + owned-child set 派生（[packages/subagent/subagent/src/continuation.ts:870-874]()），turn 排序完全托付 agent inbox（唯一 FIFO）。冷恢复即新 epoch 新 runId——观察者无需知道它 materialized/woke/resumed。
-   <!-- snippet:   private stateOf(activation: Activation): ActivationState {
-    if (activation.handle.agent.status === 'running' || activation.accepted.size > 0) return 'running'
-    if (activation.ownedChildren.size > 0) return 'waiting'
-    return 'settled'
-  } -->
-3. **settlement 交付的时序正确性**：`notifySettlement` 在父的 lineage 已 closing 时注入而非唤醒（避免浪费一次 model request 在即将 dispose 的父上）——这个边界普通外部 listener 无法做对（[packages/subagent/subagent/src/continuation.ts:1429-1432]()，完整逻辑见 1400-1449）。
-   <!-- snippet:       if (this.closingTeardownFor(parent) !== undefined) {
-        parent.inject(message)
-        return
-      } -->
-4. **durable descriptor 的克制**：只快照显式字段、版本化（`SUBAGENT_DESCRIPTOR_VERSION`）、不进模型历史、survives compaction，跨 compaction 冷恢复有据可依；`subagentDepth`/`outputSchema` 等 per-activation/非 durable 的刻意省略（[packages/subagent/subagent/src/descriptor.ts:8-10]()）。
-5. **durable 枚举无 agent 加载**：`listChildren/listDescendants` 不 load/resume 任何 Agent，投影折叠是唯一分类权威（[packages/subagent/subagent/src/list-children.ts:134-134]()），诊断不泄漏模型-hidden descriptor，缓存只是可选加速。授权以"exact live Agent 身份"为凭据（`authorizeReporter` 只认具体驻留 Activation），杜绝 stale ancestor / self-targeting 探测。
-
-### 问题 / 风险
-
-1. **continuation.ts 复杂度高**（1483 行）：Activation 状态派生、child lock 临界区、dispose/rollback/drain 的边界用大量 `v8 ignore` 标记"只在同步重入时可达"的分支（如 `followup` 的 lost-race 分支、`materializeTracked` 的 rollback 分支）——这些难以被测试确定性触发，若真发生可能隐含时序 bug。
-2. **能力不对称收敛到"是否 in-process"**：out-of-process provider 一律零 capability（`NO_START_CAPABILITIES`），意味着模型用 `codex`/`claude-code` 委派时无法用 toolFilter/persona/outputSchema 约束 child——这是物理边界（父无法在子进程强制），但使用者需在 config 层面想清楚。
-3. **冷恢复的 token/预算不还原**：descriptor 刻意不保存 per-activation 的 `maxTokens` 等预算，冷恢复用 resumed route 的默认——文档明示这是设计取舍（[packages/subagent/subagent/src/descriptor.ts:15-16]()），但对要"与上次同样的预算继续跑"的用例会造成预算漂移。
-   <!-- snippet:  * Per-activation knobs such as `maxTokens` are omitted for the same reason as
-  * `outputSchema`: they budget one activation. -->
-4. **安全边界依赖进程 seam 做 scrub**：out-of-process env 安全完全押在 `ctx.subprocess.spawn` 的 credential-scrub 上；ACP provider 自己又允许 `env` 配置把 `DEEPSEEK_API_KEY` 显式传给 child（[packages/subagent/subagent-acp/src/index.ts:48-51]()，env 后门完整见 47-56）——这是"显式 opt-in 绕过 scrub"的故意后门，需部署方自觉。
-   <!-- snippet:   /**
-   * Extra environment variables for the child process — e.g. the child
-   * harness's own `DEEPSEEK_API_KEY`. Forwarded on top of a credential-scrubbed
-   * copy of the parent env -->
-
-## 已知的文档-实现漂移
-
-- `docs/subsystems/subagent.md` 第 289 行附近对 `listChildren` 的"三档 ladder"描述准确（registry watermark → projection cache 的 own-suffix seq 门 → persistence.inspect 折叠，见 `list-children.ts` 头注释与 `resolveCandidateRows`），与源码一致；唯一需留意的是官方文档措辞把 seq 门称为"checkpoint cache"，源码用的是 `projection-cache` 的 global 注册名（`sessionProjections.register`），二者指向同一机制。
-- 本解读对 `subagent-codex`/`subagent-claude-code` 只确认其"经 `ctx.subprocess` 子进程 + 协议驱动"的方式（`run.ts` 的 spawn spec），未逐行贴 wire 协议体；`docs/subsystems/subagent.md` 也未展开 Codex/Claude Code 的 wire 细节，属双方都偏薄的区域。
+> 跨模块契约提示：`subagent` 与 sandbox（覆盖播种）、session（seed 契约）、subprocess（scrub）、jobs（后台任务）的边界定义见各自子文档，此处不再复述验证性细节。

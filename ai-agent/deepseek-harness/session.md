@@ -1,343 +1,258 @@
-# 会话日志与事件溯源（Session Event Sourcing）
+# 会话系统：事件溯源日志作为唯一事实源
 
-> 对应关注面：append-only `SessionEvent` 日志（单一事实源）、`deriveMessages()` 投影、持久化后端（JSONL/SQLite）、session 查询/标题/投影。相对于 `capability-seams.md`，本文件聚焦「会话日志、持久化与投影」这条贯穿一切的主干。
+> 子文档之一，聚焦 dsh 的数据面——append-only 的 `SessionEvent` 事件日志。覆盖：`packages/core/session`（核心事件模型）+ 持久化 seam（`session-persistence` 抽象 + coordinator + JSONL/SQLite 后端）+ `session-projection` + `session-telemetry`。整体哲学见 [README](README.md)；本文上承 [architecture.md](architecture.md)（插件树为运行时地基），下启 [agent-loop-runtime.md](agent-loop-runtime.md)（循环从中 derive 模型历史）。
 
-一句话根因：**模型看到的历史必须能从日志完全重建**（"Model-visible means logged"）。dsh 把一次 agent 交互的「全量事实」记成一条 append-only 的 `SessionEvent` 日志；LLM 的输入消息、会话标题、读模型、UI 状态全部**从该日志派生**，而不是另存一份"当前消息数组"。
+## 在项目中的角色
 
-- 单一事实源：`Session` 就是一条事件日志，`deriveMessages()` 从它派生出模型历史。
-- 持久化是**游标式追赶**，不是整存替换：后端订阅 `session/event` 把每个事件追加进自己的存储，`session/flush` 是显式持久性屏障。
-- 两个可互换后端（JSONL / SQLite）实现同一个抽象 `SessionPersistence`，共享一个 `PersistenceCoordinator` 编排。
+会话系统是整个 harness 的数据面**唯一定序事实源**。`Session` 是一个 append-only 的 `SessionEvent` 日志，模型史、标题、telemetry、fork/resume、持久化全部从这个日志**派生**而非存储独立副本。
 
-## 在项目中的角色：去掉它会怎样
+去掉它系统会怎样（反证其必要性）：
 
-dsh 是一个 agent harness，而 `Session` / 事件溯源是**整个交互历史的唯一存储**。去掉它，等于同时失去：模型上下文输入、会话持久化、fork、resume、标题、审计 replay、telemetry 采纳、投影读模型。它是一条贯穿一切的主干，不是某个独立子模块。
+- **模型历史无法重建**：`deriveMessages()` 从日志投影出 `Message[]`，是「模型看到的一切」的来源；无日志则无法向 provider 续传上下文（`[packages/core/session/src/index.ts:726-747]()`）。
+- **无法审计 / telemetry 无源**：`session-telemetry` 的 ledger 通道逐条镜像 session 日志事件（`[packages/session/session-telemetry/src/coordinator.ts:191-202]()`），删除日志等于删除观测面。
+- **无法 fork/resume**：`SessionStore.fork()` 从稳定 log 前缀造子会话（`[packages/core/session/src/index.ts:1081-1138]()`）；resume 通过 persistence 的 `prepare(id)` 从已存日志还原未发布 Session（`[packages/session/session-persistence/src/coordinator.ts:712-747]()`）。
+- **标题/统计等派生状态无基**：`session-projection` 的每个注册单元是「state + event → state」的纯函数，驱动源是 `session/event`（`[packages/session/session-projection/src/index.ts:181-183]()`）。
 
-下游直接消费 `ctx.sessions` 与 `ctx.sessionPersistence` 的关键方：
+一句话：会话日志是「一切皆插件」反内核主张在**数据面**的投影——没有特权内核并不意味着没有唯一定序的事实源；正是因为内核无 `session.history` 这类特权可变对象，才需要一根 append-only 日志承载模型可见与审计所需的一切，所有消费者各自投影。
 
-- `dsh-agent-loop`：agent 主循环每步 append 事件、读 `deriveMessages()` 作为模型请求历史，用 `session/flush` 做请求前持久化屏障。
-- `dsh-session-checkpoint-policy`：在模型请求发出**前**强制 flush，fail-closed。
-- `dsh-session-title`：把标题写成 `session/title` 事件，再从日志 fold 回。
-- `dsh-session-projection` + `session-projection-cache`：把日志事件 eager fold 成可查询的读模型。
-- fork / resume / subagent 都是从这条日志切前缀 / 续写。
+---
 
-「去掉它会怎样」的最短答案：**没有它就没有"可重建"这个不变量**——其余任何依赖历史重建的能力（resume、fork、replay、title、projection）全都失去数据源。
+## 解决什么问题 / 根因
 
-## 解决什么问题、根因
+**根因：模型交互是「难重放、易撕裂、需审计」的状态，可变会话对象无法同时满足这三者。**
 
-### 根因：历史必须可重建
+1. **模型上下文必须可重放**：agent loop 每步要构造 `Message[]`。若用可变 `session.messages[]`，则 (a) 无法精确重建某请求时模型看到什么；(b) chunk 级（token 级）细节丢失；(c) fork/resume 需另存快照，多副本必然漂移。事件溯源把「发生了什么」和「当时模型看到什么」解耦——历史是可重放的投影而非存储副本。`SessionEvent` 保证 lossless JSON 且「sequence numbers stay contiguous, including raw chunks, so persistence can store the canonical log verbatim」（`[packages/core/session/src/types.ts:232-234]()`）。
 
-LLM agent 的每一次对话 / 请求都依赖**精确的重放**。dsh 的核心不变量是 *Model-visible means logged*：模型看到过的一切必须被记入日志，且能从日志**完全重建**。这引出一个直接推论——任何新的 model-visible 输入必须新增一条 session 事件类型（扩展 `SessionEventMap`），否则模型曾经看到但日志没记的东西，resume / fork 后无法重现，会造成历史缺失与语义漂移。
+2. **append-only 保证审计完整性**：事件一旦入 log 便 deep-freeze（`[packages/core/session/src/index.ts:627-633]()`），`events` 快照不可变（`[packages/core/session/src/index.ts:559-562]()`），持久化后端得到的必是「exact appended events」（`[docs/subsystems/session.md:603-603]()`）。可变状态做不到——它某处必有一份可被改写的历史。
 
-`SessionEventMap` 的注释直接阐明这一点：`The merge-extensible, append-only source of truth for an agent interaction. Message history is derived from this log.`。消息历史**派生**自日志，不另存。
-[packages/core/session/src/types.ts:236-236]()
-<!-- snippet: export interface SessionEventMap { -->
+3. **崩溃安全需要显式边界**：一段 turn 可能极长（多 step + 大 tool 输出），可变状态崩溃会丢整段未 flush 历史。事件溯源下后端只截断撕裂的尾记录，完整的中断 turn 保留并合成 `turn/end { interrupted }` 闭合（`[packages/core/session/src/repair.ts:19-132]()`；`[docs/subsystems/persistence.md:15-17]()`）。
 
-### 三个次级问题
+**为什么不用「内存模型 + SQL 快照」替代？** 快照方案的多副本同步、部分写入原子性、以及「崩溃后恢复出一致的模型历史」都退化为分布式一致性问题；事件日志把复杂性收敛到每个后端都能以单事务/单文件 append 实现的 append-only 顺序。详见决策 1。
 
-1. **持久化与内存模型统一**：如果内存里是"消息数组"、磁盘上是"别的存储"，两者会漂移。改成"日志即源"，持久化只是把同一批事件换一种介质存储，无第二套 schema。
-2. **崩溃恢复语义**：进程崩溃时最后一条 turn 可能没写完。系统不能简单截断（一个长 turn 可能巨大且已落盘），要能区分「完整已提交」与「撕裂尾部」，在加载时补齐缺失边界。
-3. **回放与实时一致**：派生（消息、标题、投影）需要一个统一投影规则，让「实时内存」与「离线重放」产出**完全相同**的结果，避免两处不一致（`deriveEventMessage` 是统一 per-node 投影）。
+---
 
-## 设计思路：方案与权衡
+## 设计思路
 
-### 核心模式：Map → derived-union + declaration merging
+### 方案：append-only 事件日志 vs 可变会话对象
 
-`SessionEventMap` 是一张事件类型表，每个 key 映射到它的 payload 类型；`SessionEvent<T>` 用它构造一个真 discriminated-union（`switch(event.type)` 直接收窄 `event.data`），并可**声明合并**（declaration merging），因此插件能往 map 里加自己的事件类型，core 的类型检查自动覆盖。
+选了前者，三个支撑：
 
-两个刻意取舍：
+- **`seq = log.length` 连续性契约**：`seq` 单调、连续、等于日志长度；`get seq()` 即 `log.length`（`[packages/core/session/src/index.ts:564-567]()`）。这让持久化以「下一个 seq 应等于已存长度」做简单校验（`[packages/session/session-persistence/src/coordinator.ts:698-702]()`），也让 surface/header fold 记住「已消费到哪」做增量投影（`[packages/core/session/src/index.ts:670-680]()`）。
+- **deep-freeze 使历史不可改写**：append 时 `snapshotJsonValue`（lossless 校验 + 一次性拷贝）再 `deepFreeze`；「一个 stateful getter 不能给校验一个值、给存储另一个值」（`[packages/core/session/src/index.ts:596-603]()`）。
+- **构造期 seed 也过同一校验**：replay/fork 的 seed 在构造时逐条 `snapshotJsonValue` + `validateNext` + `deepFreeze`（`[packages/core/session/src/index.ts:508-537]()`），保证「后端能存的东西」与「live log」永不背离。
 
-- **不写 `assertNever`**：因为 map 可合并，一个 `default` 分支里的未知类型是合法的插件事件，不是 bug（`default: return null`，注释明说 no assertNever）。
-- **`ignorable` 标记**：新版本的未知事件在旧 reader 面前，若带 `ignorable: true` 可安全跳过，否则旧 reader 要**拒绝重建**而非静默丢事件。这是"过度拒绝优于静默错读"的取舍，且与 `SESSION_FORMAT_VERSION = 0`（刻意不迁移、只拒绝）配套：
-  [packages/core/session/src/types.ts:56-56]()
-  <!-- snippet: export const SESSION_FORMAT_VERSION = 0 -->
+### 核心模式 1：`SessionEventMap`——类型合并声明的可扩展事件词汇
 
-### 放弃的替代方案
+事件类型是一张**可声明合并的接口表**，而非「自由字符串 + 任意 JSON」：
 
-官方文档明示了一个被放弃的方案：**直接存消息数组**。事件溯源 vs 直接存数组的对比见【决策：为什么选 append-only 事件日志】。要点：事件溯源保住了 chunk 级回放保真、崩溃恢复的边界语义、以及「任意前缀可重放」的派生能力；代价是读路径更复杂、存储更大。
+```ts
+export interface SessionEventMap {
+  'turn/start': { turn: number }
+  // … 其余变体 …
+  'session/end-seed': Record<string, never>
+}
+export type SessionEventType = keyof SessionEventMap
+```
+（`[packages/core/session/src/types.ts:236-336]()`）
 
-### 派生不做整棵折叠，而是增量 fold
+插件通过 `declare module … interface SessionEventMap { 'compaction/start': … }` 扩展（`[docs/subsystems/session.md:11-11](),595`）。关键约束：
 
-`deriveMessages()` 缓存每个 surface node 的投影结果，只对新增节点投影（O(new nodes)）；一次 `replace`（压缩）会让 `replaceGeneration` 递增，从而失效重建。
-[packages/core/session/src/index.ts:726-747]()
-<!-- snippet:   deriveMessages(): Message[] {
-    const surface = this.surface
-    const nodes = surface.nodes
-    const generation = surface.replaceGeneration
-    if (generation !== this.derivedGeneration) {
-      this.derived = []
-      this.derivedNodes = 0
-      this.derivedGeneration = generation
-    }
-    for (const seq of nodes.slice(this.derivedNodes)) {
-      // Surface sequences are built from this.log — seq is always a valid
-      // index by construction. The non-null assertion expresses that invariant.
-      // oxlint-disable-next-line typescript/no-non-null-assertion
-      const msg = this.deriveEventMessage(this.log[seq]!)
-      // A surface node is one of the five message-producing types, but an
-      // empty-content assistant/message (a max-tokens step that hosts only
-      // usage) derives to null and must not enter the transcript.
-      if (msg) this.derived.push(msg)
-    }
-    this.derivedNodes = nodes.length
-    return [...this.derived]
-  } -->
+- 新增**模型可见**输入 ⇒ 必须新增 session 事件（Model-visible means logged 在类型层的落地）；
+- 插件贡献事件**默认是 log-only**（非 `SurfaceEventType`、无 `surfaceOp`、不出现在派生历史），其与 turn 的关系由所属插件的 invariant companion 声明（`[packages/core/session/src/types.ts:345-346]()`；`[docs/subsystems/session.md:595-595]()`）。
+
+### 核心模式 2：`SurfaceEventType` / `SurfaceOp`——「模型历史从哪里来」的显式声明
+
+三类消息事件（`user/message`、`assistant/message`、`tool/result`）**必须**带 `surfaceOp`（append 或 replace），可带 `sourceEventSeqs`（来源 seq）。`surfaceOp` 是 `deriveMessages()` 的**唯一来源**：无标记的原始事件（chunk、turn 边界）正确缺席；compaction 的 `replace` 把被遮蔽节点从派生中删除（`[docs/subsystems/session.md:494-510]()`）。
+
+这是「投影规则可证」的关键：`Session.append` 的调用点由编译器强制——对 `SurfaceEventType` 事件必传 `SurfaceIntent`，对 log-only 事件拒绝（`[packages/core/session/src/index.ts:604-608]()` 的元组类型 `...opts: T extends SurfaceEventType ? [opts: SurfaceIntent] : []`）。`surfaceOp` 语义：
+
+```ts
+type SurfaceOp = 'append' | { op: 'replace'; start: number; end: number }
+```
+（`[packages/core/session/src/types.ts:372-374]()`）
+
+`append` 常规尾部追加；`replace` 遮蔽 `[start,end]`（含端点，必须都在当前 surface 内）并原位插入，`replaceGeneration` 单调递增以区分「纯尾部增长」与「surface 重写」（`[packages/core/session/src/surface.ts:362-379]()`）。
+
+### 核心模式 3：Model-visible means logged 不变式 + `ignorable` 逃生阀
+
+- **入模型请求的一切都必须能从日志重建**：`EpochHeader`（call config + 渲染后 system + 装配后工具 schema）整体作为 `request/header` 快照落盘（`[packages/core/session/src/types.ts:304-304]()`），`foldRequestHeader` 选最新快照重建（`[packages/core/session/src/request-header.ts:65-70]()`）。每个请求因此是日志的纯函数（`[docs/subsystems/session.md:156-156]()`）。
+- **反之**：读者遇不认识的类型，若事件未带 `ignorable: true` 必须拒绝重建而非静默丢弃——未知必需事件可能改变后续日志解读；缺省为 required，宁可误拒也不可静默复活被掏空的会话（`[packages/core/session/src/types.ts:421-422]()`）。
+
+### 被否决的替代方案
+
+- **自由 string 事件 + 无 schema**：无类型合并就没有编译期强制「模型可见输入必有事件」，invariant companion 无法按类型精确校验。
+- **只存最终消息不存 chunk**：毁掉 token 级重放保真（`assistant/chunk` 是「token-level replay fidelity」，`[packages/core/session/src/types.ts:265-266]()`），而这恰是审计/UI 流式所需。
+
+---
 
 ## 关键数据结构
 
-### `SessionHeader` — 日志之外的元数据
+### 1. `SessionEvent<T>`——按 type 判别联合的单条日志项（`[packages/core/session/src/types.ts:404-436]()`）
 
-Header 不进事件日志，因为它不是对话重建的一部分，而是存储关切（版本、cwd、世系、seed 边界）。随 `Session` 用 `session.header` 访问。
-[packages/core/session/src/index.ts:443-443]()
-<!-- snippet:   readonly header: SessionHeader -->
+`switch (event.type)` 直接收窄 `event.data`，无需 cast。`sourceEventSeqs`/`surfaceOp` 是条件类型：仅 `SurfaceEventType` 变体携带（`… : object` 分支），log-only 事件由编译器排除。
 
-`seedLength`（从 seed 继承的头部事件数）与 `parentSession`（fork 世系）用于区分父历史与子工作；`delegationDepth` 让子 agent 的递归预算在重启后仍存活；`agentPreset` 因为决定 session 的 tools/prompt，持久化才能保证 resume 时重放的历史仍是当前 agent 能作用的。
-[packages/core/session/src/types.ts:61-80]()
-<!-- snippet: export interface SessionHeader {
-  /**
-   * On-disk format version, stamped from {@link SESSION_FORMAT_VERSION} when the
-   * session is created. A persistence backend rejects any other version on load
-   * (no migration — see the constant).
-   */
-  readonly version: number
-  /** The session's id (mirrors the {@link Session}'s id). */
-  readonly id: SessionId
-  /** Non-negative safe-integer Unix epoch milliseconds when the session was created. */
-  readonly createdAt: number
-  /** Absolute working directory the session was created in (if any). */
-  readonly cwd?: string
-  /** The session this one was forked from (seed lineage), if any. */
-  readonly parentSession?: SessionId
-  /**
-   * How many leading events were inherited through a seed. Persisting this
-   * boundary lets resume and replay distinguish parent history from child work.
-   */
-  readonly seedLength?: number -->
+> 注意：`SessionEventType = keyof SessionEventMap` 可被插件合并扩展，故 switch 不得用 `assertNever`，处理已知情形后走 `default`（`[docs/subsystems/session.md:247-247]()`）。
 
-### `SessionEvent` — 一条日志条目
+### 2. `SessionEventMap` 事件变体（`[packages/core/session/src/types.ts:236-333]()`）
 
-统一的 wrapper，带 `type`/`seq`/`time`/`data`，`seq = log.length`（连续性契约）；`surfaceOp`/`sourceEventSeqs` 仅在三种消息型事件上有条件出现。
+| 事件 | 载荷 | Surface | 角色 |
+|---|---|---|---|
+| `turn/start` / `turn/end` | `{turn}` / `{turn,reason}` | 否 | turn 生命周期边界 |
+| `step/start` / `step/end` | `{turn,step}` | 否 | step 边界（一次模型调用+其工具执行） |
+| `user/message` | `UserMessage` | ✅ | 人类提示/注入上下文/ goal 延续 |
+| `assistant/chunk` | `{turn,step,chunk}` | 否 | 逐 token 重放 |
+| `assistant/message` | `{turn,step,message,usage?}` | ✅ | 组装后 assistant 消息（派生史用） |
+| `tool/call` | `{turn,step,callId,name,arguments}` | 否 | 模型请求的工具调用（arguments 原文未解析） |
+| `tool/result` | `{turn,step,message,error?,meta?}` | ✅ | 工具结果（meta 工具私有、必须 JSON） |
+| `todo/write` | `{todos}` | 否 | 全列表快照 last-wins，log-only UI 态 |
+| `request/header` | `{header,reason}` | 否 | 下一请求完整头快照 |
+| `request/context` | `RequestContext` | 否 | 路由容量元数据，不参与请求重建 |
+| `session/end-seed` | `Record<string,never>` | 否 | 构造期 seed 结束边界（durable `firstLiveSeq`） |
 
-### 核心事件变体（`SessionEventMap`）
+`TodoItem` 刻意最小（content + 三态 status、无 id），因列表整体替换、条目无需稳定身份（`[packages/core/session/src/types.ts:189-194]()`）。`tool/result` 的 `meta` 是 `JsonValue`，`Session.append` 用 `isJsonValue` 运行时拒绝不可序列化数据，保证 durable log 重放得到完全一致的卡（`[packages/core/session/src/types.ts:284-289]()`）。
 
-下表浓缩 `SessionEventMap` 的核心成员，payload 仅列最小签名。
+### 3. `SessionHeader`——日志旁的不可变存储元数据（`[packages/core/session/src/types.ts:61-99]()`）
 
-| 事件 | payload（精简） | 分类 | 说明 |
-|------|-----------------|------|------|
-| `turn/start` | `{ turn: number }` | 日志 | 开启一轮 |
-| `turn/end` | `{ turn; reason: TurnEndReason }` | 日志 | 用原因收尾 |
-| `step/start` | `{ turn; step }` | 日志 | 一次模型调用 + 其工具执行 |
-| `step/end` | `{ turn; step }` | 日志 | 关步 |
-| `user/message` | `UserMessage` | 表面 | 用户/注入/目标轮次消息，`content` 逐字投影 |
-| `assistant/chunk` | `{ turn; step; chunk: StreamChunk }` | 日志 | 原始流块，token 级回放保真 |
-| `assistant/message` | `{ turn; step; message; usage? }` | 表面 | 组装后的 assistant 消息 + token 用量 |
-| `tool/call` | `{ turn; step; callId; name; arguments: string }` | 日志 | 模型请求的工具调用，`arguments` 是未解析的原始 JSON 串 |
-| `tool/result` | `{ turn; step; message; error?; meta?: JsonValue }` | 表面 | 工具结果消息 + 可选私有 meta |
-| `request/context` | `RequestContext` | 日志 | 路由容量元数据 |
-| `request/header` | `{ header: EpochHeader; reason }` | 日志 | 下一个请求的完整 header 快照 |
-| `todo/write` | `{ todos: TodoItem[] }` | 日志 | 全量 todo 快照，last-write-wins |
-| `session/end-seed` | `Record<string, never>` | 日志 | 构造 seed 边界标记 |
+放在事件日志之外：format version、cwd、parent lineage、seed 边界、delegationDepth、agentPreset 都是存储关注点，不进 `SessionEventMap`、不进 `deriveMessages()`（`[docs/subsystems/persistence.md:43-43]()`）。`agentPreset` 持久化有因：preset 决定会话的工具与提示词，resume 恢复不同组合会重放模型无法再行动的历史（`[packages/core/session/src/types.ts:93-98]()`）。
 
-> 注：任务清单里写的"十二种变体"与源码并不完全对齐。`SessionEventMap` 实际声明的 core 事件多于十二个，再叠加经声明合并注入的插件事件（`session/title`、`compaction/*`、`hook/*` 等）。**"十二"是文档反复强调的 turn/step/user/assistant/tool/steering/todo/request 这组概念骨架**；`steering/message` 已在 coordinator 迁移到 `user/message`，不再是活事件。本表按源码实际列全。
+### 4. 持久化后端 schema
 
-`TurnEndReasonMap` 是另一个 merge-extensible sum，含 `interrupted`——**唯一 loop 永不自发 emit、只由崩溃恢复合成的 reason**。
-[packages/core/session/src/types.ts:155-160]()
-<!-- snippet: export interface TurnEndReasonMap {
-  completed: { kind: 'completed' }
-  /** A cancellation request interrupted the live turn. */
-  aborted: { kind: 'aborted'; reason: TurnEndCancelCause }
+**SQLite**（`packages/session/session-persistence-sqlite/src/schema.ts`）——一行一个 `SessionEvent`，无平行持久化 schema：
+- `sessions` 行：out-of-log 元数据 + `incarnation`（物化时分配）+ `revision`（每变更事务自增）（`schema.ts:32-46`）。
+- `events` 行：`(session_id, seq, type, time, data, source_event_seqs, surface_op, ignorable)`，`data` 是 JSON 文本，1:1 映射（`schema.ts:49-60`；`…/src/index.ts:286-288`）。
+- `persistence_state`：单例行保存随机 `store_id`，作 source-qualified revision 抗碰撞部分（`schema.ts:116-120`；`…/src/index.ts:47-51`）。
 
-  blocked: { kind: 'blocked' } -->
+**JSONL**（`packages/session/session-persistence-jsonl/src/format.ts`）——每会话一个 append-only 文件：
+- 首行是 `type:'session'` 标记的 header line（`format.ts:33-44`）；事件行默认打包成 `text-chunks`/`reasoning-chunks`/`tool-call-chunks` 存储行，或不打包逐条（`format.ts:221-224`）。
+- 目录布局 `root/--project-key--/<encodeSegment(id)>/session.jsonl(.zstd)`；SessionId 是未校验 branded string，必须 `encodeSegment` 转义后才可入路径（防穿越/碰撞）（`format.ts:121-136`）。
 
-### `TodoItem` — 最小化 todo 单元
+### 5. 投影 / 遥测表
 
-纯 `content` + 三态 `status`，无 id/priority/activeForm——因为列表每次整体替换（whole-list snapshot），条目无需稳定身份。
+- `SessionProjectionMap`——全链投影类型表，声明合并扩展（`[packages/session/session-projection/src/types.ts:17-17]()`）；`ProjectionCheckpointRow = (ver, seq, val)` 是持久化投影缓存的折叠捷径（`[packages/session/session-projection/src/index.ts:108-115]()`）。
+- `SessionTelemetryRecord`——ledger/ops 双通道：ledger 逐条镜像 session 事件，ops 承载无日志归属信号（`agent-error`/`shutdown`）（`[packages/session/session-telemetry/src/index.ts:64-87]()`）。ledger 镜像 `event.data` 深拷贝（`coordinator.ts:191-202`）。
 
-### `SurfaceEventType` / `SurfaceOp` — 派生消息的边界
+---
 
-只有 `user/message`/`assistant/message`/`tool/result` 三个类型能上「有序表面」（surface），携带 `surfaceOp`；`SurfaceOp = 'append' | { op:'replace'; start; end }`。`replace` 是压缩用来影藏（shadow）一段旧表面节点的。
-[packages/core/session/src/types.ts:343-346]()
-<!-- snippet: export type SurfaceEventType =
-  | 'user/message'
-  | 'assistant/message'
-  | 'tool/result' -->
+## 核心流程
 
-`SurfaceOp` 的两种语义——`append` 追加尾部、`replace` 影藏一段表面范围。
-[packages/core/session/src/types.ts:372-374]()
-<!-- snippet: export type SurfaceOp =
-  | 'append'
-  | { op: 'replace'; start: number; end: number } -->
-
-### 投影规则（`deriveEventMessage`）
-
-这是 `deriveMessages` 逐节点应用的核心，规则极简：
-
-- `user/message` → 投影其 `data`（`UserMessage`），`content` 逐字透传，**不加** per-type 框架文本；框架由 producer 自己烘进 `content`（如 agent-instructions 烘 `<system-reminder>`）。
-- `assistant/message` → 投影其 `message`，但**空 content 返回 null**（max-tokens 截断 / 只承载 usage 的消息不进入 transcript）。
-- `tool/result` → 投影其 `message`。
-- 其余（boundary、chunk、log-only 记录）→ `null`，无 assertNever。
-  [packages/core/session/src/surface.ts:83-98]()
-  <!-- snippet: export function deriveEventMessage(event: SessionEvent): Message | null {
-  // Intentionally non-exhaustive: only message-producing events derive
-  // history; turn/step boundaries, chunks, usage, and errors are trace/replay
-  // data.
-  switch (event.type) {
-    // Ordinary prompts and injected context project in user role: the event's
-    // model-facing content stays verbatim. Do NOT re-add per-type framing
-    // (e.g. `<context>`) here: framing is caller-owned — a producer bakes it
-    // into `content`, as agent-instructions does with `<system-reminder>` — or,
-    // if reintroduced, must be driven by the event `meta` map and a dedicated
-    // renderer, keeping this projection a verbatim pass-through. See the
-    // deferred design note in
-    // ../../../../.agents/notes/implemented/simplification/2026-07-20-unwrap-injected-content-envelopes.md
-    case 'user/message': {
-      return event.data
-    } -->
-
-**关键设计**：派生历史只由表面节点构成；chunk、turn/step 边界、todo、header 都不产出消息。表面由 `SurfaceManager` 增量维护，`derived` 缓存只对新增节点投影。
-
-### `EpochHeader` 与 request 重建
-
-请求的完整快照（call config、system prompt、tools）作为 `request/header` 事件记录；离线用 `foldRequestHeader(events)` 折叠出任一请求的 header。
-[packages/core/session/src/request-header.ts:65-71]()
-<!-- snippet: export function foldRequestHeader(events: readonly SessionEvent[], from?: EpochHeader): EpochHeader | undefined {
-  let state = from
-  for (const event of events) {
-    if (event.type === 'request/header') state = canonicalHeader(event.data.header)
-  }
-  return state
-} -->
-
-`requestHeader()` 是它的增量在线形式。
-[packages/core/session/src/index.ts:670-680]()
-<!-- snippet:   requestHeader(): EpochHeader | undefined {
-    if (this.headerFoldSeq < this.log.length) {
-      // Frozen on update: the fold is session state exposed by reference — a
-      // consumer mutating it in place (instead of building a replacement)
-      // would desync every later comparison against the log, so mutation
-      // throws instead.
-      this.headerFold = deepFreeze(foldRequestHeader(this.log.slice(this.headerFoldSeq), this.headerFold))
-      this.headerFoldSeq = this.log.length
-    }
-    return this.headerFold
-  } -->
-
-`canonicalHeader` 把空 system/tools 归一为缺省字段，保证 logging、folding、comparison 用同一表示。
-[packages/core/session/src/request-header.ts:21-31]()
-<!-- snippet: export function canonicalHeader(header: EpochHeader): EpochHeader {
-  const adapterDefaults = header.adapterDefaults
-  return {
-    config: header.config,
-    ...adapterDefaults?.reasoningEffort === true || adapterDefaults?.maxTokens === true
-      ? { adapterDefaults }
-      : {},
-    ...header.system !== undefined && header.system.length > 0 ? { system: header.system } : {},
-    ...header.tools !== undefined && header.tools.length > 0 ? { tools: header.tools } : {},
-  }
-} -->
-
-## 核心流程（Mermaid）
-
-`Session` 是事件日志的 live 对象，`SessionStore` 是 live registry，`PersistenceCoordinator` 编排惰性持久化。主链路：append 事件 → 内存提交 → `session/event` 派发 → write-behind 批量落盘。
+### append → 落日志 → deriveMessages 投影（写路径 + 读路径）
 
 ```mermaid
 sequenceDiagram
-  participant AgentLoop as dsh-agent-loop
-  participant Session as Session 核心
-  participant SM as SurfaceManager
-  participant Store as SessionStore
-  participant Persist as "Persistence<br>Coordinator"
-  participant Backend as JSONL / SQLite 后端
+    participant Drv as agent-loop driver
+    participant S as Session core <br>packages/core/session/src/index.ts
+    participant Surf as SurfaceManager <br>.../surface.ts
+    participant Store as SessionStore <br>.../index.ts:792
+    participant Persist as PersistenceCoordinator <br>packages/session/session-persistence/src/coordinator.ts
+    participant WB as SessionWriteBehind <br>.../write-behind.ts
+    participant Backend as JSONL/SQLite 后端
 
-  AgentLoop->>Session: "append('turn/start', ...)"
-  Session->>Session: "snapshotJsonValue(data)<br>校验 lossless JSON + seq=log.length"
-  Session->>SM: "validateNext(event)<br>表面合法性与可引用校验"
-  Session->>Session: "log.push(event) +<br>deepFreeze 已提交"
-  Session-->>Store: "派发 session/event<br>（fire-and-forget）"
-  Store-->>Persist: 触发 session/event 监听
-  Persist->>Persist: "enqueue(structuredClone(event))<br>进 write-behind 队列"
-  Note over Persist: "固定 batching 窗口默认 200ms<br>或 session/flush 立即 drain"
-  Persist->>Backend: "appendBatch()<br>一个 durable 批次"
-  Backend-->>Persist: 落盘返回
-  AgentLoop->>Session: "append('assistant/message',<br>surfaceOp append)"
-  Session->>SM: validateNext + log.push
-  AgentLoop->>Session: "deriveMessages()<br>读当前表面"
-  Session->>SM: "逐节点 deriveEventMessage()<br>折叠出消息"
-  SM-->>AgentLoop: 冻结的消息数组，作为模型请求历史
+    Drv->>S: append type data surfaceOp <br>index.ts:604
+    S->>S: snapshotJsonValue data lossless 校验+拷贝 <br>index.ts:614
+    S->>Surf: surfaceManager.validateNext event <br>index.ts:634 / surface.ts:421
+    S->>S: deepFreeze + push（seq=log.length,time=now） <br>index.ts:627-643
+    S-->>Store: dispatch session/event（post-commit, fire-and-forget） <br>index.ts:641-646
+    Store-->>Persist: session/event（enqueue） <br>coordinator.ts:1122-1126
+    Store-->>Persist: session/flush（await 持久化屏障） <br>coordinator.ts:1128-1129
+    Persist->>WB: writes.enqueue：拷贝+arm 固定批量窗口 <br>write-behind.ts:45-56
+    WB->>Persist: 定时到期或 flush → drainBarrier <br>write-behind.ts:93-136
+    Persist->>Backend: appendBatch meta events materialized <br>coordinator.ts:704
+    Note over Backend: SQLite: 单事务 INSERT + revision+1 <br>.../sqlite/src/index.ts:284-302 <br>JSONL: materialize temp+link 原子发布 <br>或 appendLines+fsync+rollback <br>.../jsonl/src/index.ts:514-689
+    Backend-->>WB: 已持久化 → resolve
+    Drv->>S: deriveMessages（每步） <br>index.ts:726
+    S->>Surf: surface.nodes 读 surfaceOp 定的模型可见序列 <br>surface.ts:438-441
+    S->>S: 逐节点 deriveEventMessage 缓存投影 index.ts:735-746
+    S-->>Drv: Message 数组 deep-frozen 模型看到的一切
 ```
 
-`append` 全流程（`snapshotJsonValue` + `seq = log.length` + `validateNext` + `deepFreeze`）。
-[packages/core/session/src/index.ts:604-618]()
-<!-- snippet:   append<T extends SessionEventType>(
-    type: T,
-    data: SessionEventMap[T],
-    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent] : []
-  ): SessionEvent<T> {
-    const surfaceOpts: SurfaceIntent | undefined = opts[0]
-    const surfaceMetadata = {
-      ...surfaceOpts?.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: surfaceOpts.sourceEventSeqs },
-      ...surfaceOpts?.surfaceOp === undefined ? {} : { surfaceOp: surfaceOpts.surfaceOp },
-    }
-    const dataSnapshot = snapshotJsonValue(data)
-    if (dataSnapshot === undefined) {
-      throw new Error(`session event "${type}" carries non-JSON-serializable data`)
-    }
-    assertSupportedRequestHeader(type, dataSnapshot, `session event "${type}"`) -->
+`deriveMessages` 增量语义：每个 surface 节点只在首次见时投影一次（O(新节点)）；surface 重写（`replace`，`replaceGeneration` 变化）时重建缓存（`[packages/core/session/src/index.ts:726-747]()`）。返回**新数组**（后续 append 不让调用者持有的数组长大），内部 `Message` 共享且深冻结，复用已冻结事件数据、无需二次深拷贝（`index.ts:705,719-723`）。
 
-`session/event` 触发到 write-behind 队列编排。
-[packages/session/session-persistence/src/coordinator.ts:1125-1127]()
-<!-- snippet:       live.writes.enqueue(event)
-    // Callers use flush as the immediate durability barrier for buffered writes.
-    ctx.on('session/flush', session => this.flush(session)) -->
+### 持久化 / 崩溃恢复读路径
+
+```mermaid
+sequenceDiagram
+    participant Caller as resume/inspect/list 消费者
+    participant C as PersistenceCoordinator <br>.../coordinator.ts
+    participant Prep as SessionPreparations <br>.../preparations.ts
+    participant Backend as JSONL/SQLite 后端
+
+    Caller->>C: prepare(id) / load(id) <br>coordinator.ts:712 / 756
+    C->>Prep: reserve(id)（共享在途读，排他预订） <br>coordinator.ts:720-731 / preparations.ts:75
+    Prep->>C: prepareCore(id) 读冷源 <br>coordinator.ts:892
+    C->>Backend: loadStored(id) 读物理前缀 <br>coordinator.ts:893
+    Note over Backend: JSONL: scanLog/readZstdPrefix 保完整前缀+记录 torn 标记 <br>jsonl/index.ts:209-216,310-419 <br>SQLite: scanRows 保完整前缀+返回 tornFrom <br>sqlite/schema.ts:232-269
+    C->>C: interruptedTurnClosers 合成中断闭合事件 <br>coordinator.ts:903 / repair.ts:27
+    C->>C: ctx.sessions.prepare(id,{seed,seedSource:'persistence'}) <br>coordinator.ts:905-909
+    C->>C: commitPrepared → commitRepair(torn,closers) 落盘 <br>coordinator.ts:934-963,945
+    C-->>Caller: SessionPreparation（可发布） <br>coordinator.ts:737-745
+```
+
+`adoptLivePrefix`（HMR：热加载已存在 live Session）**不** crash-repair 打开 turn——live Session 仍是权威并可能稍后补写真实 step/turn end，只截断不闭合（`[packages/session/session-persistence/src/coordinator.ts:1301-1322]()`）。
+
+### 投影驱动流程
+
+`SessionProjectionRegistry` 构造时订阅一次 `session/event`，每个已提交事件 eager 地经过所有已注册单元的 `apply`（`[packages/session/session-projection/src/index.ts:181-183](),405-425`）。状态引用不变（`Object.is`）表示该单元不关心此事件，零下游工作（`index.ts:58-59,415-417`）。`snapshot()` 全同步（保证 `asOfSeq` 覆盖同一 tick 的读，`index.ts:248-255`）；`checkpoint()` 返回每单元 `{ver,seq,val}`（`val` 是 detached structured clone，绝不给出 live cell 引用，防破坏每条后续 snapshot，`index.ts:271-282`）；`restore()` 是「缓存态 + 前向尾重放 + view」的冷读配方（`index.ts:355-385`），`restoreFloor` 的 one-below 锚点让尾部读能证明存储日志的延伸长度、从而检出崩溃修复导致的日志收缩（`index.ts:300-310`）。
+
+### 遥测捕获流程
+
+- **live 捕获**：订阅 `session/created`（adopt）、`session/event`（捕获）、`session/disposed`（写 shutdown 标记）、`agent/error` relay、`session/flush` hint（`[packages/session/session-telemetry/src/coordinator.ts:79-111]()`）。
+- **chunk 投影**：每个 (turn,step) 只投第一个 `assistant/chunk`（流起始信号），内容字节在 assembled `assistant/message` 已完整；丢弃的 chunk 不推进 cursor（`coordinator.ts:180-203`）。
+- **重组（re-adoption）**：日志经 handoff cursor 重放，起点是 `session.firstLiveSeq` 而非 seq 0——构造期 seed 永不发 firehose（`coordinator.ts:150-170`）。cursor 是模块级 ambient state（`handoffCursor` WeakMap），文档承认为注册即 effect 纪律的狭窄例外，键按 `Session` 对象存活（`coordinator.ts:34-43`）。
+
+---
 
 ## 与其他模块协同
 
-`SessionStore` 是 `ctx.sessions` service 的载体——`class SessionStore extends Service`。
-[packages/core/session/src/index.ts:792-792]()
-<!-- snippet: export class SessionStore extends Service { -->
+- **agent-loop 消费**：loop 通过 `SessionStore` 创建会话，把 `user/message`、`assistant/chunk`、`assistant/message`、`tool/call`、`tool/result`、`turn/*`、`step/*` 事件 append 进日志；每步用 `deriveMessages()` 得模型史。loop 每请求前 append `request/header`，用 `headerEquals` 避免记录未变的头（`[packages/core/session/src/request-header.ts:44-54]()`）。（跨模块：loop 调用点文件与行号，本切片未引入 agent-loop 源码。）
+- **system-prompt 从日志渲染**：`EpochHeader.system` 是已渲染系统提示整体，作为 `request/header` 事件持久化（`[packages/core/session/src/types.ts:207-207](),304`），即「模型每次请求时的系统提示」可重建。（跨模块：system-prompt 渲染发生在 agent-loop/system-prompt 包，本切片只见落日志一侧。）
+- **持久化后端可交换（capability seam）**：`ctx.sessionPersistence` 是抽象 seam（`[packages/session/session-persistence/src/index.ts:84-84]()`），JSONL 与 SQLite 实现同一契约并共用 `runPersistenceContract` 测试套（`[docs/subsystems/persistence.md:233-236]()`）。两者都通过 `PersistenceCoordinator` 组合（`[packages/session/session-persistence/src/coordinator.ts:588-625]()`），它定义最小存储原语集（`loadStored/readStoredRevision/appendBatch/commitRepair/list`，`coordinator.ts:127-215`），把缓冲、串行化、adopt、崩溃修复编排、dispose quiescence 集中一处；第三方可绕过 coordinator 直接实现 seam（`coordinator.ts:3-4`）。
+- **invariant companion**：`core/session` 的 `invariant.ts` 是唯一有行为的——增量校验 turn/step 编号、执行事件 enclosure、同 step 工具调用/结果配对（`[packages/core/session/src/invariant.ts:55-166]()`）。各持久化/投影/遥测包的 invariant companion 都是空安装（`[packages/session/session-persistence-jsonl/src/invariant.ts:21-21]()` 等）。
+- **telemetry 与主循环分离**：capture 侧 ledger 记录是后端流水线的输入，`emit` 必须是非阻塞队列推送（`[packages/session/session-telemetry/src/index.ts:96-104]()`）。
 
-- **agent-loop**：主循环是事件生产者（append turn/step/... 事件），也是 `deriveMessages()` 的主要消费者（把派生历史作为模型请求上下文）。`dsh-session-checkpoint-policy` 把 loop 和 persistence 焊在一起：在模型请求/工具执行/边界强制 `ctx.sessions.flush()`。
-- **session-title**：把标题事件写回日志，`foldSessionTitle` 与投影注册的 `title` unit 都从日志派生。
-- **session-projection**：订阅 `session/event`，把每个事件 eager 喂给各 registered unit 的纯 `apply`。
-- **session-projection-cache**：用持久化的 `readFrom(fromSeq)` 恢复 checkpoint 做冷读。
-- **fork / resume**：fork 是切前缀、resume 是续写，二者都依赖 `session/end-seed` 分界。
+---
 
 ## 关键设计决策
 
-### 为什么选 append-only 事件日志，而不是直接存"消息数组"？
+### 决策 1：不可变事件日志 vs 可变会话状态
 
-1. **可重放即任意前缀可派生**：事件日志任意位置切一刀都构成合法前缀，可 fork 或 resume；消息数组只能整体读，无法表达"从哪个历史点分支"。
-2. **崩溃恢复语义**：日志能区分「完整已提交的 turn」与「撕裂尾部」。直接存数组时，若进程崩溃在写一半，要么整体不可用、要么很难判定已提交边界。
-3. **派生与实时一致**：投影（消息、标题、projection）都从同一批事件派生，天然一致，不需要维护第二份同步的"当前状态"副本。
-4. **审计 / 回放保真**：原始 chunk、tool 参数、每次请求 header 都被保留，供 UI、telemetry、debug 逐 token 回放。
+- **选**：append-only + lossless-JSON + seq 连续 + deep-freeze。
+- **收益**：模型史可重放/可审计/可 crash 恢复；派生态全部可重算；持久化唯一事实源（`[docs/subsystems/session.md:603-604]()`：持久化承诺含 `assistant/chunk` 的逐条 lossless，seq 连续故 chunk 不可从 canonical log 过滤）。
+- **代价/权衡**：存储膨胀（chunk 逐条），靠 JSONL 的 chunk 打包行缓解（约 60% 减小，`[docs/subsystems/persistence.md:72-72]()`）。
+- **为什么不可变**：可变 `messages[]` 会让「投影即模型史」退化为「某份可变副本即模型史」，多副本必然漂移，崩溃/审计/派生都在副本一致性上压倒一切。
 
-代价：读路径要从事件 fold 出消息（有缓存缓解）、存储更大（chunk 级压缩缓解）、类型系统更复杂（Map → union）。dsh 权衡后仍选事件溯源，因为 agent harness 的"可重建"不变量比省一点存储更关键。
+### 决策 2：扩展 `SessionEventMap`（类型合并）而非自由字符串事件
 
-### 派生为什么不整棵折叠，而是增量 fold？
+- **选**：`SessionEventMap` 可声明合并 + `SurfaceEventType`/`sourceEventSeqs`/`surfaceOp` 类型约束 + compiler 在 `append` 调用点强制。
+- **收益**：(a) 编译期保证「新模型可见输入 ⇒ 新事件」（Model-visible means logged 在类型层强制）；(b) invariant companion 按类型精确增量校验；(c) 持久化 read path 以 `KNOWN_SESSION_EVENT_TYPES` 拒绝未知必需事件（`[packages/core/session/src/known-event-types.ts:19-63]()`，配合 `ignorable` 逃生阀，`[packages/session/session-persistence/src/coordinator.ts:1061-1066]()`）。
+- **替代方案代价**：自由字符串事件无编译期保证，未知类型只能运行时猜测，invariant 无从按类型校验，插件事件关系（是否 turn-enclosed）无法以类型表达。
 
-`deriveMessages` 用 `replaceGeneration` 标记失效：只有一次 `replace`（压缩）才重建整个缓存，平时只投影新增节点（O(new nodes)）。这是"读路径增量"的具体实现，见 index.ts:726-747。
+### 决策 3：持久化可插拔 / JSONL vs SQLite
 
-### 为什么会话标题写回日志而非单独存？
+- **选**：capability seam（抽象 `SessionPersistence` + 两后端）。
+- **JSONL 之选**：可读（plaintext 或 zstd 帧）、append-only 文件适配顺序介质、逐字节还原（`readRaw`，`[docs/subsystems/persistence.md:128-129]()`；`[packages/session/session-persistence-jsonl/src/index.ts:252-282]()`）、崩溃修复只需「截断 torn 尾 + append closers」（`index.ts:436-444`），不需要数据库事务。
+- **SQLite 之选**：事务原子性天然（materialize+append 单事务，`[packages/session/session-persistence-sqlite/src/index.ts:284-302]()`）、seq 可寻址（`loadStoredFrom` 只读后缀，`index.ts:225-238`）、单文件单库（locate 返回 undefined，`index.ts:173-175`）。
+- **代价**：JSONL 的 append 断点需显式 rollback/truncate（`jsonl/index.ts:651-689`），且 `commitRepair` 不要求跨行原子；SQLite 对「未 flush 尾部」的容忍靠 `scanRows` 的 torn 语义（`sqlite/schema.ts:232-269`）。
+- **chunk 打包解码**：`packChunkRuns` 把连续同类 delta chunk 打包成一行，`decodeStorageRecord` 无损展开（`[packages/core/session/src/chunk-rows.ts:192-221](),339-346`）。这是**存储编码词汇而非 session 事件**——不打进 `SessionEventMap`，用无斜杠 tag 防与事件分类混淆；编码器白名单精确形状，不认识即逐条存（丢压缩不丢数据）；解码器先验证再展开、损坏 loud fail（`chunk-rows.ts:9-16,339-345`）。
 
-标题是历史派生的一部分，随日志可重建；单独存就破坏了"单一事实源"。
+---
 
 ## 亮点与问题
 
 ### 亮点
 
-1. **单一事实源的纯度**：一条事件日志 + 统一派生规则，消息/标题/投影/audit 全部同源，无第二套待同步的状态。`deriveMessages` 缓存只对新增节点投影，读路径是增量的。
-2. **`surfaceOp` 分离「模型可见表面」与「人类可读 transcript」**：`append` vs `replace` 让压缩能影藏历史而**不污染**用户已看到的 transcript。
-3. **崩溃恢复的「加法优先于截断」**：保留已落盘的完整中断 turn，只合成缺失边界，绝不重写已提交事件。
-4. **coordinator 把复杂编排收敛到后端钩子**：序列化链、write-behind 批量、preparation 池、repair 排序全部共享；两个后端只实现物理原语。
-5. **精确的进度信号**：`firstLiveSeq`/`session/end-seed` 精确回答「日志里哪些是本进程写入、哪些是继承的 seed」，是 fork/resume/telemetry 采纳的分界。
+1. **seq 连续性 + seed 同校验**：构造期 seed 走与 live append 完全相同的 lossless-JSON + surface 校验，杜绝「后端存不下但 live log 有」这类静默背离（`[packages/core/session/src/index.ts:508-537]()`）。
+2. **append-only 下的可折叠性**：`session/end-seed` 边界让 seed 历史与 live work 可区分，是 compaction 等「独立开/闭括号」插件判断陈旧括号的关键（`[packages/core/session/src/types.ts:325-330]()`；`[docs/subsystems/session.md:589-589]()`）。
+3. **崩溃恢复精度**：只合成缺失的闭合事件（未记录 start 的工具 → `ToolNotStarted`，已记录但结果未持久化 → `ToolOutcomeUnknown`，打开 step → `step/end`，最后 `turn/end {interrupted}`），不丢失已写入完整 turn（`[packages/core/session/src/repair.ts:90-131]()`）。
+4. **派生史 deep-frozen + 单次增量投影**：缓存的 `Message` 复用已冻结事件数据，消费方式正确时「通过投影改写历史」不可表达（`[packages/core/session/src/index.ts:705-705](),726-747`）。
+5. **Projection 引用相等做 change 门控**：`apply` 未变返回同引用 → `Object.is` 为真 → 零下游通知（`[packages/session/session-projection/src/index.ts:415-417]()`）。
 
-### 问题 / 风险
+### 问题 / 权衡点（供主 agent 留意）
 
-1. **无 upgrader 链，升级路径缺失**：版本 0 + 拒绝策略意味着任何结构变更都可能让旧 harness 无法读新日志（`SESSION_FORMAT_VERSION = 0`）。这在 unreleased 阶段可行，但一旦发布而没有 upgrader，向后兼容成本会很高。
-2. **SQLite 后端无法独立核对单会话 artifact**：`supportsRawArtifacts: false`，无法像 JSONL 那样按会话独立存取。
-3. **事件类型是字符串，跨包声明合并契约较隐**：插件合并 `SessionEventMap` 靠的只是类型声明，无运行时注册校验；三方插件事件在持久化读路径上可能被拒，除非带 `ignorable`。
-4. **`seq = log.length` 连续性契约是强假设**：一切（持久化 contiguity、surface node 即 log 下标、投影缓存）都依赖 seq 严格等于 log index。
+1. **空 invariant companion 泛滥**：持久化/投影/遥测各包 `invariant.ts` 都空安装——正确性押在 spec/round-trip 测试而非运行时 invariant（`[packages/session/session-persistence-jsonl/src/invariant.ts:21-21]()`）。系统有意为之（关系不在 cordis event 上可观测），但对「无特权内核」叙事是软肋：越中心的数据层，运行时自证越少。
+2. **`handoffCursor` 模块级 ambient 状态**是「注册即 effect」纪律的明确例外，靠注释文档化（`[packages/session/session-telemetry/src/coordinator.ts:34-43]()`），HMR/重复采纳的 at-most-once 语义因此是隐式约定。
+3. **JSONL 非原子 append**：`commitRepair` 显式两步骤、appendLines 失败才回滚到 change 前 size（`[packages/session/session-persistence-jsonl/src/index.ts:651-689]()`）；多进程写同一 id 依赖 `link()` 而非 `rename()` 的 EEXIST 防呆（`index.ts:544-556`），正确但依赖 OS 语义。
+4. **legacy 迁移逻辑积聚**：coordinator 有大量 v0→current 迁移（steering/message、turn/start trigger、turn/end reason 扁平化、message identity 化，`[packages/session/session-persistence/src/coordinator.ts:344-573]()`），严谨（malformed 报 corrupt 而非伪装 legacy），但增加未来升级复杂度——与 `SESSION_FORMAT_VERSION=0`「无兼容承诺」并存是合理的紧急出口（`[packages/core/session/src/types.ts:36-56]()`）。
 
-## 已知的文档-实现漂移
+## 全局关联：日志即「无特权内核」在数据面的投影
 
-- **"十二种事件变体"与源码不符**：`SessionEventMap` 实际声明的 core 事件多于 12 个，再叠加插件 merge 的事件；"十二"只是概念骨架（turn/step/user/assistant/tool/steering/todo/request），不是准确计数。本文件按源码实际列全。
-- **SQLite abort vs rollback 的崩溃原子性表述**：以 `schema.ts` 的 `scanRows` torn-tail 判别为准（见 session-persistence-sqlite 包文档），而非文档对事务边界的宽泛表述。
+会话层的每个设计都回扣整体哲学：「没有特权内核」不意味着没有唯一事实源——正相反，因为内核里没有 `session.history` 这类特权可变对象，才需要一根 append-only 日志承载模型可见与审计所需的一切，让每个消费者（agent-loop 的 `deriveMessages`、标题、telemetry、fork/resume）各自投影。`Model-visible means logged` 再把「模型看到的一切都必须能从日志重建」变成编译期强制与运行时 invariant，这既是 dsh 可审计、可回放、可崩溃恢复的根基，也是它区别于「可变会话对象」类 agent 框架的本质分水岭。持久化做成 JSONL/SQLite 双后端可交换，正是第 3 根支柱「Capability Seam」在数据面的又一次落地。

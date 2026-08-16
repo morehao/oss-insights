@@ -1,291 +1,294 @@
-# 持久化数据模型（Data Model / SQLite & KV Storage）
+# 数据模型：事件日志的地面实现（持久化层）
 
-> 对应关注面：SessionEvent 日志的持久化 seam（JSONL / SQLite 后端）、KV storage seam（domain form → 不透明 KV-unit primitives）、session-query 全文索引、无迁移层的演进防御。
+> 子文档之一，聚焦 dsh 的持久化数据模型。覆盖事件日志持久化（`session-persistence`* 双后端）、非日志 KV 存储（`storage`* 可交换 backend + `storage-domain` 域表单）、派生投影缓存（`session-projection-cache`）。整体哲学见 [README](README.md)；本文上承 [session.md](session.md)（事件日志的落盘形态）、衔接 [deployment.md](deployment.md)（部署时的数据落地）。
 
-## 在项目中的角色
+核心论点：**这套「数据模型」不是一张 ER 图能讲完的业务表集合，而是两层可交换持久化的「事件溯源日志的地面实现」**——不可变事件日志是唯一事实源，KV 存储只是其上的投影底座；schema 演进被刻意做成「不迁移、只拒绝」。
 
-去掉这一整套存储层，dsh 会退化成「一次性的、内存里跑完就丢」的 agent 壳：
+## 根因：为什么持久化要长成两层可交换式
 
-- **没有 `session-persistence`**：进程内 append-only `SessionEvent` 日志（Source of Truth）无法落盘，重启即丢失全部对话历史，`resume` / 回放 / 投影重建全部失去数据来源。
-- **没有 `storage` / `storage-domain`**：workspace 清单、message-feedback 等非会话 domain 数据失去持久化，产品层无法跨进程留存。
-- **没有 `session-query`**：历史语料的全文检索、事件追踪、血缘追溯无从谈起。
+Dsh 的 Session 本质是一条不可变、append-only 的 `SessionEvent` 事件日志（内存态的事实源），见 `docs/subsystems/persistence.md` 首句[[docs/subsystems/persistence.md:5-5]()]()。这把"什么需要落地持久化"分成两个性质完全不同的集合，也因此长出两套独立的可交换 seam：
 
-一句话根因：**dsh 的「数据」首先是 append-only SessionEvent 日志的持久化——它是重建、查询、回放的权威来源；外加一张通用的、与日志解耦的 KV 存储，用来存 workspace / feedback 等「非会话」domain 数据。**「数据模型」不是一套固定表结构，而是一组决策：**在哪个抽象边界选哪种存储、如何让多种后端在同一个语义契约下互换、以及不做迁移层时靠什么机制保证演进安全。**
+1. **事件日志本身**（真相）——必须按时间顺序、逐事件、连续 seq 地落地，崩溃后还能精确回放到"最后一个完整 turn"。它是追加写多、随机读少、需流式回放的数据。
+2. **一切非事件的东西**（投影/键值状态）——工作区键值、投影缓存、各类域表。它们是"从真相推导出来的当前值"，改变频繁、需要按 key 随机读。
 
-**两个 capability seam（都由 app 组合时选定后端）：**
-
-| Seam | 抽象层 | 具体实现 | 组合方式 |
-|------|--------|---------|---------|
-| `ctx.sessionPersistence` | SessionEvent 日志持久化 | `session-persistence-jsonl`、`session-persistence-sqlite` | 按需装一个 |
-| `ctx.storage`（hub）+ `ctx.storageDomain`（domain form） | 非日志 KV 数据 | `storage-json`、`storage-sqlite` + `storage-domain` | 后端按名注册，domain form 路由后端 |
+dsh 对这两类各给了一个服务抽象（`SessionPersistence` 与 `Storage`），又各配了可交换实现，这正是"Capability Seam 三件套"在持久化上的落地：接口（Service Definition）、提供方（backend）、消费方（domain 表单 / 投影缓存）。全部独立于 agent-loop 脊椎，无特权内核。
 
 ## 存储选型与理由
 
-### 为什么 SQLite 与 JSONL 并存：同一事件词汇表，两种物理后端
+### JSONL：真相日志的"忠实回放"形态
 
-两个后端实现同一个 `SessionPersistence` 抽象，差异全在物理介质。
+事件日志后端以 append-only、不可变为核心。`session-persistence-jsonl` 把它实现为每会话一个 JSONL 逻辑日志，物理上用 zstd 压缩的拼接帧写入（编码名 `zstd`/`none`）[[packages/session/session-persistence-jsonl/src/format.ts:17-17]()]()。
 
-**SQLite 的代价与回报**：代价是引入 `node:sqlite` 依赖、文件不可读、单库承载所有会话（不支持 `readRaw`）；回报是 `readFrom` 按 seq 只读后缀、事务即原子性+持久性边界、WAL 崩溃安全、单事务 append/修复。
+选择 JSONL 的理由根植于"事件日志 = 可流式回放的真相"这一定位：
 
-**JSONL 的代价与回报**：代价是顺序介质——`readFrom` 仍需解析整个 artifact 再向前跳、无索引/事务、崩溃剪尾要逐字节 trunk 修复；回报是纯文件、零第三方依赖、按会话一个文件（默认 Zstandard 压缩）、`readRaw` 返回字节一致的原文。
+- **追加语义**天然贴合事件溯源：每次 append 只往文件尾写一行/一段，`appendLines` 用 `'a'` 打开、写后 `sync()` 即达持久化，崩溃后 `scanLog`/`SessionLogScanner` 按换行符增量切分、只解码完整记录，把"写一半"的尾部当 torn tail 容忍[[docs/subsystems/persistence.md:235-235]()]()。
+- **流式回放**：回放不要求随机寻址，顺序扫一行解一行即可恢复，正好匹配真相日志"从头重演"的语义。
+- **人可读与可压缩兼得**（`zstd` 关闭时）——一个会话一个文件、头部首行即 `SessionHeader`，`parseHeaderMeta` 只读首行即可做列表而不整日志解析[[packages/session/session-persistence-jsonl/src/format.ts:404-404]()]()。这让"会话文件就是事实源"在运维上可直接触达。
 
-**关键设计观点：「一行一个 `SessionEvent`、字段 1:1 映射」意味着没有第二套「被持久化的事件 schema」需要与内存词表同步**——直接消灭了传统 CRUD 持久化最痛的「ORM 对象 ≠ 数据库行」漂移。数据就是事件本身，不是事件的投影。
+代价与权衡：没有 seek-by-seq，`readFrom(id, fromSeq)` 在 JSONL 上仍要解析整文件再跳过。这是真相日志甘愿付的代价——回放本来就要从头，按 seq 随机读不是它服务的场景。
 
-### KV storage vs 关系表：为什么用「表-键值」而不是「通用关系表」
+### SQLite：一切可交换的投影/查询底座
 
-`KvFacet` 是**不透明 KV**：unit 只认识 `(table, key) → JSON value`，「没有 schema、没有事件、没有 domain 意义」。所有语义（zod 校验、写链事件、domain 含义）都上浮到 `storage-domain` 层。
+事件日志的**派生读取**（投影、冷读、watermark 续读）需要真正按 seq 随机访问与按列过滤，这对 JSONL 是一处天然瓶颈。`session-persistence-sqlite` 用 `node:sqlite` 把每个 SessionEvent 映射为 `events` 表一行，字段与事件信封 1:1，明确"没有平行的持久化 schema 要同步"（schema.ts 头注）[[packages/session/session-persistence-sqlite/src/schema.ts:1-1]()]()。SQLite 后端因此提供 JSONL 给不了的 `readFrom` 尾读：`SELECT ... WHERE session_id = ? AND seq >= ?` 直接寻址，读规模随后缀而非日志总长[[packages/session/session-persistence-sqlite/src/index.ts:225-225]()]()。
 
-- **为什么不是一个全局关系表**：domain 数据结构差异极大（workspace 一张表+全局状态、feedback 完全不同），「通用表」会强制把异构记录塞进窄 schema，丢失每类数据的索引/约束语义。
-- **为什么 KV 而非文档库**：数据形态就是「按 key 取回对象」，无需跨记录 join。KV 把「快照 + 单记录原子写」这个最小能力表达清楚，且可同时映射到 SQLite（一行一文档）和 JSON（一文件一层）两种物理介质。
+所以"为什么 JSONL + SQLite 双形态"的答案不是性能攀比，而是**一个真相、两类读法**：JSONL 忠实、可回放、人可读（真相对外暴露）；SQLite 按 seq 投影、按 watermark 续读（对读侧派生）。二者共用同一套 `SessionPersistence` 抽象和同一套 `runPersistenceContract` 契约，且都通过共享的 `PersistenceCoordinator` 编排写路径，因此"底层怎么存"被完全封装在 seam 之下。
 
-### 崩溃安全的两个模式
+### 非日志 KV 存储：为何也要可交换
 
-同一目标、两种物理手段，但**修复语义完全一致**（守护「日志 = 一个平衡的 turn 序列」）：
+`storage` 子系统的存在则服务于"一切不是 SessionEvent 的持久化"。它同样是可交换的：hub `ctx.storage` 只是一个注册表 + 表单挂载点，本身不做任何 IO，backend 持有媒介，domain 表单持有语义[[packages/storage/storage/src/index.ts:3-3]()]()。
 
-- **SQLite**：WAL 保事务原子；尾部 torn tail（最后 `turn/end` 之后无法解析的行 / seq 空洞）load 时被识别、物理删除+补合成 closers。
-- **JSONL**：temp + fsync + `rename`（原子替换）+ 父目录 fsync；读取按字节定位 torn tail offset 修复。
+对应两个实现：
 
-两者殊途同归：**修补只作用于「最后一个 `turn/end` 之后」的孤儿尾巴，绝不改写已提交的事件。**
+- `storage-json`：**一 unit 一个可读 JSON 文件**，`<root>/<unit>.json`，整个文件原子重写、人可读——"可读性就是它存在的理由"（format.ts 头注）[[packages/storage/storage-json/src/format.ts:1-1]()]()；适合低频改、需要人工审查/版本控制的整份状态（如 `session_projcache.json`、`workspace.json`）。
+- `storage-sqlite`：**一库多 unit、每行一文档**（`key`/`value` JSON 文本），适合频繁更新、需要随机访问的数据[[docs/subsystems/storage.md:47-47]()]()。每个 unit 一张 `u_<unit>_<table>` 表 + `units`/`unit_globals` 元数据表[[packages/storage/storage-sqlite/src/unit.ts:1-1]()]()。
+
+两条 backend 共享同一个 `KvFacet`/`KvUnit` 契约，并都通过 domain 表单（`ctx.storageDomain`）暴露给消费方。可交换的意义在这里与"不可变事件日志"哲学呼应：**真相（事件日志）与投影（KV 状态）分层，投影落在哪个媒介可随时换，但真相的语义不会因媒介而改变**。
 
 ## 实体关系总览
 
-### 会话日志侧（SQLite 后端真实表）
-
-```mermaid
-erDiagram
-    persistence_state ||--o| sessions : "store 属于"
-    sessions ||--o{ events : "(session_id, seq)"
-
-    persistence_state {
-        integer singleton PK "CHECK singleton=1"
-        text store_id "随机 store identity"
-    }
-    sessions {
-        text id PK "SessionId; 行存在=lazy物化"
-        integer version "SESSION_FORMAT_VERSION"
-        integer created_at "创建毫秒"
-        text cwd
-        text parent_session "seed 血缘"
-        integer seed_length
-        text origin "subagent/null"
-        integer delegation_depth
-        text agent_preset
-        text incarnation "每次物化的稳定身份"
-        integer revision "单调变更 token"
-    }
-    events {
-        text session_id PK "FK->sessions"
-        integer seq PK "会话内单调序号"
-        text type "事件判别"
-        integer time "毫秒"
-        text data "JSON 文本"
-        text source_event_seqs "JSON number[]/null"
-        text surface_op "JSON SurfaceOp/null"
-        integer ignorable "1 iff envelope ignorable"
-    }
-```
-
-### KV storage 侧（hub → domain → table）
+下面按"两类存储媒介 + 其上数据形态"给出关系图。事件日志是文档型/追加型，投影缓存与 KV 域是键值型，故用 `graph TB` 而非 `erDiagram`（键值/文档型实体用扁平有向图 + 配色分组表示三层归属）。
 
 ```mermaid
 graph TB
-    HUB["ctx.storage<br>(hub，无 IO)"]
-    HUB --> JSON["<b>register(name, backend)</b><br>storage-json<br>每 unit 一文件"]
-    HUB --> SQLITE["<b>register(name, backend)</b><br>storage-sqlite<br>一 DB 文件"]
-    HUB -.-> FAC["<b>mount('domain')</b><br>storage-domain<br>ctx.storageDomain=ctx.storage.domain"]
-
-    JSON --> UJ["<b>KvFacet.open(unit)</b><br>unit: 文件=<br>unit header+global+tables"]
-    SQLITE --> US["<b>KvFacet.open(unit)</b><br>unit: units 表+unit_globals 表<br>u_unit_table 记录表"]
-
-    DOMSPEC["DomainSpec(defineDomain)<br>name/version/global/tables"] --> FAC
-    FAC --> D["<b>open(spec)-&gt;Domain</b><br>Domain(单写链+zod+<br>domain/changed)"]
-    FAC --> WD["<b>open(workspaceSpec v2)</b><br>workspace domain"]
-    WD --> WT["<b>table('workspaces')</b><br>KvTable&lt;WorkspaceId,WorkspaceRecord&gt;"]
-    WD --> WG["<b>global</b><br>DomainGlobal&lt;WorkspaceDomainState&gt;"]
+    SE[SessionEvent 序列]
+    SH[SessionHeader]
+    COORD[PersistenceCoordinator]
+    JSONL[jsonl 会话后端]
+    SQL[sqlite 会话后端]
+    B1[scanLog 整读回放]
+    B2[readFrom 尾读]
+    REG[ProjectionRegistry]
+    CACHE[session_projcache 域]
+    SNAPSHOT[ProjectionSnapshot]
+    DOMAIN[storage-domain]
+    JSONKV[json backend]
+    SQLKV[sqlite backend]
+    HUB[Storage hub ctx.storage]
+    SE --> JSONL
+    SE --> SQL
+    SH --> JSONL
+    SH --> SQL
+    COORD --> JSONL
+    COORD --> SQL
+    JSONL --> B1
+    SQL --> B2
+    B1 --> REG
+    B2 --> REG
+    REG --> CACHE
+    REG --> SNAPSHOT
+    CACHE --- DOMAIN
+    DOMAIN --> JSONKV
+    DOMAIN --> SQLKV
+    DOMAIN --- HUB
+    classDef ev fill:#1e2a3a,stroke:#4db6ac;
+    classDef pd fill:#2e1e3a,stroke:#ba68c8;
+    classDef kv fill:#3a2e1e,stroke:#d4a04d;
+    classDef br fill:#202020,stroke:#666;
+    class SE,SH,JSONL,SQL,COORD ev;
+    class REG,SNAPSHOT,CACHE pd;
+    class DOMAIN,JSONKV,SQLKV,HUB kv;
+    class B1,B2 br;
 ```
+
+图例：青色组 = 事件日志真相层（session-persistence），紫色组 = 派生读取层（session-projection / projection-cache），褐色组 = 非日志存储层（storage），灰色 = 跨层桥接原语。
+
+关系要点：
+
+- 事件日志真相层（左）与派生读取层（中）之间靠 `PersistenceBackend.readFrom`（watermark 续读）和 `scanLog`/`load`（整读回放）两种桥接；
+- 投影缓存是存储层（右）的消费方——它打开 `session_projcache` 域，经 domain 表单落到 json 或 sqlite backend；
+- 图右即"一切非事件"的 KV 底座，domain 表单是唯一消费入口，`domain/changed` 事件在每次 durable 写后发出。
 
 ## 核心表 / 实体设计
 
-### `sessions` 表（SQLite 会话持久化）
+下面按"真相日志 + 非日志 KV + 投影缓存"三大块拆表。字段表是更结构化的叙述，精确 DDL 以括号内行号为准。
 
-职责：承载 `SessionHeader`（**存在于事件日志之外**的存储元数据：格式版本 / cwd / 血缘 / seed 边界）。行**存在性 = 物化信号**——只有第一次 append 才写行，所以「创建但从未 append」的会话无行、不出现在 `list`。
+### SessionEvent 邮箱信封（内存事实源）
 
-[packages/session/session-persistence-sqlite/src/schema.ts:122-134]()
-<!-- snippet:       CREATE TABLE IF NOT EXISTS sessions (
-        id               TEXT PRIMARY KEY,
-        version          INTEGER NOT NULL,
-        created_at       INTEGER NOT NULL,
-        cwd              TEXT,
-        parent_session   TEXT,
-        seed_length      INTEGER,
-        origin           TEXT,
-        delegation_depth INTEGER,
-        agent_preset    TEXT,
-        incarnation      TEXT NOT NULL,
-        revision         INTEGER NOT NULL
-      ) STRICT; -->
+职责：一条会话内不可变事件。信封是判别联合（type 与 data 的联合由编译器保证类型收窄），surface 字段为条件存在（仅 `user/message`/`assistant/message`/`tool/result` 三类型携带）[[packages/core/session/src/types.ts:336-336]()]()。
 
-**设计要点：`revision` 是最重要的读优化字段**——它让 `listSnapshots` / `readStoredRevision` 无需加载完整事件日志就能比较「某日志变没变」，是派生 read model（session-query、projection-cache）做「只补 tail 增量」的前提。revision **源限定**（storeIdentity + incarnation + revision），保证不同持久化源的同形 counter 永不相等。
-[packages/session/session-persistence-sqlite/src/index.ts:47-48]()
-<!-- snippet: function sqliteRevision(storeIdentity: string, row: SessionRow): PersistenceRevision {
-  return PersistenceRevision(`file:${storeIdentity}:incarnation:${row.incarnation}:revision:${row.revision as number}`) -->
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| type | SessionEventType | 判别 key | 事件类型，`SessionEventMap` 可被插件合并扩展 |
+| seq | number | 会话内单调连续 | append 的 contiguity 契约锚点 |
+| time | number | Unix epoch ms | 事件时间戳 |
+| data | SessionEventMap[K] | JSON-serializable | 负载，构造期强制 `isJsonValue` |
+| ignorable | true(可选) | 仅日志型 | 未知类型的"可跳过"标记；缺省=必需，遇未知类型须拒绝而非静默丢弃 |
+| sourceEventSeqs | number[](可选) | 仅 surface 事件 | 引用的先前事件 seq（assistant chunk→message、compaction 遮蔽） |
+| surfaceOp | SurfaceOp(可选) | 仅 surface 事件 | 'append' 或 { op:'replace', start, end }，记录如何进 surface |
 
-> 注：`sqliteRevision` 的 `file:` 前缀拼接实际由调用侧 `sqliteRevision(this.storeIdentity, row)`（index.ts:212-217）经完整 `storeIdentity`（含 `file:<dev>:<ino>:<birthtimeNs>:store:<store_id>`）组合。
+### SessionHeader（真相日志旁的元数据）
 
-### `events` 表（SQLite 会话持久化）
+职责：**存储元数据，不是会话事件**——format version、cwd、lineage、seed 边界都对模型不可见，不进入 `deriveMessages()`，挂在 `session.header`[[packages/core/session/src/types.ts:61-61]()]()。
 
-职责：每行对应一个 `SessionEvent`，字段 1:1 映射，**无平行持久化 schema**；`data` 为 JSON 文本，surface 元数据列可空。
-[packages/session/session-persistence-sqlite/src/schema.ts:136-146]()
-<!-- snippet:       CREATE TABLE IF NOT EXISTS events (
-        session_id        TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-        seq               INTEGER NOT NULL,
-        type              TEXT NOT NULL,
-        time              INTEGER NOT NULL,
-        data              TEXT NOT NULL,
-        source_event_seqs TEXT,
-        surface_op        TEXT,
-        ignorable         INTEGER,
-        PRIMARY KEY (session_id, seq)
-      ) STRICT -->
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| version | number | 写时从 SESSION_FORMAT_VERSION 盖章 | 后端加载时拒绝其它版本（不迁移） |
+| id | SessionId | branded | 会话 id，与 Session 镜像 |
+| createdAt | number | 非负 safe-integer epoch ms | 创建时刻 |
+| cwd | string(可选) | 绝对路径 | 创建时工作目录 |
+| parentSession | SessionId(可选) | | 被 fork 的来源，seed 谱系 |
+| seedLength | number(可选) | | 继承的导引事件数，让 resume/replay 区分父史与子活 |
+| origin | 'subagent'(可选) | | 由 subagent 子创建的产品粗分类（展示用） |
+| delegationDepth | number(可选) | | 代理深度，持久化使递归预算跨重启存活 |
+| agentPreset | string(可选) | deployment 按会话组合时置 | preset 决定工具的 prompt，持久化避免 resume 换组合重放 |
 
-**设计要点：复合主键 `(session_id, seq)` 顺带就是按会话 seq 排序的索引**——读后缀、读全量 `ORDER BY seq` 都走主键，无需旁路索引。
+### JSONL 会话文件（真相物理形态）
 
-### `persistence_state` 表（单例）
+职责：每会话一个物理文件，首行 `type:'session'` 头记录，随后的 JSONL 行或打包块为事件。路径布局 `root/<projectKey>/<encoded:sessionId>/session.jsonl[.zstd]`，sessionId 经 `encodeSegment` 单段安全编码[[packages/session/session-persistence-jsonl/src/format.ts:201-201]()]()。
 
-[packages/session/session-persistence-sqlite/src/schema.ts:117-120]()
-<!-- snippet:       CREATE TABLE IF NOT EXISTS persistence_state (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        store_id  TEXT NOT NULL
-      ) STRICT; -->
+| 位置 | 内容 | 说明 |
+|------|------|------|
+| 首行 | HeaderLine(`type:'session'` + header 字段) | 头即 storage 元数据；列表只读首行 |
+| 后续行 | event 逐行 JSON 或 `packChunkRuns` 打包块 | 布局无关读：`scanLog` 恒按记录解码 |
+| 物理编码 | zstd 拼接帧（默认）/ 明文 | 由 `JsonlCompression` 决定，后缀对应 |
 
-- `singleton` 单例行守卫；`store_id` 是随机 UUID。
-- `openDatabase` 每新库初始化 `INSERT OR IGNORE` 一个随机 `store_id`，随后所有 revision 以源限定 token 承载——即使两个库文件内容相同也互不相同；派生 read model 依赖此区分「不同持久化源」。
+### session-persistence-sqlite：`sessions` / `events` 表
 
-### KV storage domain（单写链 + durability-first）
+职责：一个 SQLite 库承载全部会话，`sessions` 行是 out-of-log 元数据（≈SessionHeader），`events` 行与 SessionEvent 1:1[[packages/session/session-persistence-sqlite/src/schema.ts:32-32]()]()。行存在性即物化信号：仅首次 append 写行，创建未 append 的会话无行、`list` 不可见[[packages/session/session-persistence-sqlite/src/schema.ts:26-26]()]()。
 
-Domain 是「单写链 + zod 校验 + domain/changed 事件」的门面；每个 KV 原语挂在该链上串行，保证 `update(key, fn)` 是原子 read-modify-write。
-[packages/storage/storage-sqlite/src/schema.ts:90-101]()
-<!-- snippet:   db.exec(`
-    CREATE TABLE IF NOT EXISTS units (
-      name    TEXT PRIMARY KEY,
-      version INTEGER NOT NULL
-    ) STRICT
-  `)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS unit_globals (
-      unit  TEXT PRIMARY KEY REFERENCES units(name),
-      value TEXT NOT NULL
-    ) STRICT
-  `) -->
+`sessions`：
 
-物理表名 `u_<unit>_<table>` 两段都先经 `UNIT_NAME_RE` 校验——**同一条约束同时满足「作为文件名」和「作为 SQL 标识符段」两种介质的安全**。每个 KV 原语是单条 SQL，原子性来自 SQLite 本身；**与 sessions/events 的差异是架构性的**：KV unit 不做崩溃修复、不做事件、不做 schema，是最小能力面，复杂度全部上浮到 domain。
-[packages/storage/storage-sqlite/src/schema.ts:20-20]()
-<!-- snippet: export const STORAGE_SQLITE_SCHEMA_VERSION = 1 -->
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | TEXT | PK | 会话 id |
+| version | integer | NOT NULL | header 版本（事件词汇版本） |
+| created_at / cwd / parent_session / seed_length / origin / delegation_depth / agent_preset | 多 | NULL=缺省可选 | 反映 SessionHeader 各可选字段 |
+| incarnation | TEXT | NOT NULL，物化时 randomUUID | 日志持久化的稳定身份 |
+| revision | INTEGER | NOT NULL，每次变更自增 | 单调日志变更 token，纯等值比较 |
 
-## Schema 演进策略
+`events`：
 
-这是本关注面最反直觉、最有辨识度的设计：**dsh 有意识地不写迁移层，用「格式版本号 + 后端 schema gate + 词汇表 + ignorable 标记」四件套守住演进安全。**
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| session_id | TEXT | FK→sessions(id) ON DELETE CASCADE | 归属会话 |
+| seq | INTEGER | 与 session_id 组成 PK | 事件 seq |
+| type / time | INTEGER/TEXT | NOT NULL | 事件类型与时间戳 |
+| data | TEXT | NOT NULL JSON | 负载，存 JSON 文本 |
+| source_event_seqs / surface_op | TEXT(可为空) | 条件 surface 元数据，JSON 编码 | 无 surface 时为 null |
+| ignorable | INTEGER(可为空) | 1 iff 信封带 ignorable:true | 未知类型跳过标记 |
 
-### 两层版本，互不混淆
+### storage-sqlite：`units` / `unit_globals` / `u_<unit>_<table>`
 
-- **事件词汇表版本 `SESSION_FORMAT_VERSION`**：单一单调整数，无 major/minor 分裂。是否 bump 由**写入方**决定——「一个旧运行时能否用完整语义正确性处理新日志」。仅结构性变更才 bump；**新增普通事件类型不 bump**，由 per-event `ignorable` 守卫承载词表增长。
-- **物理表 schema 版本 `SCHEMA_VERSION`**：仅表布局破坏性变更时 bump，与会话自己的 version 正交。
-  [packages/session/session-persistence-sqlite/src/schema.ts:20-20]()
-  <!-- snippet: export const SCHEMA_VERSION = 15 -->
+职责：一库多 unit 的 KV 底座；记录值以 JSON 文本存 `value` 列，每原语单条 SQL（原子性交给 SQLite，无显式事务、无写队列）[[packages/storage/storage-sqlite/src/unit.ts:1-1]()]()。
 
-### 拒绝方向（双向，各有措辞）
+| 表 | 字段 | 约束 | 说明 |
+|----|------|------|------|
+| units | name(unit/table) | (name,version) | unit 名 PK + 每 unit 版本盖章 |
+| unit_globals | unit/value | PK→units, value TEXT | unit 全局单例槽 |
+| u_<unit>_<table> | key/value | key PK, value TEXT NOT NULL | 每 unit 每 table 泛化记录表，value 为 JSON 文本 |
 
-- **新于读者**：「written by a newer harness — upgrade」，是 `SessionFormatUnsupportedError`，**区别于损坏错误**——「没坏，只是看不懂」。
-- **旧于读者**：「this build ships no upgrade path」。upgrader 链（n→n+1 内存视图转换）**延迟实现**直到第一个真实 v0→v1 步骤存在来测试。
-- JSONL 从**原始 header 行**拒绝外国版本；SQLite 先用自己的 `SCHEMA_VERSION` pragma 门控整个文件结构。
-  [packages/session/session-persistence-sqlite/src/schema.ts:108-115]()
-  <!-- snippet:     if (onDisk !== 0 && onDisk !== SCHEMA_VERSION) {
-      throw new Error(`session database at "${path}" has schema version ${onDisk}, incompatible with this build (${SCHEMA_VERSION})`)
-    }
-    if (onDisk === SCHEMA_VERSION && applicationId !== SESSION_PERSISTENCE_SQLITE_APPLICATION_ID) {
-      throw new Error(
-        `session database at "${path}" has application id ${applicationId}, expected ${SESSION_PERSISTENCE_SQLITE_APPLICATION_ID}`,
-      )
-    } -->
+### storage-json：一 unit 单个文档
 
-### 词汇表 + ignorable：词表增长不 bump 版本
+职责：整文件即 unit 的"当前净状态"，人读优先（pretty-print + 插入序稳定 key order），全局为 `null` 直到首写[[packages/storage/storage-json/src/format.ts:11-11]()]()。
 
-`KNOWN_SESSION_EVENT_TYPES` 是生成文件（`gen-persistence-catalog` 从全部 `SessionEventMap` merge 生成）。读端判据：未知类型若不带 `ignorable: true` 就拒绝解释。**默认 required（不 ignorable）**——忘记标记 → 过度拒绝（不便）；默认 ignorable → 同样错误会**静默续一个被掏空的会话**（安全失败）。**「过度拒绝优于静默错读」是显式择优。**
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| unit.name / unit.version | 对象 | 文件头，标 unit 身份与版本 |
+| global | any | `null`="从未写"哨兵 |
+| tables | Record<tableName, Record<key,value>> | 各表记录；`null` 原型避免 `__proto__` 污染 |
 
-**词汇守卫只在读端**：append 拒绝退休 legacy 形态但**不做词表检查**——append 时拒绝会卡住 live 会话进行中的持久化，比「下次 load 时响亮拒绝」代价高。
+写入为原子整文件替换（temp+fsync+rename+目录 fsync）[[packages/storage/storage-json/src/atomic.ts:24-24]()]()。
 
-### 物理媒介的版本门
+### session-projection-cache：`session_projcache` 域
 
-- **SQLite 会话库**：`PRAGMA application_id=0x44534850` 防对无关库写入、`PRAGMA user_version` 承载 `SCHEMA_VERSION`。整体校验在 `BEGIN IMMEDIATE` 写锁内做；新鲜库**先建表、最后才润色版本戳**——中途失败留下未 stamp 库，重开重新物化。
-- **storage-sqlite 库**：同构 gating（`STORAGE_SQLITE_SCHEMA_VERSION=1`），描述明说「this unreleased format has no migrations」。
-- **JSON unit**：单文件 unit header version 与 spec 比对，不符 `version-mismatch`。
+职责：投影检查点持久化，`(sessionId, key, ver, seq, val)` 的 RFC 形态；`row 从不错误，只可能过期`——ver 不匹配即丢弃（从非迁移）[[packages/session/session-projection-cache/src/spec.ts:24-24]()]()。日志身份绑定（createdAt/cwd）防止"同 id 不同生命周期"的旧行通过水位检查[[packages/session/session-projection-cache/src/spec.ts:39-39]()]()。
 
-### 正在物化的 `events` 表 vs 派生读模型
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| createdAt / cwd | z.number/z.string.optional | checkpointIdentity | 日志身份（列表/冷读时对 live header 校验） |
+| rows | Record<key, row> | rows 键为投影 key | 每 key 一个 checkpoint |
+| row.ver | int≥0 | | 该 unit 的 stateVersion，不匹配即弃 |
+| row.seq | int≥-1 | | 投影最后一次折叠的 seq（如何 stale） |
+| row.val | z.json() | | 该投影 unit 的内部状态，纯 JSON |
 
-`session-query` 的 FTS5 索引是**可丢弃的派生索引**——其 schema 版本哲学与持久化 schema 相反：**版本不符直接 DROP 全部 user 表重建**，因为是派生（可从日志重算），重建成本可接受；而 sessions/events 是 Source of Truth，只能拒绝不能丢。
+写为整记录替换（whole-value 纪律）；域 spec `version:3` 升级即报废整个媒介[[packages/session/session-projection-cache/src/spec.ts:66-66]()]()。
+
+## Schema 演进策略：刻意"不迁移，只拒绝"
+
+dsh 的 schema 演进哲学与多数系统相反——**pre-release，无兼容承诺，宁可拒绝也不猜测迁移**。主要体现在几个单调版本号：
+
+- `SESSION_FORMAT_VERSION = 0`：单一单调整数，无 major/minor 拆分[[packages/core/session/src/types.ts:56-56]()]()。决定是否 bump 看 **writer 发什么**，而非新 reader 能否接受——只有结构性变化才 bump（header 形态、Event 信封、core 事件语义、surface 机制/SurfaceEventType 集）；普通加事件类型不 bump，用 `ignorable` 防词汇增长[[packages/core/session/src/types.ts:40-40]()]()。
+  - bump 的代价权衡见 constant 注释："near-identity 升级几乎免费，漏 bump 会让旧 runtime 静默读错新日志"——宁可过度拒绝也不静默重演被掏空的会话。
+- 会话级版本：JSONL 后端从**首行 header** 就拒绝外来格式版本，`refuseForeignFormatVersion` 先于校验今日 header 形态与解码任何事件行，所以未来结构性格式仍报"升级方向"而非"corrupt"[[packages/session/session-persistence-jsonl/src/format.ts:240-240]()]()。SQLite 则先把整文件结构用自己 `SCHEMA_VERSION` pragma 挡住[[packages/session/session-persistence-sqlite/src/schema.ts:20-20]()]()。
+- `SCHEMA_VERSION = 15`（SQLite 会话后端）：单调递增，只在前述会话持久化 DDL 有破坏性变更时 bump 一档 15[[packages/session/session-persistence-sqlite/src/schema.ts:20-20]()]()。openDatabase 用 write-lock 持有下的 `PRAGMA user_version` 校验：缓存 `0`（全新）盖章为当前；非当前一律拒绝[[packages/session/session-persistence-sqlite/src/schema.ts:108-108]()]()。
+- `STORAGE_SQLITE_SCHEMA_VERSION = 1`（KV sqlite）：`PRAGMA user_version`，与每 unit 版本正交；非当前拒绝，不迁移[[packages/storage/storage-sqlite/src/schema.ts:20-20]()]()。
+- 域级版本：DomainSpec.version 被拒即拒绝打开[[packages/storage/storage-domain/src/spec.ts:35-35]()]()；投影 projcache 域 version 被拒即报废——cache 语义是"stale/不可读 cache 只花一次长尾重放，绝不产出错值"[[packages/session/session-projection-cache/src/spec.ts:62-62]()]()。
+
+**回滚/灰度**：由于"拒绝不迁移"，上线前必须保证磁盘格式与代码版本配套；投影缓存依赖 `stateVersion` 的版本不匹配就地丢弃，是唯一"自动回滚"点（重读重放即可）。JSONL 改压缩编码需独立/全新 root 或选 legacy raw mode（见其 README）——因为格式版本无迁移。
 
 ## 读写路径
 
-### 会话事件写入：`session/event` → 有界批窗口 → flush → 单事务落盘 → 崩溃恢复
+写路径有两条汇聚线，都以 `PersistenceCoordinator` 为编排中枢。下面以 JSONL 后端为例给出时序（SQLite 后端经由同一 coordinator，仅把文件操作换成 INSERT 事务）。
+
+### 活会话写路径：session/event → write-behind 批量落地
 
 ```mermaid
 sequenceDiagram
-    participant AgentLoop as agent 循环
-    participant Ctx as "ctx (cordis)"
-    participant Wb as "SessionWriteBehind<br>(每 live 会话)"
-    participant Coord as "Persistence<br>Coordinator"
-    participant Backend as "JSONL/SQLite 后端"
+    participant S as Session
+    participant C as Coordinator
+    participant WB as WriteBehind
+    participant B as JSONL backend
 
-    AgentLoop->>Ctx: "emit session/event (同步通知)"
-    Ctx->>Coord: "installWritePath 监听"
-    Coord->>Wb: "enqueue(event) structuredClone 自留拷贝"
-    Wb-->>Wb: "首个 pending 启动固定 maxDelayMs 窗口"
-
-    alt 窗口到期
-        Wb->>Wb: "onDeadline() -> startBackground()"
-    else "显式 flush<br>(session/flush / dispose 排空)"
-        Wb->>Wb: "flush(): cancelTimer + drainBarrier"
-    end
-    Wb->>Coord: "write(batch)"
-    Coord->>Coord: "append(id, events) 每 id promise 链串行"
-    Coord->>Backend: "appendBatch(meta,<br>events, isMaterialized)"
-    Backend->>Backend: "[SQLite] BEGIN；<br>writeRow(懒物化)+全INSERT+revision+1；<br>COMMIT"
-    Backend-->>Coord: "持久性确认 (WAL 提交 / fsync)"
-    Coord->>Coord: "materialized=true；cursor+=len"
-
-    Note over Backend,Coord: "崩溃后 load：scanRows 找最后 turn/end 后<br>torn tail 修补=truncate 孤儿尾<br>+ 插合成 turn/end{interrupted}"
+    S->>S: event 入日志（frozen）
+    S->>C: session/event（installWritePath）
+    C->>WB: enqueue（structuredClone 副本）
+    WB->>WB: armTimer(maxDelayMs) 首事件定窗口
+    WB-->>C: 后续事件只入队，不重置 deadline
+    WB->>WB: onDeadline()
+    WB->>B: write(batch)——appendBatch
+    B->>B: appendLines('a', write, sync)
+    B-->>WB: resolve（已持久化）
+    Note over C,WB: 失败保留 pending；flush 立即重试
 ```
 
-### KV domain 写读：durability-first 写链
+`installWritePath` 由 coordinator 构造时注册：`session/created` 记录头、`session/event` 拷贝冻结事件并入队、`session/flush` 作为即时持久化屏障、`session/disposed` 拉出 retirement 排水[[docs/subsystems/persistence.md:11-11]()]()。`session/event` 是同步通知，插件不阻塞生产者拷贝事件；`flush` 取消等待并排水至 quiescence[[packages/session/session-persistence/src/write-behind.ts:1-1]()]()。
 
-「durability-first」是关键：**写先达后端耐久，再改内存，再发事件**；后端写被拒则内存保持不动——读永不与媒介分叉。读是同步的从权威内存态 `get`/`entries`/`keys`（快照迭代器，排队写落盘期间保持稳定）。
-[packages/storage/storage-domain/src/domain.ts:66-72]()
-<!-- snippet:   /**
-   * Insert or overwrite one record durably.
-   * @param key - Record key.
-   * @param value - The full new record (no partial merge).
-   * @returns resolution after durability and event emission.
-   */
-  put(key: K, value: V): Promise<void> -->
+seq contiguity 契约在 `appendCore` 强制：每个事件 seq 必须接续 `state.cursor`，`backend.appendBatch` 成功后 cursor/materialized 同步推进、invalidates 缓存[[docs/subsystems/persistence.md:296-296]()]()。
 
-## 全局关联 + 亮点问题
+### 冷会话 / 冷读路径：load / inspect / readFrom
 
-### 全局关联：三件事连回一个设计哲学
+命中派生读取（投影缓存）时，从 SQLite 走 `loadStoredFrom` 尾读；JSONL 走 `loadStored`/`scanLog` 整读回放。恢复打断的 turn：backend 发现 `turn/start` 无 `turn/end`，**不截断**（单 turn 可能巨大），而是以合成 `turn/end { reason:{kind:'interrupted'} }` 收尾，不改变其前后任何独立事件[[docs/subsystems/persistence.md:15-15]()]()。仅当最后一条物理记录是残缺 fragment 时才丢弃 torn tail。
 
-1. **「事件即数据」的 Source of Truth 原则下，storage 是多与少的另一半。** 事件日志是权威、可重建，所以 `session-query` 的 FTS 索引可以是**可丢弃派生索引**（版本不符就 DROP）——这是「有 Source of Truth 敢用可重算派生物」的直接后果。
-2. **两种 seam 共用一套「不做迁移、拒绝优于猜」的防御姿态**：会话日志靠 `SCHEMA_VERSION`+词汇表+ignorable 拒，KV domain 靠 unit header version + zod 拒。
-3. **revision/incarnation 的「源限定 token」横贯三端**：`sessions.revision` 供持久化自身判变更，projection-cache 用它做 readFrom tail 回放，session-query 用它对比索引 freshness。一个 token 统一了「谁变了」的全部判据。
+SQLite `loadStoredFrom`：
 
-### 亮点问题
+```mermaid
+sequenceDiagram
+    participant R as ReadModel
+    participant P as SessionPersistence
+    participant SQ as SQLite backend
+    participant SC as scanRows
 
-- **upgrader 链延迟的兼容悬崖**：第一版发布的读者成为所有后续读法的地板——任何漏掉的拒收行为都无法事后补进已发布的拷贝。当前 `SESSION_FORMAT_VERSION=0`、尚无 v0→v1 step 可测，这份延迟是务实取舍，但 v1 一旦落地升级链成本随语义复杂度上升。
-- **`readFrom` 的顺序介质代价是显式接受的**：读模型共享一个"只补尾部"的增量接口，代价由 JSONL 后端每次全量解析承担——语义统一，物理代价可量化。
-- **KV unit 的单写入者假设**：unit 不串行化并发写（写顺序归调用者），多进程并发写需应用层协调，是记录在案的限制。
+    R->>P: readFrom(id, fromSeq=floor)
+    P->>SQ: loadStoredFrom(id, fromSeq)
+    SQ->>SQ: SELECT… WHERE id=? AND seq>=?
+    SQ->>SC: scanRows(rows, fromSeq)
+    SC-->>SQ: preserved 前缀 + tornFrom
+    SQ-->>P: {meta, events: preserved}
+    P-->>R: 只回放 watermark 之后一段
+```
 
-## 已知的文档-实现漂移
+关键语义：`readFrom` 返回的是**物理后缀**，`fromSeq >= 存储前缀` 时返回空事件而非报错；JSONL（顺序媒介）即使它仍解析整文件也保证只**返回/折叠** `seq>=fromSeq` 段——该原语限定"返回什么、折叠什么"，不限定每个 backend 的物理读[[docs/subsystems/persistence.md:344-344]()]()。
 
-- **`SCHEMA_VERSION=15` 的演进史无迁移脚本可循**：git 历史仅 1 个提交（squash/浅克隆），无法从 `git log` 追逐版演进；唯一确定节点是 version-mechanism Agent Note 声明 `SCHEMA_VERSION 15` 专门为新增 `ignorable` 信封列引入。当前快照：`SCHEMA_VERSION=15`、`SESSION_FORMAT_VERSION=0`、`STORAGE_SQLITE_SCHEMA_VERSION=1`。
-- **`sqliteRevision` 前缀拼串细节**：草稿把完整 `file:<dev>:<ino>:<birthtimeNs>:store:<store_id>` 前缀描成 `sqliteRevision` 内部拼串；实际 `sqliteRevision` 接收完整 `storeIdentity` 后在其上追加 `:incarnation:...:revision:...`。文档以调用侧（index.ts:212-217）为准。
-- **拒绝方向措辞**：`SessionFormatUnsupportedError` 用于「新于读者」、`SessionPersistenceCorruptionError` 用于损坏，二者须区分，避免把「看不懂」误写为「损坏」。
-EOF
-echo done
+### 非日志 KV 写路径：domain 写 → backend 持久化 → domain/changed
+
+```mermaid
+sequenceDiagram
+    participant D as DomainSpec 消费方
+    participant T as KvTable
+    participant B as KvUnit backend
+
+    D->>T: table('x').put(key, value)
+    T->>T: host.enqueue（单 per-domain 写链）
+    T->>B: unit.putRecord(table, key, value)
+    B->>B: 后端持久化（json 原子重写 / sqlite upsert）
+    B-->>T: resolve（durable）
+    T->>T: 然后 mutate 内存 records.set
+    T->>T: 再 emit domain/changed(put)
+    Note over T: 后端写失败 → 内存不动，读侧与媒介不背离
+```
+
+读写路径的全局连接：内存是权威（读同步自内存）、媒介先行持久化、事件在 durable 之后按写链顺序发出；`delete` 对缺席 key 返回 `false` 且不写不发事件；`update` 是写链槽位上的原子 read-modify-write[[docs/subsystems/persistence.md:98-98]()]()。
+
+## 全局关联：数据模型是「不可变日志 + 可交换 seam」的物理载体
+
+dsh 把「什么需要落地」拆成两类：事件日志（真相，需顺序 append + 崩溃回放）与投影/KV 状态（派生值，需随机读）。两层各配可交换 backend（JSONL 忠实回放 + SQLite 按 seq 投影；storage-json 人读 + storage-sqlite 频繁读写），由 `PersistenceCoordinator` 编排写路径。schema 演进「不迁移、只拒绝」——`SESSION_FORMAT_VERSION`/`SCHEMA_VERSION`/域级 version 一律单调盖章、非当前即拒，宁可过度拒绝也不静默重演被掏空的会话——这与其说是保守，不如说是「不可变事实源」哲学的自然后果：既然历史不可改，那演进就只能靠版本拒绝而非就地迁移。它把 [session.md](session.md) 的「Model-visible means logged」从内存典故落到磁盘形态，是 [architecture.md](architecture.md) 可交换后端哲学的又一实例。

@@ -199,6 +199,7 @@ graph TB
 | [AgenticSeek](ai-agent/AgenticSeek/) | Python + TS | 100% 本地 Manus 替代品：双模型投票 Agent 路由、Planner 编排、Block 代码块工具协议、记忆压缩、stealth 浏览器自主上网/填表、会话持久化 | GPL-3.0 | [GitHub](https://github.com/Fosowl/agenticSeek) |
 | [WeKnora](ai-agent/weknora/) | Go | 企业级 RAG 与知识推理平台：文档导入→语义索引→Agent/反应式 Agent 推理→自动生成 Wiki+知识图谱，多源连接器（飞书/Notion/语雀/RSS），26 LLM + 7 向量库 + 10 IM 集成，多租户 RBAC，网页挂件/桌面端部署 | MIT | [GitHub](https://github.com/Tencent/WeKnora) |
 | [PicoClaw](ai-agent/picoclaw/) | Go | 极致轻量 Go 原生 AI Agent 网关，<10MB 内存跑在 $10 硬件，20+ 通道 30+ LLM，MCP 集成 | MIT | [GitHub](https://github.com/sipeed/picoclaw) |
+| [FastGPT](ai-agent/FastGPT/) | TypeScript + Node/Next.js | AI Agent 构建平台（v4）：Flow 工作流图即运行时（Dispatch + 队列驱动节点分发、交互暂停续跑）；自研 RAG 混合检索（向量 + jieba 全文 + 图文 caption + rerank）；Agent Loop 可插拔（fastAgent + piAgent）；Skill 可用清单 + read_file 延迟加载；双层代码沙箱；双向 MCP；MongoDB 文档模型 | FastGPT OSL | [GitHub](https://github.com/labring/FastGPT) |
 
 ### [Agent 基础设施（AI Infra）](ai-infra/)
 

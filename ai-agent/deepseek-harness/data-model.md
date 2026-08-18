@@ -203,6 +203,27 @@ graph TB
 
 写为整记录替换（whole-value 纪律）；域 spec `version:3` 升级即报废整个媒介[[packages/session/session-projection-cache/src/spec.ts:66-66]()]()。
 
+### 附件对象库：`DSH_HOME/attachments/v1`（内容寻址二进制存储）
+
+> **演进说明（rc.7）**：这是事件日志之外新增的**独立持久化面**——图片等二进制内容不进事件，字节落在内容寻址对象库，事件只存 `ImageAttachmentRef` 引用。完整能力面在 [attachments.md](attachments.md)。
+
+职责：不可变二进制对象的持久化底座，与"事件日志存 ref、对象库存字节"严格分工。根目录 `DSH_HOME/attachments/v1`（版本化，跨版本对象格式互读靠目录切分），下分 `objects/<前两hex>/<sha256>` 内容寻址对象与 `tmp` 暂存区，`images` 对象以 `objects` 双层前缀摊开避免单目录过载。
+
+其"不可变 + 防篡改"由双重机制保证（[attachments.md](attachments.md) 详述）：
+
+- **内容寻址**：对象以字节 SHA-256 命名，`attachmentId` 形如 `sha256:...`，同一内容天然去重共享；`readImage` 回读时重算 digest 并逐项核对 `mediaType`/`bytes`/`width`/`height`，不匹配即报 `ATTACHMENT_CORRUPT`[[packages/attachment/attachment-local/src/store.ts:220-226]()]()。
+- **崩溃安全**：写入走 `stage→write→sync→fsync目录→link→sync目录`，参考发布前同步 `objects` 目录，防"文件到目录项没到"的断电丢引用[[packages/attachment/attachment-local/src/store.ts:76-113]()]()、[[packages/attachment/attachment-local/src/store.ts:152-169]()]()。
+
+| 字段 | 类型 / 约束 | 说明 |
+|------|------------|------|
+| `attachmentId` | `sha256:<64hex>`，不可变 | 内容寻址标识，非路径非 URL |
+| `mediaType` | closed union `image/png/jpeg/webp/gif` | 从字节验出的格式 |
+| `bytes`/`width`/`height` | number | 读回时逐项核对 |
+| 对象路径 | `objects/<前2hex>/<sha256>` | 内容寻址摊开 |
+| 暂存区 | `tmp/<uuid>` | 写入中暂存再 link 原子发布 |
+
+**演进与 GC**：因恢复/分叉会话可能共享不可变对象，"没被引用即删"会误删仍在用的图，因此**对象 GC 与保留策略明确 deferred**（`readImage` 校验让"对象是否还在"可探测，但自动回收待引用感知 GC 落地[[packages/attachment/attachment/README.md:20-20]()]()）。v1 仅收四种栅格格式，音频/视频/通用文件留待各自生命周期契约[[packages/attachment/attachment/README.md:19-21]()]()。这不是数据模型妥协，而是「先保格式正确审计、后加媒体类型」的演进顺序。
+
 ## Schema 演进策略：刻意"不迁移，只拒绝"
 
 dsh 的 schema 演进哲学与多数系统相反——**pre-release，无兼容承诺，宁可拒绝也不猜测迁移**。主要体现在几个单调版本号：

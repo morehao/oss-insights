@@ -1,6 +1,8 @@
 # DeepSeek Harness (`dsh`)
 
 > 本解读按 **ai-agent ⊗ framework** 类规格产出（ai-agent 主类型 + framework 副类型叠加，因 dsh 向插件作者开放 SDK/扩展接口）。判定依据：README 自述「agent harness / everything is a plugin」+ 顶层 `packages/*/` 插件式扩展接口 + vendored Cordis 插件运行时。由 DeepSeek AI 开源。
+>
+> **本版增量更新（rc.7 / 2026-08）**：在既有架构解读基础上，新增「持久化附件能力面」（[attachments.md](attachments.md)）——`ctx.attachments` 不可变内容寻址对象库，为 `image` 块补齐 Durable 字节支撑；并同步了 [llm.md](llm.md)、[data-model.md](data-model.md) 的相关接线。依据上游 0.1.0-rc.7 代码快照比对（项目无官方 changelog）。
 
 ## 根因：没有特权内核的 agent harness
 
@@ -32,6 +34,7 @@ DeepSeek Harness（`dsh`）是一个 TypeScript 编写的 agent harness（智能
 | 上下文管理与压缩 | compaction capability seam + token 预算 | [memory-compaction.md](memory-compaction.md) |
 | 持久化数据模型 | JSONL/SQLite 双后端、schema「不迁移只拒绝」 | [data-model.md](data-model.md) |
 | 部署形态 | profile/bundle/patch 分层、web/headless 双形态 | [deployment.md](deployment.md) |
+| 持久化附件 | 不可变内容寻址对象库 + `ImageAttachmentRef`、全量先验后写 | [attachments.md](attachments.md) |
 
 ### 技术栈一览表
 
@@ -110,6 +113,7 @@ graph TB
 | 上下文与压缩 | compaction + token 预算 | [`memory-compaction.md`](memory-compaction.md) |
 | 数据模型 | 持久化布局与演进 | [`data-model.md`](data-model.md) |
 | 部署形态 | profile/bundle/patch 与双形态 | [`deployment.md`](deployment.md) |
+| 持久化附件 | 不可变内容寻址对象库 + Ref 引用 | [`attachments.md`](attachments.md) |
 
 ## 启动 / 请求链路
 
@@ -129,6 +133,7 @@ graph TB
 - [`memory-compaction.md`](memory-compaction.md) — 上下文管理与自动压缩
 - [`data-model.md`](data-model.md) — 持久化数据模型（事件日志地面实现）
 - [`deployment.md`](deployment.md) — 部署形态（web/headless、profile/bundle/patch）
+- [`attachments.md`](attachments.md) — 持久化附件能力面（不可变内容寻址对象库 `ctx.attachments`）
 
 ## 可借鉴的设计
 
@@ -136,6 +141,7 @@ graph TB
 - **事件溯源而非可变状态**：append-only 日志 + 派生投影，换来可重放、可审计、可崩溃恢复；`Model-visible means logged` 把「模型看到什么」变成编译期强制。
 - **分层 patch 组合**：profile/bundle/patch 把「发行、组合命名、覆盖行为」正交化，任何升级/换默认都退化为一个 patch，且 `--dump-config` 保证「看到的 = 跑起来的」。
 - **零特权拦截**：所有关键决策点（pre-step/request/request-error/turn-stopping、tools/*）都以 waterfall 事件开放，让插件在洋葱式 `next()` 委派下无优先级地参与——连主循环本身都可替换。
+- **坚持「可回放」优先于「方便」**：二进制图像也没能绕开唯一事实源——用不可变内容寻址对象库 + `ImageAttachmentRef` 引用而非 base64/URL，让 `Model-visible means logged` 从文本扩展到媒体（[attachments.md](attachments.md)）。
 
 ## 不足 / 风险
 
@@ -143,6 +149,7 @@ graph TB
 - **patch by-id 整行替换的维护税**：上层 patch 需重述整行 config，bundle 重构字段名会静默「断」上层重述该字段的 patch。
 - **学习曲线**：三实体（profile/bundle/patch）与分层概念需要理解成本；不少 invariant companion 是空安装，正确性部分押在测试而非运行时自证。
 - **示例/工具集合覆盖**：本解读聚焦架构主干，`extensions/tool-*` 的每把工具 schema 未逐一展开。
+- **附件对象 GC deferred**：附件对象库尚无可达性 GC，恢复/分叉共享不可变对象会留下不可达对象占磁盘；v1 仅收四种栅格格式（见 [attachments.md](attachments.md)「演进与未完成」）。
 
 ## 同类对比
 

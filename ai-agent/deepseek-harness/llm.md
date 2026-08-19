@@ -64,6 +64,8 @@ DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个�
   export interface ContentBlockMap {
   -->
 
+> **演进说明（rc.7）**：五类基础块中的 `image` 不再是孤立的"词汇枚举"——rc.7 为它补上了持久化支撑：`image` 块携带 `attachment` 引用（`ImageAttachmentRef`），字节落盘在 durable attachment 服务而非内联 base64。判定"一段内容是否含图"由统一的递归 `contentHasImage` 承担（它会走进嵌套的 `tool-result`），LLM adapter 借此在组装前决定是否拒绝不支持图的模型。整块能力面拆到 [attachments.md](attachments.md) 讲透。
+
 - 不可变性是"重建性"的载体：`createMessage` 给每条新消息打上 `MessageId(crypto.randomUUID())` 后 `deepFreeze(structuredClone(...))` 冻结；`LlmRuntime.prepareCall` 也 `deepFreeze(structuredClone(config))`。冻结使会话日志与请求输入成为一个纯函数关系（日志即请求，请求即日志），中间无可变状态漂移。
 
   `[packages/llm/llm/src/message.ts:169-185]()` 冻结 + 建号

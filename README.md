@@ -163,6 +163,7 @@ graph TB
 
 | 项目 | 语言 | 说明 | 协议 | 仓库 |
 |------|------|------|------|------|
+| [Authelia](auth/authelia/) | Go | 反向代理伴生认证/授权 SSO 网关，四种反代集成、细粒度访问控制规则、多因子（WebAuthn/TOTP/Duo）、OpenID Certified OIDC、HA（remote DB + Redis） | Apache-2.0 | [GitHub](https://github.com/authelia/authelia) |
 | [Tinyauth](auth/tinyauth/) | Go | 最小认证授权服务器，为反向代理提供 ForwardAuth | AGPL-3.0 | [GitHub](https://github.com/tinyauthapp/tinyauth) |
 | [ZITADEL](auth/zitadel/) | Go | 企业级 IAM 平台，CQRS + Event Sourcing 架构，OIDC/SAML/SCIM 完整支持 | AGPL-3.0 | [GitHub](https://github.com/zitadel/zitadel) |
 | [TOPIAM](auth/topiam/) | Java | 企业级 IAM/IDaaS 平台，支持 OIDC/SAML2/JWT/CAS/表单代填 | AGPL-3.0 | [GitHub](https://github.com/topiam/eiam) |

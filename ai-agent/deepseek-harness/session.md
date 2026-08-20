@@ -119,7 +119,7 @@ type SurfaceOp = 'append' | { op: 'replace'; start: number; end: number }
 
 **SQLite**（`packages/session/session-persistence-sqlite/src/schema.ts`）——一行一个 `SessionEvent`，无平行持久化 schema：
 - `sessions` 行：out-of-log 元数据 + `incarnation`（物化时分配）+ `revision`（每变更事务自增）（`schema.ts:32-46`）。
-- `events` 行：`(session_id, seq, type, time, data, source_event_seqs, surface_op, ignorable)`，`data` 是 JSON 文本，1:1 映射（`schema.ts:49-60`；`…/src/index.ts:286-288`）。
+- `events` 行：rc.8 起为 Schema 17 **打包物理行**（见 [data-model.md](data-model.md)）——标量事件仍 `(session_id, seq, type, time, data, source_event_seqs, surface_op, ignorable)`，但连续同块 `assistant/chunk` 会被 `packChunkRuns` 压成 `*-chunks` 一行、`source_event_seqs` 以 varint/ZigZag delta 编码为 BLOB、大 payload 以 zstd 压成 BLOB（`…/sqlite/src/codec.ts:32-46`、`…/sqlite/src/compression.ts:31-36`）。
 - `persistence_state`：单例行保存随机 `store_id`，作 source-qualified revision 抗碰撞部分（`schema.ts:116-120`；`…/src/index.ts:47-51`）。
 
 **JSONL**（`packages/session/session-persistence-jsonl/src/format.ts`）——每会话一个 append-only 文件：
@@ -157,7 +157,7 @@ sequenceDiagram
     Persist->>WB: writes.enqueue：拷贝+arm 固定批量窗口 <br>write-behind.ts:45-56
     WB->>Persist: 定时到期或 flush → drainBarrier <br>write-behind.ts:93-136
     Persist->>Backend: appendBatch meta events materialized <br>coordinator.ts:704
-    Note over Backend: SQLite: 单事务 INSERT + revision+1 <br>.../sqlite/src/index.ts:284-302 <br>JSONL: materialize temp+link 原子发布 <br>或 appendLines+fsync+rollback <br>.../jsonl/src/index.ts:514-689
+    Note over Backend: SQLite: 单事务 packChunkRuns+insert+revision+1 <br>.../sqlite/src/store.ts:173-199 <br>JSONL: materialize temp+link 原子发布 <br>或 appendLines+fsync+rollback <br>.../jsonl/src/index.ts:514-689
     Backend-->>WB: 已持久化 → resolve
     Drv->>S: deriveMessages（每步） <br>index.ts:726
     S->>Surf: surface.nodes 读 surfaceOp 定的模型可见序列 <br>surface.ts:438-441
@@ -230,7 +230,7 @@ sequenceDiagram
 
 - **选**：capability seam（抽象 `SessionPersistence` + 两后端）。
 - **JSONL 之选**：可读（plaintext 或 zstd 帧）、append-only 文件适配顺序介质、逐字节还原（`readRaw`，`[docs/subsystems/persistence.md:128-129]()`；`[packages/session/session-persistence-jsonl/src/index.ts:252-282]()`）、崩溃修复只需「截断 torn 尾 + append closers」（`index.ts:436-444`），不需要数据库事务。
-- **SQLite 之选**：事务原子性天然（materialize+append 单事务，`[packages/session/session-persistence-sqlite/src/index.ts:284-302]()`）、seq 可寻址（`loadStoredFrom` 只读后缀，`index.ts:225-238`）、单文件单库（locate 返回 undefined，`index.ts:173-175`）。
+- **SQLite 之选**：事务原子性天然（materialize+打包 append 单事务，`[packages/session/session-persistence-sqlite/src/store.ts:173-199]()`）、seq 可寻址（`loadStoredFrom` 只读后缀，`index.ts:225-238`）、单文件单库（locate 返回 undefined，`index.ts:173-175`）。rc.8 起在事务内做 `packChunkRuns` 打包（见 [data-model.md](data-model.md)「Schema 17」）。
 - **代价**：JSONL 的 append 断点需显式 rollback/truncate（`jsonl/index.ts:651-689`），且 `commitRepair` 不要求跨行原子；SQLite 对「未 flush 尾部」的容忍靠 `scanRows` 的 torn 语义（`sqlite/schema.ts:232-269`）。
 - **chunk 打包解码**：`packChunkRuns` 把连续同类 delta chunk 打包成一行，`decodeStorageRecord` 无损展开（`[packages/core/session/src/chunk-rows.ts:192-221](),339-346`）。这是**存储编码词汇而非 session 事件**——不打进 `SessionEventMap`，用无斜杠 tag 防与事件分类混淆；编码器白名单精确形状，不认识即逐条存（丢压缩不丢数据）；解码器先验证再展开、损坏 loud fail（`chunk-rows.ts:9-16,339-345`）。
 

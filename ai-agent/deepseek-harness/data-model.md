@@ -29,7 +29,7 @@ dsh 对这两类各给了一个服务抽象（`SessionPersistence` 与 `Storage`
 
 ### SQLite：一切可交换的投影/查询底座
 
-事件日志的**派生读取**（投影、冷读、watermark 续读）需要真正按 seq 随机访问与按列过滤，这对 JSONL 是一处天然瓶颈。`session-persistence-sqlite` 用 `node:sqlite` 把每个 SessionEvent 映射为 `events` 表一行，字段与事件信封 1:1，明确"没有平行的持久化 schema 要同步"（schema.ts 头注）[[packages/session/session-persistence-sqlite/src/schema.ts:1-1]()]()。SQLite 后端因此提供 JSONL 给不了的 `readFrom` 尾读：`SELECT ... WHERE session_id = ? AND seq >= ?` 直接寻址，读规模随后缀而非日志总长[[packages/session/session-persistence-sqlite/src/index.ts:225-225]()]()。
+事件日志的**派生读取**（投影、冷读、watermark 续读）需要真正按 seq 随机访问与按列过滤，这对 JSONL 是一处天然瓶颈。`session-persistence-sqlite` 用 `node:sqlite` 实现，但它早在 rc.8 起就**不再把每个 SessionEvent 映射成一事件一行**——见下节「Schema 17」的打包物理行。它提供 JSONL 给不了的 `readFrom` 尾读：`SELECT ... WHERE session_id = ? AND seq >= ?` 直接寻址，读规模随后缀而非日志总长[[packages/session/session-persistence-sqlite/src/index.ts:117-123]()]()。rc.8 的存储布局在 sqlite 子包内演进（`codec.ts`/`compression.ts`/`store.ts`），参考了 morlay 的 `session-persistence-rdb`，文档明确标注"统一关系库多后端设计 deferred、pre-release 不保证 schema 稳定"[[packages/session/session-persistence-sqlite/README.md:57-57]()]()。
 
 所以"为什么 JSONL + SQLite 双形态"的答案不是性能攀比，而是**一个真相、两类读法**：JSONL 忠实、可回放、人可读（真相对外暴露）；SQLite 按 seq 投影、按 watermark 续读（对读侧派生）。二者共用同一套 `SessionPersistence` 抽象和同一套 `runPersistenceContract` 契约，且都通过共享的 `PersistenceCoordinator` 编排写路径，因此"底层怎么存"被完全封装在 seam 之下。
 
@@ -142,9 +142,11 @@ graph TB
 | 后续行 | event 逐行 JSON 或 `packChunkRuns` 打包块 | 布局无关读：`scanLog` 恒按记录解码 |
 | 物理编码 | zstd 拼接帧（默认）/ 明文 | 由 `JsonlCompression` 决定，后缀对应 |
 
-### session-persistence-sqlite：`sessions` / `events` 表
+### session-persistence-sqlite：`sessions` / `events` 表（rc.8 Schema 17 打包物理行）
 
-职责：一个 SQLite 库承载全部会话，`sessions` 行是 out-of-log 元数据（≈SessionHeader），`events` 行与 SessionEvent 1:1[[packages/session/session-persistence-sqlite/src/schema.ts:32-32]()]()。行存在性即物化信号：仅首次 append 写行，创建未 append 的会话无行、`list` 不可见[[packages/session/session-persistence-sqlite/src/schema.ts:26-26]()]()。
+**演进说明（rc.8）**：0.1.0-rc.8 把 SQLite 后端从「一事件一行、data 为 JSON 文本」重写为 **Schema 17 打包物理行**——见下。既有本条目的旧描述（events 行与 SessionEvent 1:1）已被本次重构取代。
+
+职责：一个 SQLite 库承载全部会话，`sessions` 行是 out-of-log 元数据（≈SessionHeader）；`events` 行**不再是**与 SessionEvent 一一对应——普通事件仍是标量行，但可打包的连续 `assistant/chunk` 流被压成**打包物理行**。行存在性即物化信号：仅首次 append 写行，创建未 append 的会话无行、`list` 不可见[[packages/session/session-persistence-sqlite/src/schema.ts:26-26]()]()。
 
 `sessions`：
 
@@ -156,16 +158,21 @@ graph TB
 | incarnation | TEXT | NOT NULL，物化时 randomUUID | 日志持久化的稳定身份 |
 | revision | INTEGER | NOT NULL，每次变更自增 | 单调日志变更 token，纯等值比较 |
 
-`events`：
+`events`（DDL 列仍是这几列，但**类型与行含义**按 Schema 17 codec 变了）：
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
 | session_id | TEXT | FK→sessions(id) ON DELETE CASCADE | 归属会话 |
-| seq | INTEGER | 与 session_id 组成 PK | 事件 seq |
-| type / time | INTEGER/TEXT | NOT NULL | 事件类型与时间戳 |
-| data | TEXT | NOT NULL JSON | 负载，存 JSON 文本 |
-| source_event_seqs / surface_op | TEXT(可为空) | 条件 surface 元数据，JSON 编码 | 无 surface 时为 null |
-| ignorable | INTEGER(可为空) | 1 iff 信封带 ignorable:true | 未知类型跳过标记 |
+| seq | INTEGER | 与 session_id 组成 PK | 标量行=该事件 seq；打包行=`seq0`（首个代表事件） |
+| type | TEXT | NOT NULL | 标量行=逻辑事件类型；打包行=`text-chunks`/`reasoning-chunks`/`tool-call-chunks`（存储记录，非 `SessionEventMap` 成员） |
+| time | INTEGER | NOT NULL | 标量行=事件时间；打包行=`time0`（首个代表事件） |
+| data | ANY | NOT NULL | 标量行=JSON 文本；打包行=共享的打包 chunk 负载；≥4 KiB 时 zstd 压缩为 BLOB |
+| source_event_seqs / surface_op | ANY/TEXT(可为空) | 条件 surface 元数据 | 打包行为 NULL；标量行 `source_event_seqs` 以 varint+ZigZag delta 编码为 BLOB |
+| ignorable | INTEGER(可为空) | 0/1 | **打包行固定 0 作物理判别标记**；标量行 1 表示逻辑 ignorable 事件，否则 NULL |
+
+关键是：**`type` 的 `*-chunks` 存储标签与"未知逻辑事件拒绝"不冲突**——decoder 先看 `ignorable` 是否 0 判定打包行，未知逻辑 ignorable 事件仍可复用存储标签名（`codec.ts:1-46`）。打包行各字段定义见 [[packages/session/session-persistence-sqlite/src/codec.ts:32-46]()]()。
+
+每个 `packChunkRuns` 把**恰好连续、同块类型**的 delta 展开，未知字段/surface 元数据/seq 缺口/不安全 block 身份/不安全时间戳都保留为标量行；一行最多代表 **1 048 576 字节（`MAX_PACKED_DATA_BYTES`）** payload、**≥3 个成员（`MIN_PACKED_ROW_MEMBERS`）**，超长 run 被切分而不改变逻辑事件[[packages/session/session-persistence-sqlite/src/codec.ts:42-46]()]()。`appendBatch` 一次 `BEGIN IMMEDIATE` 事务里 `packChunkRuns(events)` 后逐记录 `bindRecord` 写入并只 increment revision 一次，旧逻辑事件行绝不重写[[packages/session/session-persistence-sqlite/src/store.ts:173-199]()]()。
 
 ### storage-sqlite：`units` / `unit_globals` / `u_<unit>_<table>`
 
@@ -230,8 +237,8 @@ dsh 的 schema 演进哲学与多数系统相反——**pre-release，无兼容�
 
 - `SESSION_FORMAT_VERSION = 0`：单一单调整数，无 major/minor 拆分[[packages/core/session/src/types.ts:56-56]()]()。决定是否 bump 看 **writer 发什么**，而非新 reader 能否接受——只有结构性变化才 bump（header 形态、Event 信封、core 事件语义、surface 机制/SurfaceEventType 集）；普通加事件类型不 bump，用 `ignorable` 防词汇增长[[packages/core/session/src/types.ts:40-40]()]()。
   - bump 的代价权衡见 constant 注释："near-identity 升级几乎免费，漏 bump 会让旧 runtime 静默读错新日志"——宁可过度拒绝也不静默重演被掏空的会话。
-- 会话级版本：JSONL 后端从**首行 header** 就拒绝外来格式版本，`refuseForeignFormatVersion` 先于校验今日 header 形态与解码任何事件行，所以未来结构性格式仍报"升级方向"而非"corrupt"[[packages/session/session-persistence-jsonl/src/format.ts:240-240]()]()。SQLite 则先把整文件结构用自己 `SCHEMA_VERSION` pragma 挡住[[packages/session/session-persistence-sqlite/src/schema.ts:20-20]()]()。
-- `SCHEMA_VERSION = 15`（SQLite 会话后端）：单调递增，只在前述会话持久化 DDL 有破坏性变更时 bump 一档 15[[packages/session/session-persistence-sqlite/src/schema.ts:20-20]()]()。openDatabase 用 write-lock 持有下的 `PRAGMA user_version` 校验：缓存 `0`（全新）盖章为当前；非当前一律拒绝[[packages/session/session-persistence-sqlite/src/schema.ts:108-108]()]()。
+- 会话级版本：JSONL 后端从**首行 header** 就拒绝外来格式版本，`refuseForeignFormatVersion` 先于校验今日 header 形态与解码任何事件行，所以未来结构性格式仍报"升级方向"而非"corrupt"[[packages/session/session-persistence-jsonl/src/format.ts:240-240]()]()。SQLite 则先把整文件结构用自己 `SCHEMA_VERSION` pragma 挡住[[packages/session/session-persistence-sqlite/src/schema.ts:18-18]()]()。
+- `SCHEMA_VERSION = 17`（SQLite 会话后端，**rc.8 自 15 bump 到 17**）：单调递增，只在前述会话持久化 DDL/codec 有破坏性变更时 bump 一档[[packages/session/session-persistence-sqlite/src/schema.ts:18-18]()]()。openDatabase 用 write-lock 持有下的 `PRAGMA user_version` 校验：缓存 `0`（全新）盖章为当前；非当前一律拒绝[[packages/session/session-persistence-sqlite/src/schema.ts:117-117]()]()。
 - `STORAGE_SQLITE_SCHEMA_VERSION = 1`（KV sqlite）：`PRAGMA user_version`，与每 unit 版本正交；非当前拒绝，不迁移[[packages/storage/storage-sqlite/src/schema.ts:20-20]()]()。
 - 域级版本：DomainSpec.version 被拒即拒绝打开[[packages/storage/storage-domain/src/spec.ts:35-35]()]()；投影 projcache 域 version 被拒即报废——cache 语义是"stale/不可读 cache 只花一次长尾重放，绝不产出错值"[[packages/session/session-projection-cache/src/spec.ts:62-62]()]()。
 
@@ -239,7 +246,7 @@ dsh 的 schema 演进哲学与多数系统相反——**pre-release，无兼容�
 
 ## 读写路径
 
-写路径有两条汇聚线，都以 `PersistenceCoordinator` 为编排中枢。下面以 JSONL 后端为例给出时序（SQLite 后端经由同一 coordinator，仅把文件操作换成 INSERT 事务）。
+写路径有两条汇聚线，都以 `PersistenceCoordinator` 为编排中枢。下面以 JSONL 后端为例给出时序（SQLite 后端经由同一 coordinator，但把"文件 append"换成"一次事务内 `packChunkRuns` 后逐记录 insert"，见上文「Schema 17」）。
 
 ### 活会话写路径：session/event → write-behind 批量落地
 

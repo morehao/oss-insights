@@ -27,7 +27,7 @@ dsh 支柱二「session 日志是唯一事实源」在建 harness 早期只对�
 
 ### seam 形状：Service Definition / 本地 Provider / 多组 Consumer
 
-遵循 `Capability Seam 三件套`：`AttachmentStore` 是可交换的 Definition（[packages/attachment/attachment/src/index.ts:30-90]()），`attachment-local` 是当下唯一的 Provider（本地内容寻址，根在 `DSH_HOME/attachments/v1`），Consumer 是 ACP adapter、MCP client、pi-ai/DeepSeek adapter、浏览器上传等。
+遵循 `Capability Seam 三件套`：`AttachmentStore` 是可交换的 Definition（[packages/attachment/attachment/src/index.ts:32-92]()），`attachment-local` 是当下唯一的 Provider（本地内容寻址，根在 `DSH_HOME/attachments/v1`），Consumer 是 ACP adapter、MCP client、pi-ai/DeepSeek adapter、浏览器上传等。
 <!-- anchor: /** Immutable binary attachment service. Implementations validate bytes before publishing a reference. */ … abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment> -->
 
 关键词汇 `ImageAttachmentRef` 是持有引用而非持有字节的载体：它只带 `attachmentId`（`sha256:` 前缀）、`mediaType`、`bytes`、`width`/`height`、可选 `name`，**显式承诺"永远不是文件系统路径，也不是带权限的 URL"**（[packages/attachment/attachment/src/types.ts:10-12]()）。这样 ref 天然可序列化进 session 事件、可随 fork/恢复在会话间共享。
@@ -98,7 +98,7 @@ sequenceDiagram
 - **写侧**：上图中 `saveImages`/`saveImage` 把「承诺何时算数」固定为"写成功才返回 ref"；字节在 durable 之前绝不发布引用，避免"引用了没落盘的对象"。
 - **读侧**：`readImage` 返回前会**重读校验**——逐项核对 `mediaType`/`bytes`/`width`/`height` 与 ref 一致（[packages/attachment/attachment-local/src/store.ts:220-226]()），`digest` 证明这是 admission 解码过的同一批字节。这使"参考以内容寻址"从写侧扩展到读侧，防篡改、防串对象。
 <!-- anchor: if (digest(data) !== sha256) throw new AttachmentError('Stored attachment failed integrity verification.', 'ATTACHMENT_CORRUPT') … if (metadata.mediaType !== ref.mediaType || data.byteLength !== ref.bytes -->
-- **进模型**：pi-ai adapter 在请求组装时见到 `image` 块才通过 `attachments.readImage` 解析字节（[packages/llm/llm-pi-ai/src/context.ts:40-45]()）；若模型不支持图片，则在组装前用 `contentHasImage` 探到并整体拒绝（[packages/llm/llm/src/content.ts:13-15]()）。
+- **进模型**：pi-ai adapter 在请求组装时见到 `image` 块才通过 `attachments.readImage` 解析字节（[packages/llm/llm-pi-ai/src/context.ts:52-56]()）；若模型不支持图片，则在组装前用 `contentHasImage` 探到并整体拒绝（[packages/llm/llm/src/content.ts:18-20]()）。
 <!-- anchor: const stored = await attachments.readImage(block.attachment) … mimeType: stored.ref.mediaType, -->
 <!-- anchor: export function contentHasImage(content: readonly ContentBlock[]): boolean { … || (block.type === 'tool-result' && contentHasImage(block.content))) -->
 
@@ -115,7 +115,7 @@ sequenceDiagram
 
 ### 为什么用 `ImageAttachmentRef` 的 closed union 而非任意媒体
 
-v1 只收四种栅格格式（PNG/JPEG/WebP/GIF）。取舍是：`mediaType` 一旦纳入 ref 就成为审计承诺，开放任意类型会把"存储问题"和"provider 能力问题"混在一起。先收窄到 provider（尤其 ACP 的 `image` 块）与 DeepSeek 系模型都共识的格式，音频/视频/通用文件留待独立生命周期契约（[packages/attachment/attachment/README.md:19-21]() 记为 deferred work）。
+v1 只收四种栅格格式（PNG/JPEG/WebP/GIF）。取舍是：`mediaType` 一旦纳入 ref 就成为审计承诺，开放任意类型会把"存储问题"和"provider 能力问题"混在一起。先收窄到 provider（尤其 ACP 的 `image` 块）与 DeepSeek 系模型都共识的格式，音频/视频/通用文件留待独立生命周期契约（[packages/attachment/attachment/README.md:21-23]() 记为 deferred work）。
 <!-- anchor: - Version one accepts PNG, JPEG, WebP, and GIF only. … - Generic files, audio, video, and persistent unsent drafts require separate lifecycle and provider contracts. -->
 
 ## 与 ACP / MCP / LLM 的接线
@@ -128,7 +128,10 @@ v1 只收四种栅格格式（PNG/JPEG/WebP/GIF）。取舍是：`mediaType` 一
 - **MCP client**：把工具结果里的图片结果投影成 durable 引用，同样复用 `isImageAdmissionError` 做错误分类（[packages/mcp/mcp-client/src/tools.ts:462-484]()）。
 <!-- anchor: let attachments: AttachmentStore … return projectContent(content, toolName, block => ({ -->
 <!-- anchor: const refs = await attachments.saveImages(decoded) … const reason = isImageAdmissionError(error) -->
-- **LLM adapter**：pi-ai 在“批含图时才 lazily resolve 附件服务”，并且**模型不支持图则整体拒绝**——`contentHasImage` 探到一个图就抛 `UNSUPPORTED_CONTENT`，绝不把图静默降级成文本（[packages/llm/llm-pi-ai/src/adapter.ts:307-320]()）。DeepSeek 的 chat-completions 路由则显式声明 text-only，让未知模型也走"图会被拒绝"的负路径，而非悄悄吞掉（[packages/llm/llm-deepseek/src/adapter.ts:184-194]()）。
+- **LLM adapter**：pi-ai 在"批含图时才 lazily resolve 附件服务"，并且**模型不支持图则整体拒绝**——`contentHasImage` 探到一个图就抛 `UNSUPPORTED_CONTENT`，绝不把图静默降级成文本（[packages/llm/llm-pi-ai/src/adapter.ts:307-320]()）。
+
+> **演进说明（rc.8）**：DeepSeek 官方 adapter 也加入多模态——非纯文本，而是"按模型声明 `inputModalities`（含 `image`）+ 必须存在附件服务"两个条件都满足时才走图像路径；请求含图时经 `serializeRequestWithImages` 把 durable ref 解析为有序 data-URL 段，且同样有 `maxRequestImageBytes` 载荷上限（[packages/llm/llm-deepseek/src/serialize.ts:361-365]()、`…/adapter.ts:235-248`）。deepseek 与 pi-ai 共享同一 `offloadRequestImages`（把最老图像换成确定文本兜底 413），图像能力位校验由此前的"DeepSeek 恒 text-only、pi-ai 收图"演进为两家都收。
+<!-- anchor: export async function serializeRequestWithImages( … ): Promise<WireRequest> { -->
 <!-- anchor: const containsImage = options.messages.some(message => contentHasImage(message.content)) … : await toPiContext(options, attachments, onReplayDegrade) -->
 <!-- anchor: const contextWindow = configured?.contextWindow … context: { contextWindow }, -->
 
@@ -140,8 +143,8 @@ v1 只收四种栅格格式（PNG/JPEG/WebP/GIF）。取舍是：`mediaType` 一
 <!-- anchor: - Retention and garbage collection are deferred because resumed and forked sessions may share immutable objects. … - Retention and garbage collection are deferred because resumed and forked sessions may share immutable objects. -->
 - **通用文件 / 音频 / 视频 / 未发送草稿**：各自需要独立生命周期与 provider 契约，v1 不做（[packages/attachment/attachment/README.md:21-21]()）。
 <!-- anchor: - Generic files, audio, video, and persistent unsent drafts require separate lifecycle and provider contracts. … - Generic files, audio, video, and persistent unsent drafts require separate lifecycle and provider contracts. -->
-- **配置化限制**：单图字节默认 5 MiB、单消息 20 张、单消息聚合 100 MiB、单图 4000 万像素，均可经 `LocalAttachmentStore.Config` 调（[packages/attachment/attachment-local/src/index.ts:15-21]()、[packages/attachment/attachment-local/src/index.ts:41-44]()）——四类上限正好对应 `saveImages` 的先验阶段。
-<!-- anchor: export const DEFAULT_MAX_IMAGE_BYTES = 5 * 1024 * 1024 … export const DEFAULT_MAX_IMAGE_PIXELS = 40_000_000 -->
+- **配置化限制（rc.8 新增一条 + 收窄一档）**：五类上限（`saveImages` 先验阶段逐一校验）——单图字节默认 **3.5 MiB**（rc.8 自 5 MiB 下调）、单消息 20 张、单消息聚合 100 MiB、单图 4000 万像素、**单图边长 `maxImageDimension=2000px`（rc.8 新增）**，均可经 `LocalAttachmentStore.Config` 调（[packages/attachment/attachment-local/src/index.ts:14-28]()、[packages/attachment/attachment-local/src/index.ts:50-54]()）。新增的 `maxImageDimension` 使"admission 拒绝"与"模型路由拒绝"落在同一条线：长会话里每张已 admission 的图都随每个后续请求走一遍，边长超标会导致整个会话请求被拒，故在 admission 时一并拒绝以保 durable 历史可流式。
+<!-- anchor: export const DEFAULT_MAX_IMAGE_BYTES = 3.5 * 1024 * 1024 … export const DEFAULT_MAX_IMAGE_DIMENSION = 2000 -->
 <!-- anchor: maxImageBytes: z.number().step(1).min(1).default(DEFAULT_MAX_IMAGE_BYTES), … maxImagePixels: z.number().step(1).min(1).default(DEFAULT_MAX_IMAGE_PIXELS), -->
 - `readImage` 支持 `AbortSignal` 取消，且在取消时保留"取消原由"而非翻译成存储失败（[packages/attachment/attachment/src/index.ts:90-90]()）——与 [llm.md](llm.md) 的 `ABORTED` 与 `TIMEOUT` 区别同理。
 <!-- anchor: abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment> … abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment> -->

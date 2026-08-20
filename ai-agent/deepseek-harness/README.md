@@ -2,7 +2,7 @@
 
 > 本解读按 **ai-agent ⊗ framework** 类规格产出（ai-agent 主类型 + framework 副类型叠加，因 dsh 向插件作者开放 SDK/扩展接口）。判定依据：README 自述「agent harness / everything is a plugin」+ 顶层 `packages/*/` 插件式扩展接口 + vendored Cordis 插件运行时。由 DeepSeek AI 开源。
 >
-> **本版增量更新（rc.7 / 2026-08）**：在既有架构解读基础上，新增「持久化附件能力面」（[attachments.md](attachments.md)）——`ctx.attachments` 不可变内容寻址对象库，为 `image` 块补齐 Durable 字节支撑；并同步了 [llm.md](llm.md)、[data-model.md](data-model.md) 的相关接线。依据上游 0.1.0-rc.7 代码快照比对（项目无官方 changelog）。
+> **本版增量更新（rc.8 / 2026-08）**：相较上一版（rc.7），主要变更集中在三处：(1) **SQLite 持久化后端重写为 Schema 17 打包物理行**——连续 `assistant/chunk` 被 `packChunkRuns` 压缩成 `*-chunks` 存储行、provenance 以 varint/ZigZag 编码、大 payload 以 zstd 压为 BLOB、`SCHEMA_VERSION` 15→17（见 [data-model.md](data-model.md)、[session.md](session.md)）；(2) **DeepSeek 官方 adapter 支持多模态**——按模型声明 `inputModalities` + `serializeRequestWithImages` 解析 durable ref，CoT passback 收紧为每个 reasoning turn 都回传（见 [llm.md](llm.md)、[attachments.md](attachments.md)）；(3) **新增 Agent Teams 协调域**（`packages/experimental/agent-team`，服务键 `ctx.agentTeams`）——隐式根的 Lead/teammate 队形 + durable 邮件队列 + 版本化任务板，全部以 Lead Session 的 `team/*` log-only 事件承载（[agent-teams.md](agent-teams.md)）。依据上游 0.1.0-rc.7→rc.8 git diff 比对（项目无官方 changelog）。
 
 ## 根因：没有特权内核的 agent harness
 
@@ -29,10 +29,11 @@ DeepSeek Harness（`dsh`）是一个 TypeScript 编写的 agent harness（智能
 | 系统提示词组装 | 插件 section 按 order 排序拼装 + tool-schema 并入 | [system-prompt.md](system-prompt.md) |
 | 沙箱 + 可交换后端 | 六族 capability seam + Landlock 原生沙箱 + E2B 级联迁移 | [sandbox-capability-seams.md](sandbox-capability-seams.md) |
 | 多 Agent / Subagent | 统一接口下 spawn/fork/ACP/Claude Code 多 transport 委派 | [subagent.md](subagent.md) |
+| Agent Teams 协调域 | 隐式根 Lead + 持久邮件队列 + 版本化任务板（实验面） | [agent-teams.md](agent-teams.md) |
 | 技能体系 + MCP | 外部指令注入与外部工具桥接 | [skill-mcp.md](skill-mcp.md) |
 | LLM 适配器 seam | 消息/流式词汇 + 多 provider 路由注册表 | [llm.md](llm.md) |
 | 上下文管理与压缩 | compaction capability seam + token 预算 | [memory-compaction.md](memory-compaction.md) |
-| 持久化数据模型 | JSONL/SQLite 双后端、schema「不迁移只拒绝」 | [data-model.md](data-model.md) |
+| 持久化数据模型 | JSONL/SQLite 双后端（rc.8 SQLite Schema 17 打包物理行）、schema「不迁移只拒绝」 | [data-model.md](data-model.md) |
 | 部署形态 | profile/bundle/patch 分层、web/headless 双形态 | [deployment.md](deployment.md) |
 | 持久化附件 | 不可变内容寻址对象库 + `ImageAttachmentRef`、全量先验后写 | [attachments.md](attachments.md) |
 
@@ -108,6 +109,7 @@ graph TB
 | 系统提示词 | section 排序 + tool-schema 组装 | [`system-prompt.md`](system-prompt.md) |
 | 沙箱 + Capability Seam | 六族可交换后端 + Landlock | [`sandbox-capability-seams.md`](sandbox-capability-seams.md) |
 | 多 Agent | 统一接口多 transport 委派 | [`subagent.md`](subagent.md) |
+| Agent Teams | 隐式根 Lead/队友队形 + durable 邮件 + 版本化任务板（实验面） | [`agent-teams.md`](agent-teams.md) |
 | 技能 + MCP | 外部能力注入 | [`skill-mcp.md`](skill-mcp.md) |
 | LLM 能力层 | 词汇 + 适配器 seam | [`llm.md`](llm.md) |
 | 上下文与压缩 | compaction + token 预算 | [`memory-compaction.md`](memory-compaction.md) |
@@ -128,6 +130,7 @@ graph TB
 - [`system-prompt.md`](system-prompt.md) — 系统提示词与工具 schema 组装
 - [`sandbox-capability-seams.md`](sandbox-capability-seams.md) — 沙箱与六族可交换后端 + Landlock
 - [`subagent.md`](subagent.md) — 多 agent / subagent 多 transport 委派
+- [`agent-teams.md`](agent-teams.md) — Agent Teams 协调域（隐式根队形 + durable 邮件 + 版本化任务板，实验面 | rc.8 新增）
 - [`skill-mcp.md`](skill-mcp.md) — 技能体系 + MCP 外部能力接入
 - [`llm.md`](llm.md) — LLM 消息/流式词汇与适配器 seam
 - [`memory-compaction.md`](memory-compaction.md) — 上下文管理与自动压缩
@@ -142,6 +145,8 @@ graph TB
 - **分层 patch 组合**：profile/bundle/patch 把「发行、组合命名、覆盖行为」正交化，任何升级/换默认都退化为一个 patch，且 `--dump-config` 保证「看到的 = 跑起来的」。
 - **零特权拦截**：所有关键决策点（pre-step/request/request-error/turn-stopping、tools/*）都以 waterfall 事件开放，让插件在洋葱式 `next()` 委派下无优先级地参与——连主循环本身都可替换。
 - **坚持「可回放」优先于「方便」**：二进制图像也没能绕开唯一事实源——用不可变内容寻址对象库 + `ImageAttachmentRef` 引用而非 base64/URL，让 `Model-visible means logged` 从文本扩展到媒体（[attachments.md](attachments.md)）。
+- **把「协作」也变成可回放事件（rc.8）**：Agent Teams 把队形、邮件队列、任务板全部写成 Lead 日志里的 `team/*` log-only 事件，`foldTeam` 折叠重建——连"多 agent 一起干活"都不引入旁路可变状态（[agent-teams.md](agent-teams.md)）。
+- **存储效率与真相不可变不冲突（rc.8）**：SQLite 后端用打包物理行 + zstd + varint 压缩存储，仍严格还原逻辑 `SessionEvent[]`、seq 连续、`readFrom` 尾读语义不变——压缩的是物理布局，未放宽"日志即真相"（[data-model.md](data-model.md)）。
 
 ## 不足 / 风险
 
@@ -150,6 +155,8 @@ graph TB
 - **学习曲线**：三实体（profile/bundle/patch）与分层概念需要理解成本；不少 invariant companion 是空安装，正确性部分押在测试而非运行时自证。
 - **示例/工具集合覆盖**：本解读聚焦架构主干，`extensions/tool-*` 的每把工具 schema 未逐一展开。
 - **附件对象 GC deferred**：附件对象库尚无可达性 GC，恢复/分叉共享不可变对象会留下不可达对象占磁盘；v1 仅收四种栅格格式（见 [attachments.md](attachments.md)「演进与未完成」）。
+- **Agent Teams 尚属实验面（rc.8）**：包名带 `experimental-` 前缀、服务键 `agentTeams`，协调吞吐受日志写速限制，且不保证跨进程 exactly-once 邮件投递（见 [agent-teams.md](agent-teams.md)）。
+- **SQLite 打包是 timing 依赖 + 仅本地 codec（rc.8）**：打包率依赖 write-behind 窗口边界，统一关系库多后端设计仍 deferred，pre-release 不保证 schema/codec 稳定（见 [data-model.md](data-model.md)）。
 
 ## 同类对比
 

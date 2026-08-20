@@ -65,6 +65,8 @@ DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个�
   -->
 
 > **演进说明（rc.7）**：五类基础块中的 `image` 不再是孤立的"词汇枚举"——rc.7 为它补上了持久化支撑：`image` 块携带 `attachment` 引用（`ImageAttachmentRef`），字节落盘在 durable attachment 服务而非内联 base64。判定"一段内容是否含图"由统一的递归 `contentHasImage` 承担（它会走进嵌套的 `tool-result`），LLM adapter 借此在组装前决定是否拒绝不支持图的模型。整块能力面拆到 [attachments.md](attachments.md) 讲透。
+>
+> **演进说明（rc.8）**：DeepSeek 官方 adapter 从纯文本升级为**按模型多模态**——每个 catalog model 可声明 `inputModalities`（含 `'image'`），adapter 在请求含图时经 `resolveAttachments()` 把 durable ref 解析成有序 data-URL 段（`serializeRequestWithImages`），并且同样受 `maxRequestImageBytes` 载荷上限约束；模型未声明图像模态或附件服务缺席时仍以 `UNSUPPORTED_CONTENT` 拒绝（[packages/llm/llm-deepseek/src/serialize.ts:361-365]()、`…/adapter.ts:235-248`）。至此多模态由 pi-ai 一家扩到 DeepSeek 系。
 
 - 不可变性是"重建性"的载体：`createMessage` 给每条新消息打上 `MessageId(crypto.randomUUID())` 后 `deepFreeze(structuredClone(...))` 冻结；`LlmRuntime.prepareCall` 也 `deepFreeze(structuredClone(config))`。冻结使会话日志与请求输入成为一个纯函数关系（日志即请求，请求即日志），中间无可变状态漂移。
 
@@ -86,7 +88,7 @@ DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个�
   const assembler = new BlockAssembler()
   const chunkSeqs: number[] = []
   -->
-  `[packages/core/agent-loop/src/agent.ts:373-380]()` 组装经 source 回原始 provider
+  `[packages/core/agent-loop/src/agent.ts:392-399]()` 组装经 source 回原始 provider
   <!-- anchor:
   const message = createAssistantMessage({
     content: assembler.blocks(),
@@ -140,6 +142,8 @@ DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个�
   -->
 
 **Provider（`llm-deepseek` / `llm-pi-ai`）**：实现方把 provider 专有细节锁在包内。DeepSeek 是"direct fetch + SSE"实现，模块分职责：`serialize.ts`（h→wire）、`sse.ts`（字节→data payload）、`translate.ts`（wire→StreamChunk）、`adapter.ts`（组装 + 传输边界）——呼应 cookbook 要求的"wire types / serialization / parsing / translation / adapter 分离"。这是"seam 的内侧"，内核不知晓任何 wire 拼写。
+
+> **演进说明（rc.8）**：`serializeAssistant` 的 CoT passback 规则收紧——此前只在 tool-call turn 回传 `reasoning_content` 以省 token（官方规则说 plain turn 忽略它），rc.8 改为**任何含 reasoning 的 turn 都回传**：官方网关可能把会话转码给其他 vendor，token 精确的思考签名只在这段 `reasoning_content` 里、纯文本消息无处承载（[packages/llm/llm-deepseek/src/serialize.ts:184-194]()）。这是"省 token"与"上游思考签名可哈希回放"之间的一次取舍，倾向了后者。
 
 **Consumer（`agent-loop`）**：唯一消费抽象。`buildRequest` 用 `prepareCall`（绑定一次 adapter registration 贯穿能力解析/日志/dispatch，防 HMR 混用），`stream()` 走 waterfall；必要时回退 `ctx.llm.stream`（middleware 可接管未注册路由）。`loadContext`/`assemble` 之后把组装消息连同 provider/model source 与 replayState 写回 session log。
 
@@ -247,7 +251,7 @@ flowchart TD
 - **closed union + 位置不变式**：`order/push` 后 `assertNever`；usage 必须在 finish 前且只出现一次、finish 后不能再有 chunk、除非 error/aborted 否则 finish 时不能还有 open block——这些由 invariant 插件在 `llm/stream` 外面（prepend）逐 chunk 校验。它把协议文法变成运行时可验证的强约束，而不是只靠类型。
 - 好处：任一 provider 的"流式差异"（提前 flush 的 usage-only、[DONE] 前的空 reasoning 首帧）都在 adapter 内磨平，内核词汇保持稳定。
 
-  `[packages/llm/llm/src/types.ts:283-303]()` StreamChunk 联合
+  `[packages/llm/llm/src/types.ts:305-325]()` StreamChunk 联合
   <!-- anchor:
    * Raw streaming protocol emitted by adapters.
    * Block indexes correlate interleaved deltas, and `block-end` carries the
@@ -284,12 +288,12 @@ flowchart TD
   private prepareRoutes(providers: string[], adapter: LlmAdapter, owned: ReadonlySet<string>): AdapterRegistration[] {
     const unique = new Set<string>()
   -->
-  `[packages/llm/llm-pi-ai/src/index.ts:262-272]()` 动态路由集原子替换（或不注册）
+  `[packages/llm/llm-pi-ai/src/index.ts:268-278]()` 动态路由集原子替换（或不注册）
   <!-- anchor:
   const routes = [...profiles().keys()]
     if (registration === undefined) {
   -->
-  `[packages/llm/llm-pi-ai/src/adapter.ts:199-206]()` 按 profiles 身份 memoize 快照
+  `[packages/llm/llm-pi-ai/src/adapter.ts:204-211]()` 按 profiles 身份 memoize 快照
   <!-- anchor:
   private current(): PiAiSnapshot {
     const profiles = this.config.profiles()
@@ -322,7 +326,7 @@ flowchart TD
   export class HarnessError extends Error {
     /** Stable machine-routable failure class (e.g. `RATE_LIMIT`); route on this, never by parsing `message`. */
   -->
-  `[packages/llm/llm-deepseek/src/adapter.ts:227-227]()` 每次改流的 idle 看门狗
+  `[packages/llm/llm-deepseek/src/adapter.ts:259-259]()` 每次改流的 idle 看门狗
   <!-- anchor:
   using watchdog = idleWatchdog(upstream, connection.streamIdleTimeoutMs, STREAM_IDLE_TIMEOUT_CODE)
   -->
@@ -336,7 +340,7 @@ flowchart TD
       agent.session.append('llm/retry', eventData)
     if (!await cancellableDelay(delayMs, fusedSignal)) return
   -->
-  `[packages/core/agent-loop/src/agent.ts:354-371]()` consumer 驱动恢复
+  `[packages/core/agent-loop/src/agent.ts:373-390]()` consumer 驱动恢复
   <!-- anchor:
   if (finish.kind === 'error' || finish.kind === 'aborted') {
     const action = await this.dispatch.waterfall(

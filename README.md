@@ -208,7 +208,7 @@ graph TB
 | 项目 | 语言 | 说明 | 协议 | 仓库 |
 |------|------|------|------|------|
 | [Mem0](ai-infra/mem0/) | Python+TS | AI Agent 智能记忆层：V3 ADD-only 记忆管线 + 多信号检索（语义+BM25+实体），四类 Provider 插件体系，双模式部署 + MCP | Apache-2.0 | [GitHub](https://github.com/mem0ai/mem0) |
-| [New API](ai-infra/new-api/) | Go | 统一 AI API 网关，聚合 40+ AI 供应商，提供统一接口、计费、权限管理 | AGPL-3.0 | [GitHub](https://github.com/QuantumNous/new-api) |
+| [New API](ai-infra/new-api/) | Go+React | 统一 AI API 网关与资产管理：四协议互转独立 relaykit 转换层，40+ 供应商适配器 + 渠道分发，预扣/结算/退款计费，SQLite/MySQL/PG 三库 | AGPL-3.0 | [GitHub](https://github.com/QuantumNous/new-api) |
 | [DeepEval](ai-infra/deepeval/) | Python | LLM 评测框架（类似 pytest）：50+ Metric + LLM-as-Judge schema 判官协议，GEval/DAG 双判官，Synthesizer 造数据，@observe 非侵入 OTel 追踪，pytest 插件进 CI | Apache-2.0 | [GitHub](https://github.com/confident-ai/deepeval) |
 | [darwin-skill](ai-infra/darwin-skill/) | Markdown(Agent Skill) | Agent Skill 自主优化器：9 维评分 rubric + paired 同-judge 多数决棘轮 + human-in-the-loop 三层守关，基于 autoresearch + 微软 SkillLens/SkillOpt | MIT | [GitHub](https://github.com/alchaincyf/darwin-skill) |
 

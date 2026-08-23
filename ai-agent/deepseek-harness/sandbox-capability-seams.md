@@ -326,6 +326,9 @@ flowchart LR
 
 5. **escalation 提权语义**。严格更宽在**执行时**对 per-call effective mode 检查而非 schema 约束（`escalation.ts:159-163`）；非更宽请求**不惊动用户**。`approveEscalation` 走 `ctx.approval.request`（结构闭包），把「批准」与「沙箱」解耦——bash 与 fs 共用同一提权词汇，拒绝/取消/不可用各自有确定错误文本（`:183-186`）。权衡：把"提权"从工具逻辑里抽出来放进共享模块，两端（`tool-bash`/`tool-fs`）的逐字错误不会漂移（`escalation.ts:4-8`）。
 
+6. **bwrap 加 PID 命名空间隔离（rc.1）**。bwrap profile 新增 `--unshare-pid --proc /proc --die-with-parent`（[packages/sandbox/sandbox-local/src/profiles.ts:17-17]()）：把沙箱进程放进**独立 PID 命名空间**，修复"process 根逃逸"（沙箱内进程可见主机的 process 树根）。这是一次安全加固而非新能力——在不破坏既有 `SandboxMode` 词汇与 `--ro-bind`/`--dev` 语义的前提下，把可见进程范围进一步收窄；`--die-with-parent` 保证父进程退出时沙箱进程树随之消亡，避免孤儿进程残留在共享主机 PID 空间。取舍：PID ns 让沙箱内 `ps` 只见自己的进程树（与调试/工具预期一致），但对需要观察主机进程的少数工具是约束。
+<!-- anchor:   const args = ['--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent'] …   const args = ['--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent'] -->
+
 ## 全局关联：隔离是可交换哲学最硬核的考验
 
 沙箱是 dsh 最硬核考验「一切皆插件」的地方——因为它要同时实现对执行权的隔离、又保持后可交换。Capability Seam 三件套 + 「同一执行世界」共享 + `sandboxPolicy` 唯一所有者在策略面落点，使一次 `resolvePolicy` 六族同效、切远端 E2B 整族级联迁移而无 provider 分叉；Landlock 原生 C11 + musl 把进程级隔离的自定义面压到单文件。`platform.chains`（bwrap/landlock/seatbelt/windows-acl）证明隔离语义不是绑定某个 runner，而是对同一 `SandboxMode` 词汇的方言——这份「隔离可移植」的坚持，正是它能在 subagent（委派跨能力边界）与 tools（受控执行）两层同时成立的根本原因。

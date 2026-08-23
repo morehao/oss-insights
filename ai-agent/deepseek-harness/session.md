@@ -131,6 +131,16 @@ type SurfaceOp = 'append' | { op: 'replace'; start: number; end: number }
 - `SessionProjectionMap`——全链投影类型表，声明合并扩展（`[packages/session/session-projection/src/types.ts:17-17]()`）；`ProjectionCheckpointRow = (ver, seq, val)` 是持久化投影缓存的折叠捷径（`[packages/session/session-projection/src/index.ts:108-115]()`）。
 - `SessionTelemetryRecord`——ledger/ops 双通道：ledger 逐条镜像 session 事件，ops 承载无日志归属信号（`agent-error`/`shutdown`）（`[packages/session/session-telemetry/src/index.ts:64-87]()`）。ledger 镜像 `event.data` 深拷贝（`coordinator.ts:191-202`）。
 
+> **演进说明（0.1.1-rc.1）**：session 投影数据通路在 rc.1 重写为「状态 / 客户端视图」两段式，并引入统一的跨 boot 快照——`ProjectionDefinition` 改为声明式纯 fold：`stateSchema` 校验 persisted 状态、可选的 `wire` 只负责"state → 客户端视图"（view/read-side 投影），`apply` 仍是"前态 + 一条已提交事件 → 后态"的纯迁移（[packages/session/session-projection/src/index.ts:42-82]()）。
+<!-- anchor: export interface ProjectionDefinition< …   stateVersion: number -->
+>
+> 三个关键语义：
+> - **host-only 单元**：不提供 `wire` 的定义即"状态不进客户端快照、仍照常 checkpoint"，由 `register()` 的双重载在类型层区分（有 `wire` / 无 `wire` 两条签名，见 [packages/session/session-projection/src/index.ts:211-222]()）。这使"主机私有状态"（如 subagent 的 timing/identity）不再泄漏到 wire 载荷，却仍参与持久化快照。
+> - **统一 checkpoint**：`checkpoint()` 给每个注册单元产一行 `{ver, seq, val}`，`val` 是 `structuredClone` 的 DETACHED 副本（绝不直接引用 live cell，防 corruption）；产物即持久化投影缓存的写侧（[packages/session/session-projection/src/index.ts:329-340]()）。
+> - **跨 boot 稳定快照**：`restoreFloor()` 从 checkpoint 算出一个"比最低可用 watermark 低一事件"的锚点 seq，失败或版本不符的 key 拉回 `0`（必须重折全量日志）——这个"低一事件"是 load-bearing 的，用来探测"日志被 crash-repair 截短到某行 watermark 之下"而不是拿陈旧行当现行（[packages/session/session-projection/src/index.ts:358-368]()）。
+>
+> 这是「[关键设计决策](session.md#关键设计决策)」里"日志派生投影"在持久化层的延伸：投影缓存从"任意派生"升级为"**带版本、可复用、崩溃安全**"的折叠捷径——缓存行只是折叠捷径、永不经手真实 cell 引用，`restore` 在版本不符或越界时一律丢弃重折。
+
 ---
 
 ## 核心流程

@@ -1,135 +1,73 @@
-# 自动化编排：Automation Server 契约、manifest 与触发运行
+# 自动化编排（Automations）
 
-> 本子文档深挖 Agent Canvas 的 automations 关注面。引用以 OpenHands Agent Canvas 仓库根为验证根。
+> 关注面子文档：OpenHands Agent Canvas 的自动化工坊——Automation Server 契约、manifest 安全收纳层、触发与 run 实时 phase。承接 README 主文档。
 
-## 定位：把"手动驱动 agent"升级成"自动触发 agent"
+## 根因
 
-README 把 automations 列为头条卖点："Create automations and workflows that integrate with Slack, GitHub, Linear, and more. Run on a schedule or in response to webhook events"。
+自动化的本质是**让 agent 运行不再依赖人盯着页面触发**：定时（cron）或事件（webhook）触发一次 agent 运行。困难在于"触发的 agent 运行怎么被编排、怎么监控、怎么安全地由外部包扩展"。Agent Canvas 把自动化做成了**宿主 + 外部 manifest**的解耦：宿主只做准入校验与派生行为，模板由已发布 npm 包下发。
 
-在边界上，**Agent Canvas 前端不执行自动化**——它通过 `AutomationService`（`src/api/automation-service/automation-service.api.ts`）与独立的 **Automation Server**（外部服务）通信，做的是：模板展示、创建/导入、触发配置、运行状态轮询与日志。契约类型集中在 `src/types/automation.ts`。
+## Automation Server 契约：哑客户端 + 中间人
 
-## 与 Automation Server 的契约
+前端对 Automation Server 是**哑客户端**：base path `/api/automation`，REST 端点路径由外部 interface manifest 声明（`getAutomationEndpoint`），本地走 sidecar、云端走 cloud proxy，鉴权用 `X-Session-API-Key` `[src/api/automation-service/automation-service.api.ts:50,274-301,428-443]()`。端点路径不写死，从 interface manifest 解析 + `{id}` 编码 `[src/manifests/automation-interface.ts:133-143]()`。
 
-所有请求 base path `/api/automation`（`automation-service.api.ts:40`），端点经 `automation-interface.ts` 的 `DEFAULT_ENDPOINTS` 解析（`:45-56`）。**双后端模型**：`getActiveBackend()` 区分——cloud 走 `callCloudProxy`，否则走本地 axios；本地实例的拦截器**动态**从 backend registry 取 host 与 `X-Session-API-Key`（`:73-101`）。核心方法：
+两端路由：本地经 `localAutomationAxios` 拦截器每次解析当前活跃后端并注入 header `[src/api/automation-service/automation-service.api.ts:83-111]()`；云端经 `callCloudProxy`（避免 gzip body 被 JSON 序列化破坏，upload 直连 host）`[src/api/automation-service/automation-service.api.ts:634-660]()`。
 
-| 方法 | 端点 | 用途 |
-|---|---|---|
-| `listAutomations`/`getAutomations` | `GET /v1` | 列表（分页 limit/offset） |
-| `getAutomation` | `GET /v1/{id}` | 详情 |
-| `createAutomation` | `POST /v1` | 导入用创建（先占位再 PATCH 成真实 trigger） |
-| `updateAutomation` | `PATCH /v1/{id}` | 更新 |
-| `deleteAutomation` | `DELETE /v1/{id}` | 删除 |
-| `dispatchAutomation` | `POST /v1/{id}/dispatch` | 立即运行 |
-| `cancelAutomationRun` | `POST /v1/runs/{runId}/cancel` | 取消 |
-| `listAutomationRuns` | `GET /v1/{id}/runs` | 运行历史 |
-| `downloadTarball` | `GET /v1/{id}/tarball` | 导出 tar（自动化可移植包） |
-| `getCapabilities` | `GET /v1/capabilities` | 能力发现 |
-| `validateDraft` | `POST /v1/validate` | 草稿校验 |
-| `createAutomationDraft` | `POST /v1/preset/prompt` | 直接创建（assisted 模式） |
-| `checkHealth` | `GET /health` | 5s 超时健康检查 |
+## manifest 安全收纳层：外部包 → 宿主校验 → 派生行为
 
-## 触发模型：为什么 `type` 故意用 string
+manifest 是**外部仓库（`@openhands/extensions`）声明的指令数据**，宿主不信任它，把"准入校验"当**信任边界**而非便捷检查——不 defer 给随包 schema，而是宿主自持校验规则。
 
-这是最体现沟通成本的一个设计。`AutomationTrigger.type` 注释直白说明了**不用封闭联合**的原因——后端会发多个 schedule 别名（cron/schedule），且可能引入新 kind，如果前端用枚举，后端一发新值就崩：
-
-```ts
-  /**
-   * Trigger kind. Known values are the schedule aliases "cron" / "schedule"
-   * (time-based) and "event" (webhook/event-driven). Kept as `string` rather
-   * than a closed union on purpose: the backend emits more than one
-   * scheduled-trigger alias and may introduce new kinds, so UI code branches
-   * on `type === "event"` and treats every other value as a schedule.
-   */
-  type: string;
-```
-`[src/types/automation.ts:3-9]()` — 触发类型故意不用封闭联合，后端可自由加别名，UI 只把 type==="event" 当事件、其余当 schedule
-<!-- snippet:    * Trigger kind. Known values are the schedule aliases "cron" / "schedule"
-   * (time-based) and "event" (webhook/event-driven). Kept as `string` rather
-   * than a closed union on purpose: the backend emits more than one
-   * scheduled-trigger alias and may introduce new kinds, so UI code branches
-   * on `type === "event"` and treats every other value as a schedule.
-   */
-  type: string; -->
-
-由此派生出判断逻辑：`automation-insights.ts:166-168` 的 `TRIGGER_PREDICATES.event = (a) => a.trigger.type === "event"`，schedule 即取反。**一条"未来鲁棒"的契约决策，避免了与后端枚举同步的反复崩溃**。
-
-事件触发带两种能力：`on`（event key 模式如 `"pull_request.opened"`/`["push","release.*"]`）与 `filter`（JMESPath 表达式对原始 webhook payload 过滤）。Schedule 触发则含 `schedule`/`schedule_human`/`timezone`。
-
-## 扩展 manifest 作为"安全收纳层"
-
-automation 模板（catalog）与承载 UI（interface manifest）**不在仓库内**，而是由已发布 npm 包 `@openhands/extensions` 下发。宿主的关键设计是 **admission = trust boundary**：把 catalog 当作 `unknown` 传入并校验，而非信任随包声明的类型：
-
-```ts
-/**
- * The catalog is passed as `unknown[]` on purpose: admission is a trust
- * boundary, so the host validates the published data rather than trusting the
- * types that shipped beside it.
- */
-
-import * as automationsModule from "@openhands/extensions/automations";
-import { AUTOMATION_CATALOG } from "@openhands/extensions/automations";
-import { createSetupRegistry, type SetupRegistry } from "./manifest-registry";
-
-export const SETUP_REGISTRY: SetupRegistry = createSetupRegistry(
-  AUTOMATION_CATALOG as readonly unknown[],
-);
-```
-`[src/manifests/manifest-sources.ts:9-20]()` — 外部包给模板，宿主以 unknown 接收并自校验，不信任随包类型，作为准入信任边界
-<!-- snippet:  * The catalog is passed as `unknown[]` on purpose: admission is a trust
- * boundary, so the host validates the published data rather than trusting the
- * types that shipped beside it.
- */
-
-import * as automationsModule from "@openhands/extensions/automations";
-import { AUTOMATION_CATALOG } from "@openhands/extensions/automations";
-import { createSetupRegistry, type SetupRegistry } from "./manifest-registry";
-
-export const SETUP_REGISTRY: SetupRegistry = createSetupRegistry(
-  AUTOMATION_CATALOG as readonly unknown[],
-); -->
-
-`manifest-registry.ts` 扫描 catalog、校验 setup block，遗漏即丢弃（`:19-52`）。整套 `src/manifests/` 做的是"外部声明式数据 → 宿主可执行逻辑"的派生：schema 校验、表单字段收集、错误映射、路由/端点/导入导出 envelope 的唯一来源。这让**可插拔 UI 不失控**——模板来自外部，但行为由宿主掌控。
-
-## 触发方式的前端呈现：schedule vs event
-
-- **详情配置区** `detail/configuration-section.tsx`：非 event 显示 `TRIGGER_SCHEDULE` + `CalendarIcon` 与 `schedule_human`+timezone 文案（`:59-64,95-102`）；event 显示 source、on、可展开的 JMESPath filter（`:104-129`）。
-- **编辑弹窗** `edit-automation-modal.tsx`：event 只读展示 source/on/filter（`:386-426`）；schedule 用封装的频次选择器（daily/weekdays/weekly/custom），通过 `parseCronSchedule`/`buildCronSchedule`（`src/utils/automation-schedule.ts:33-107`）在 cron 表达式与可视化控件间双向转换。
-
-## 运行状态：条件轮询 + 健康度派生
-
-运行状态由 `AutomationRunStatus` 枚举驱动（`automation.ts:66-73`：PENDING/RUNNING/COMPLETED/FAILED/CANCELLED/SKIPPED，对齐服务端 OpenAPI）。**轮询是条件触发的**——只在存在非终止 run 时高频轮询，避免永远空转：
-
-- 详情页 `useAutomationRuns`（`use-automation-detail.ts:40-66`）：检查最近页是否有 `PENDING || RUNNING`（`:56-65`），有则每 **3s** 轮询；
-- 首页多自动化扇出 `useLatestAutomationRuns`（`:40-93`）：每启用自动化一条查询，每 **15s** 轮询一次；
-- 健康度派生 `deriveAutomationHealth`（`automation-insights.ts:108-126`）：disabled → never-run → failing → running → healthy 五档。
-
-run 日志通过 `run.bash_command_id` + `conversation_url/session_api_key` 调 `BashService.listOutputs`（`run-logs-modal.tsx` → `use-bash-command-logs.ts:117-207`）。
-
-## 创建数据流（含经典"新建即失败回滚"）
-
-`createAutomation`（`:310-378`）是导入场景：先 POST 一个**占位 event trigger** 拿到 id，再 PATCH 成真实 trigger + `enabled:false`，任一步失败则 DELETE 回滚。这保证"导入的自动化不会带着错误 trigger 意外启用"。
+- **来源**：catalog 作为 `unknown[]` 传入（故意不信同包类型）`[src/manifests/manifest-sources.ts:18-20]()`
+- **收纳（registry）**：逐候选先 `hasSetupBlock` 再 `validateSetupEntry`，失败 `console.warn` 后**整体丢弃**（不渲染半成品），重复 id 也拒 `[src/manifests/manifest-registry.ts:25-46]()`
+- **准入校验**：`setup.version` 必须精确等于宿主 `SETUP_VERSION`，否则 fail-closed（不认识就拒而非照今天规则乱解）`[src/manifests/manifest-validation.ts:576-592]()`
+- **关闭集白名单**：命令只许安全字符且逐词禁绝对路径/`..`（防逃出解压目录）`[src/manifests/manifest-validation.ts:165-178]()`；字段名、trigger 单种、repo-picker 事件源、占位符只许已知 namespace、copy 禁 markup `[src/manifests/manifest-validation.ts:25-49]()`
+- **派生行为**：请求体完全由主/表单推导（name、trigger、repos、prompt），条目只声明"差异"，镜像 `extensions` 侧 reference 实现 `[src/manifests/automation-setup.ts:185-347]()`
+- **template provenance（本版新增）**：创建时把 `{id, version, config}` 作为 `template` 发送，服务端识别"同一条目再次 setup"复用已有 automation；prompt 条目取顶部 `version`，bundle 条目取 `setup.bundle.version` `[src/manifests/automation-setup.ts:236-246,314-318]()`
 
 ```mermaid
 sequenceDiagram
-    participant UI as 自动化 UI
-    participant Man as manifests
-    participant Svc as AutomationService
-    participant SRV as Automation Server
-    participant Agent as Agent Server
-    UI->>Man: 读取 AUTOMATION_CATALOG
-    Man-->>UI: RecommendedAutomation 模板
-    UI->>Svc: create/dispatch (回滚保护)
-    Svc->>SRV: /v1/{id}?dispatch
-    SRV-->>Agent: 触发 agent run
-    SRV-->>Svc: runs 状态
-    Svc-->>UI: 条件轮询(3s/15s)
-    UI->>Svc: listOutputs 拉日志
+    participant Ext as "extensions 包(catalog)"
+    participant Reg as manifest-registry
+    participant Val as manifest-validation
+    participant U as UI/表单
+    Ext-->>Reg: AUTOMATION_CATALOG unknown[]
+    Reg->>Val: 逐候选校验 hasSetupBlock
+    alt schema 校验失败 / 重复 id
+        Val-->>Reg: console.warn → 整体丢弃
+    else 通过
+        Val-->>Reg: setup.version 精确匹配
+        Reg-->>U: 干净条目
+        U->>U: 表单推导请求体字段
+        U-->>Server: 创建含 template={id,v}
+    end
 ```
 
-## 权衡与总结
+## 触发与运行状态机
 
-- **catalog 外部化 vs 版本耦合**：模板由 npm 包发布，宿主做准入而非信任，灵活但高度耦合 `@openhands/extensions` 版本，升级可能破坏承载 UI。
-- **string 而非枚举**：优先向后端演进友好，代价是丢失前端类型安全。
-- **条件轮询**：用"有活 pending 才高频轮询"平衡实时性与后台开销。
+### run ENUM 状态机 + 可实时更新的 phase
 
-核心哲学：**把自动化的"定义、校验、触发、监控"分层各司其职**——外部包提供描述，宿主提供契约与 UI，后端提供执行，前端不做任何执行逻辑，只做编排和呈现。
+run 表面是 ENUM `PENDING/RUNNING/COMPLETED/FAILED/CANCELLED/SKIPPED`，叠加一层**可实时更新的 phase**（code+label+updated_at，服务端可逐步写入）`[src/types/automation.ts:66-73,99-113]()`。
+
+**"该不该展示 phase"派生**：只有 `PENDING/RUNNING/FAILED` 值得展示（完成/取消/跳过没内容）`[src/components/features/automations/detail/run-phase.tsx:17-25]()`。**"该不该展示 age"**：只有仍在途的才展示 age，age 唯一作用是分离"在跑 vs 卡住"；失败态显示 age 会退化成第二时间戳 `[src/components/features/automations/detail/run-phase.tsx:35-42]()`。
+
+**phase→文本唯一入口**：已知 code 走翻译表（queued/sandbox_provisioning/...），未知 code 用作者 label、再兜底 raw code；用 `Object.hasOwn` 防 `toString` 原型污染 `[src/components/features/automations/detail/run-phase.tsx:65-102]()`。
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> RUNNING: dispatch 接受
+    RUNNING --> RUNNING: phase_code 实时更新
+    RUNNING --> COMPLETED
+    RUNNING --> FAILED
+    RUNNING --> CANCELLED: 用户 cancel
+    PENDING --> SKIPPED
+    FAILED --> COMPLETED: (可恢复?)
+    COMPLETED --> [*]
+```
+
+### 健康度派生
+
+`checkHealth()` 5s 超时 fail-fast `[src/api/automation-service/automation-service.api.ts:762-787]()`；`useAutomationHealth` 30s stale、失败不重试（立即展示错误态）`[src/hooks/query/use-automation-health.ts:7-14]()`；`automations-list` 先 gate health 再拉 automation 列表——`isBackendHealthy` 为 false 就跳 `BackendNotConfigured` 而非拉列表 `[src/routes/automations-list.tsx:131-133,350-358]()`。
+
+## 全局关联与权衡
+
+自动化的编排哲学是"**宿主只编排、模板只声明差异、服务端保持续**"：请求体完全由当前表单推导，manifest 条目只声明与基准的差异 + template provenance 指纹（id/version），使服务端能识别"同一模板再次安装"并复用，避免重复创建。这与控制面"隔离不确定性"同源：前端不解析执行细节，只做准入校验、派生行为和 run phase 呈现；真正执行是 Automation Server + agent-server 的事。代价是对已发布 manifest 结构高度耦合，包升级可能破坏承载 UI。

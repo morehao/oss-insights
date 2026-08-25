@@ -1,122 +1,159 @@
-# 多后端控制平面：Backend Registry 与 ACP/OpenHands 抽象
+# 多后端控制面（Backend Control Plane）
 
-> 本子文档深挖 Agent Canvas 的"多后端"关注面。所有引用以 OpenHands Agent Canvas 仓库根为验证根。
+> 关注面子文档：OpenHands Agent Canvas 如何把多个 local/cloud/remote/ACP 后端统一成一套管理界面。承接 README 主文档；核心链路命中强制图位均以 Mermaid 承载。
 
-## 为什么需要"控制平面"
+## 根因
 
-Agent Canvas 的核心卖点（README 自述）："Run OpenHands, Claude Code, Codex, Gemini, or any ACP-compatible agent across local, remote, and cloud backends"，并能"switch between local, remote, and cloud agents without losing focus"。要做到这一点，前端必须有**一层独立于 UI 的后端状态机**：它要知道有哪些后端、哪个是 active、各自健康与否、以及当 active 是 cloud 时不能误用某个 local 后端的协议。
+多后端的本质困难不是"连接多个服务器"，而是**在不重写页面的前提下，让整套 UI 的状态与缓存跟着当前后端走**。Agent Canvas 的解法是把"当前是哪台后端"抽象成唯一全局状态，并用 **query key 掺入后端身份标识**让 React Query 在切换时自动重建缓存——这是整个控制面的心脏。
 
-这一层被独立成 `src/api/backend-registry/`——**自定义订阅 store**（不是 Zustand），选它是因为它几乎被所有模块读取（service 层也要用），不能依赖 React 组件链。
+## 后端类型模型：三轴合一
 
-## 后端模型与状态机
+底层 `BackendKind` 只有 `"local" | "cloud"` 两种 `[src/api/backend-registry/types.ts:1]()`，不存在独立的 `remote` 枚举。所谓 remote 后端是"kind 仍为 local、但 host 被编辑成远程地址"的变体；ACP 也不是 Backend 上的区分，而是 conversation 的 `agent_kind` 决定。
 
-### Backend 类型
+**三轴合一**：
+- **kind**（通道/协议）= `local | cloud`
+- **host**（连哪里）= 可指向远程
+- **authMode**（如何鉴权）= `"api-key" | "cookie"` `[src/api/backend-registry/types.ts:2]()`
 
-`src/api/backend-registry/types.ts:4` 定义 `Backend`（`id/name/host/apiKey/kind/authMode/connectionRevision`），`kind: "local" | "cloud"` 拉开两类后端。`connectionRevision` 用于 host/apiKey 变更时让下游连接层感知需要重建。
+关键洞见：`default-local` 后端的 host 可被编辑成 remote，但稳定 id 仍叫 `default-local`，所以一切按 host 匹配而非 id 的逻辑（如 served-origin 判定、版本缓存失效）都必须用 host `[src/api/agent-server-config.ts:226-243]()`。
 
-### Active 解析与"哨兵"Backend
-
-`getActiveBackend()` 返回解析后的 active backend；`setActiveSelection()` 写入并通知订阅者。引入一个关键设计——**`NO_BACKEND` 哨兵**：当注册表没有任何可用后端时返回它，且注释明确"它永远不会被持久化，调用方必须先 `isNoBackend()` 再解释字段"：
-
-```ts
-export const NO_BACKEND: Backend = {
-  id: NO_BACKEND_ID,
-  name: "No Backend Available",
-  host: "",
-  apiKey: "",
-  kind: "local",
-};
+```mermaid
+graph LR
+    kind["kind: local/cloud"] --> slot["会话通道"]
+    host["host: 指向本机/远程"] --> slot
+    auth["authMode: api-key/cookie"] --> slot
+    agent_kind["agent_kind: openhands/acp"] --> slot
+    slot --> canvas["UI 呈现统一"]
+    connectionRevision["connectionRevision: 凭据版本"] --> cache["缓存驱逐"]
 ```
-`[src/api/backend-registry/active-store.ts:29-35]()` — NO_BACKEND 哨兵定义
-<!-- snippet: export const NO_BACKEND: Backend = {
-  id: NO_BACKEND_ID,
-  name: "No Backend Available",
-  host: "",
-  apiKey: "",
-  kind: "local",
-}; -->
 
-选择哨兵对象而非 `null`，是为了让承载组件能无脑渲染一个"无后端"占位、且不会误把 `kind/host/apiKey` 当真实值使用。
+## 注册、持久化与选中优先级
 
-### 有效本地后端的严格解析
+### 本地存储双 key + 防御性校验
 
-`getEffectiveLocalBackend()` 是一个决定性的约束：**绝大多数 GUI 服务讲的是本地 agent-server 协议**（settings 读写、conversation CRUD、skills/MCP/secrets），它们对 cloud host 会失败。因此只有 active 是 local 时它才返回非空，且"cloud 选择时绝不借用另一个已注册的 local 后端"：
-
-```ts
-export function getEffectiveLocalBackend(): Backend | null {
-  const active = snapshot.active.backend;
-  if (active.kind === "local" && !isNoBackend(active)) return active;
-  return null;
-}
-```
-`[src/api/backend-registry/active-store.ts:140-144]()` — local 协议派发总闸
-<!-- snippet: export function getEffectiveLocalBackend(): Backend | null {
-  const active = snapshot.active.backend;
-  if (active.kind === "local" && !isNoBackend(active)) return active;
-  return null;
-} -->
-
-这是整个前端的"协议派发总闸"——后续所有 REST/WebSocket 客户端都从它拿 host/apiKey，`getAgentServerClientOptions()`（`src/api/agent-server-client-options.ts:52`）无后端时抛 `NoBackendAvailableError`。**防止"明明选了 cloud，却发了本地协议的请求"这类静默错乱**，是把多后端做好最基本也是最重要的一刀。
-
-## 切换即重建：query key 掺后端身份
-
-多后端切换的难点在于：切后端后，所有 server 态（settings、conversation 历史、profiles）都该指向新后端。Agent Canvas 的策略是**不全局 invalidate，而是把后端身份编进 React Query 的 query key**：
-
-- `use-conversation-history.ts:34-41` 的 key 含 `conversation_id + conversation_url + session_api_key`；
-- `active-backend-context.tsx:112-119` 明确注释：**长生命周期 query 的 key 包含 active backend 的 id/orgId，后端切换被视为全新 query**。
-
-配合 UI 层：`src/routes/conversation.tsx:46-51` 检测到 `backendChanged` 后**整体 unmount 会话子树返回 null**（`:189-191`），在子组件发起对新后端无效的 fetch 之前先卸载。这样切后端 = 缓存天然隔离 + UI 主动回收，无需手写清理。
-
-## 健康探测与故障封顶
-
-后端绝不是"连上就一直好"。前端维护一个**同步持久化的健康存储**（`src/api/backend-registry/health-store.ts` + `health-storage.ts`）：
-
-- 每 10s 轮询（`src/hooks/query/use-backends-health.ts:31`），每后端一个 query；
-- 探测：cloud 查 `/api/keys/current`、`/api/organizations`，401 判 `LOGGED_OUT`；local 用 `SettingsClient.getSettings()` 验 key + `ServerClient.getServerInfo()` 验版本（`:114-123`）；
-- **连续失败 5 次后 `MAX_CONSECUTIVE_FAILURES=5` 封顶禁用该后端**（`health-storage.ts:10`），停止轮询，直到用户编辑 host/apiKey 才重置。
-
-这个"失败封顶"机制把网络抖动与真实故障区分开，避免对坏后端无限打请求。
-
-### 启动时的双探针（版本 + 凭据）
-
-`/server_info` 是**无保护**的（不验凭据），因此它只能验版本不能验身份。启动链路（`src/root.tsx:314` → `use-config.ts` → `option-service.api.ts`）只在 local 后端跑，cloud 跳过（`agent-server-compatibility.ts:323-337`）。版本不足则抛 `AgentServerUnsupportedVersionError`（`:291`）；公开模式再 `getSettings()` 抓 401 验证凭据（`:372`），`root.tsx` 据此分别渲染 MissingAgentServer 或 ApiKeyEntry 屏（`:354,369-372`）。
-
-## ACP 与 OpenHands 的统一抽象
-
-"Use with any ACP-compatible agent"是另一大卖点。ACP（Agent Client Protocol）三方 agent 在**后端**以 stdio 子进程加载（前端只发配置），前端在 `src/constants/acp-providers.ts` 维护 provider 注册表并 enrich UI 元数据：
-
-- `ACP_PROVIDERS` 由 `@openhands/typescript-client` 的 ACP registry 拉取并叠加 UI 信息（`:151`），覆盖 `claude-code`/`codex`/`gemini-cli`（`:129-145`）；
-- `buildAcpAgentSettingsDiff()` 生成 `{ agent_kind:"acp", acp_server, acp_command, acp_args, acp_model }`，切回 OpenHands 只发 `{ agent_kind:'openhands' }`（`:484-497`）；
-- 每个 provider 的凭据环境变量与容器化 cred（`CODEX_AUTH_JSON`、`CLAUDE_CODE_OAUTH_TOKEN`…）集中在 `ACP_RESERVED_CREDENTIALS`（`:218`）。
-
-会话适配层 `src/api/agent-server-adapter.ts` 由 SDK 的 discrimininator `info.agent.kind === "ACPAgent"` 判定会话是 acp 还是 openhands（`:313`），统一映射到 `agent_kind`。这样前端看到的是"一个 conversation"，不管底层是哪个 agent。
-
-## 运行时服务注入（design highlight）
-
-一个很前卫的设计：`/server_info.runtime_services` 记录了"从 agent 沙箱视角"可达的 Agent Server / Ingress / Frontend / Automation 地址。前端 `fetchBackendRuntimeServicesInfo()` 抓取后，`buildRuntimeServicesSystemSuffix()`（`agent-server-adapter.ts:203`）把它渲染成 `<RUNTIME_SERVICES>…</RUNTIME_SERVICES>` markdown 块，再经 `buildAgentContext()`（`:667`）写入 `system_message_suffix`（`:702-704`）塞进新会话——**让 agent 无需猜测端口就知道沙箱内能访问哪些服务**。所有 URL 都从 agent 的视角书写，而非浏览器视角（接口注释 `agent-server-adapter.ts:110-115`）。
+注册表拆成"后端数组"（`openhands-backends`）+"当前选中"（`openhands-active-backend`）两个独立 key `[src/api/backend-registry/storage.ts:13-14]()`。读取时经过多层 guard：锁定 Cloud 覆盖 > 首次安装种子 > 已存数组，且每个后端都要过 `isValidBackend` 运行期校验（id/name/host/apiKey 类型、kind/authMode 枚举、connectionRevision 非负整数）`[src/api/backend-registry/storage.ts:104-149,16-40]()`。
 
 ```mermaid
 sequenceDiagram
-    participant UI as 前端 UI
-    participant Reg as Backend Registry
-    participant SVC as SDK Service
-    participant SRV as Agent Server(后端)
-    participant WS as WebSocket
-    UI->>Reg: setActive(backendId, orgId)
-    Reg->>Reg: computeSnapshot + persist
-    UI->>SVC: 取 host/apiKey
-    SVC->>SRV: getServerInfo/getSettings
-    SRV-->>SVC: runtime_services + version
-    SVC->>SVC: 生成 system_message_suffix
-    UI->>SRV: createConversation(acp|open)
-    SRV-->>UI: 注入 runtime_services 上下文
-    WS-->>UI: 会话事件流
+    participant C as 前端启动
+    participant S as storage.ts
+    participant LS as localStorage
+    C->>S: readStoredBackends()
+    S->>LS: 读取 openhands-backends
+    alt 命中锁定 Cloud
+        S-->>S: 整体覆盖为单一 cloud 并强制选中
+    else raw 为 null（首次安装）
+        S-->>S: 种子 makeDefaultLocalBackend()
+    else 有数组
+        S-->>S: 逐项 isValidBackend，非法丢弃
+        Note over S: 数组空/全失效 → 重新种子
+    end
+    S-->>C: 后端列表
 ```
 
-## 权衡与总结
+### 选中态是 tab 作用域的
 
-- **自研订阅 store 而非 Zustand**：backend 状态被几乎全部 service 层直接读（含非组件代码），独立 store 避免依赖 React 树，是"全局可用 + 可订阅"的最小解。
-- **query key 掺身份 vs 全局 invalidate**：前者更精准（只重建受影响 query、保留无关缓存），代价是每个 query 都要显式携带身份，漏带就串数据。
-- **双探针**：把"无保护版本探测"与"带凭据探测"分离，兼顾首屏快速失败与安全边界。
+**active 优先读 sessionStorage、仅新 tab/旧数据兜底 localStorage**——避免刷新 tab A 采纳 tab B 的后端；写入时双向镜像 `[src/api/backend-registry/storage.ts:205-219,221-243]()`。
 
-整套设计的核心哲学：**前端永远假设后端可能更替、可能故障、可能是异构的**，因此把"连接、身份、健康、协议适配"全部前置到独立控制平面，业务 UI 只对统一的 conversation/backend 抽象编程。
+### URL 作为"自描述链接"
+
+新 tab（cmd/ctrl+click）不继承 sessionStorage，可能落到错误后端的 localStorage 兜底。URL 带上 `?backend=<id>&org=<orgId>` 让新 tab 落地正确后端并被持久化 `[src/api/backend-registry/url-selection.ts:17-18,58-77]()`；id 不在注册表则忽略回退。
+
+## active 全局状态与 React Query 无缝失效
+
+### 单例快照 store
+
+`active-store.ts` 是模块级单例（顶层 `let snapshot` + listeners Set），React 侧 `useSyncExternalStore` 把它桥进组件 `[src/api/backend-registry/active-store.ts:116-122,128-130,180-185]()`。
+
+### query key 掺入"资源身份" = 零手动 invalidate
+
+核心机制：绝大多数业务 query 把 `backend.id` + `orgId` 编进 query key，切换即产生全新 key → React Query 视为新查询自动 refetch，无需 `invalidateQueries`。三类 key 掺入层级：
+
+1. 大多数业务 query：`backend.id` + `orgId`（如 settings `[src/hooks/query/use-settings.ts:133-143]()`、sub-conversations、secrets）
+2. 极少数（cloud current user id）再加 `connectionRevision`——凭据版本号 `[src/hooks/query/use-cloud-current-user-id.ts:64-72]()`
+3. health 检测直接掺入 `b.host` + `b.apiKey`——编辑连接即 re-key
+
+`setActive` 中明确注释"不 blanket invalidate，因 query key 已含 backend.id+orgId" `[src/contexts/active-backend-context.tsx:112-118]()`。
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant Ctx as active-backend-ctx
+    participant S as active-store
+    participant Q as React Query
+    U->>Ctx: setActive(backend)
+    Ctx->>S: 更新 snapshot + 双写存储
+    Ctx->>Q: retryBootstrapProbe()（仅全局配置失效）
+    Note over Q: 业务 query 不 invalidate，
+    Note over Q: key 含新 id → 自动 refetch
+    Q-->>Ctx: 各 hook 拿到新后端数据
+```
+
+切换后端时手动失效的**唯一**触发点：`retryBootstrapProbe()` = 清服务器信息缓存 + invalidate 单个全局配置 query `[src/contexts/active-backend-context.tsx:82-87,108-110,135]()`。
+
+### 删除/切换的 fallback 语义
+
+active 被移走不是落到空，而是 fallback 到**首个健康本地后端 → 首个本地后端 → backends[0] → NO_BACKEND sentinel** `[src/api/backend-registry/active-store.ts:42-62]()`。NO_BACKEND 永不持久化，调用方须先 `isNoBackend()` 判断 `[src/api/backend-registry/active-store.ts:29-39]()`。
+
+## 健康探测：失败封顶状态机
+
+### 30s 轮询 + 三态健康判定
+
+`use-backends-health.ts` 对每个后端发一个 React Query：local 探测 `GET /api/settings`（验 key）+ `/server_info`（验版本下限），cloud 探测 `GET /api/keys/current`（cookie 则 `getCloudOrganizations`）`[src/hooks/query/use-backends-health.ts:34,90-134]()`。30s 间隔的原因在注释里：每 tick 一个后端消耗两次顺序请求，需避开浏览器 HTTP/1.1 连接池竞争。
+
+### 连败 5 次永久 disable，且持久化
+
+核心安全不变量：**失败封顶**。每次失败 `consecutiveFailures` +1，封顶 `MAX_CONSECUTIVE_FAILURES = 5`，达顶即 `disabled: true` `[src/api/backend-registry/health-storage.ts:10]()`。disabled 后 hook 停轮询 `refetchInterval: false`，**且状态持久化在 localStorage 跨刷新存活**——恢复只能靠编辑 host/apiKey（`resetBackendHealth`）或 Manage Backends 的一次性 `probeDisabledOnce` `[src/hooks/query/use-backends-health.ts:243-252,295-310]()`。
+
+### 快速重试 + 第二成功入口
+
+单次探测内置 2 次快速重试（300ms），但**认证类失败（401/缺 key/logged out）不重试**；重试放 queryFn 内而非 React Query 层，避免错误封顶过快触发 `[src/hooks/query/use-backends-health.ts:140-162]()`。`query-client-config` 的 QueryCache `onSuccess` 也调用 `recordBackendSuccess`——"任意带 backendId meta 的成功查询即点亮 health"的第二入口 `[src/query-client-config.ts:34-40]()`。
+
+```mermaid
+stateDiagram-v2
+    [*] --> healthy: 探测成功
+    healthy --> healthy: 成功 / 重试0
+    healthy --> failing: 探测失败(非认证错误)
+    failing --> healthy: 快速重试成功
+    failing --> disabled: 连败达到 5(MAX_FAIL)
+    disabled --> healthy: 编辑 host/apiKey 重置
+    disabled --> healthy: 一次性 probe
+```
+
+## 多协议抽象：把 ACP/OpenHands 收敛成统一载荷
+
+前端不直接 spawn ACP 子进程。`buildStartConversationRequest` 按 `isAcpAgent(settings)`（读 `agent_settings.agent_kind`）分派到 ACP/OpenHands 两个 builder，产出的都是**同构的 StartConversationPayload**——工作目录、MCP config、secrets 都以此统一字段塞进 payload，由 agent-server 侧解析成子进程 `[src/api/agent-server-adapter.ts:816-819,843-909,911-991,1085-1168]()`。
+
+### ACP 身份标注：tag + agent.kind 双保险
+
+ACP 会话在 wire 上是 `agent.kind === "ACPAgent"`（SDK discriminator），再打 `tags.acpserver` 标注 CLI 身份 `[src/api/agent-server-adapter.ts:331,339-341,449]()`；适配层读取时"tag 优先、agent.acp_server 兜底"，避免 profile 启动没 tag 时丢失模型挑选择器。
+
+### ACP 登录态探测：借 agent-server bash
+
+ACP provider 是否需要登录没有专用端点，靠 `AcpService.getAuthStatus` 通过 BashClient 执行 provider 状态命令（`claude auth status --json` / `codex login status` / Gemini 查 credentials 文件）并分类 `[src/api/acp-service/acp-service.api.ts:70-84,99-108]()`；仅限 local 后端（CLI 与凭据在本机），无法分类回退 "unknown"。
+
+### LLM Profiles（BYO Model）：query key 掺入后端身份
+
+README 自述的 "Bring your own model" 能力由 `use-llm-profiles` 承载——它把 `backend.id` + `orgId` 编进 query key，防止切换后端时 profile 缓存串扰（README 自述能力点经源码探测属实：`use-llm-profiles.ts:17` 的 queryKey 与 adapter 中读取 runtime model 字段、按 `agent_kind` 门控模型挑选择器的逻辑一致）`[src/hooks/query/use-llm-profiles.ts:13-17]()`。这与控制面"切换即重建缓存"是同一套哲学的又一落点。
+
+## 运行时服务注入与命令执行
+
+### runtime_services → system_message_suffix
+
+多后端/部署模式下，"哪些服务从沙箱可达"由 `/server_info.runtime_services` 上报（agent 视角 URL），adapter 渲染成 `<RUNTIME_SERVICES>` 块经 `system_message_suffix` 注入，避免 agent 猜 URL（尤其 automation 后端跨 dev 模式端口不同）`[src/api/agent-server-adapter.ts:134-157,221-306,790-813]()`。
+
+### 运行时命令执行：class 静态分派
+
+`AgentServerRuntimeService` 封装"在 agent-server 上执行 bash/下载文件"。local 直接用 SDK typed client，cloud 因 `*.prod-runtime.all-hands.dev` 禁浏览器 CORS，走 `callCloudProxy`（hostOverride + session key）服务端跳转 `[src/api/runtime-service/agent-server-runtime-service.ts:24-58,70-93]()`。
+
+## working_dir 作用域：按 served-origin host 匹配
+
+前向依赖核心洞见：**working_dir 必须按 host 作用域化**。烧入的 `VITE_WORKING_DIR` 是"serving host 文件系统上的绝对路径"，只有 serve 该前端的那台后端可用；`isServedOriginHost` 按 host 字符串（非 id）判断，因为 `default-local` 的 host 可编辑 `[src/api/agent-server-config.ts:190-243]()`。是 served-origin → 绝对路径；否则 → relative default `workspace/project/<hex>`，由 agent-server 侧 `GET /api/file/home` 锚定到该后端自己 home 下可写路径。写入会话时 `workspace: { kind: "LocalWorkspace", working_dir }` `[src/api/agent-server-adapter.ts:1009-1014]()`。
+
+## 版本探测与兼容硬断言
+
+`assertAgentServerVersionIsSupported` 是硬闸门：取 `server_info.version`（无则回退 `sdk_version`）→ 归一到 `{major,minor,patch,prerelease}` → 对 `defaults.json` 的 `compatibility.minimumAgentServer` 做 semver 比较 → 低于下限抛 `AgentServerUnsupportedVersionError`，无法解析抛 `AgentServerUnknownVersionError`，失败即清缓存 `[src/api/agent-server-compatibility.ts:176-203,243-271,273-291,293-318,320-400]()`。服务器 info 带 host 缓存，切换/重试按 host 比对失效。此外按 `/server_info.usable_tools` 决定是否注入 browser/task 工具（不支持的过滤掉），形成"能力探测-注入"闭环 `[src/api/agent-server-compatibility.ts:34-39,149-155]()`。
+
+## 全局关联与权衡
+
+控制面的统一哲学是**"把不确定性隔离在适配层"**：前端只认"当前后端 + query key 身份"，协议/鉴权/作用域差异全部沉到 `backend-registry`、`agent-server-adapter`、`agent-server-compatibility` 里。由此换来的收益是——UI 层几乎不关心"我在连哪台、什么协议"，切后端自动重建缓存；代价是适配层复杂且上游耦合深（catalog 依赖 npm 包、ACP 探测靠 bash 借道），这正是本仓"壳类产品"的本质：价值在编排与防御，不在执行。

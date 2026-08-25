@@ -59,7 +59,7 @@ Leros 在 Worker 侧维护两套 MCP 角色，容易混淆，先厘清：
 
 ### MCPChannel：只存「渠道配置」，不存用户凭据
 
-`MCPChannel` 是系统维护的**内置渠道模板**（`types/mcp_channel.go:126`），记录一个渠道「是什么、怎么连」。关键设计点是**它刻意把「渠道级配置」与「用户级凭据」分开**：
+`MCPChannel` 是系统维护的**内置渠道模板**（`types/mcp_channel.go:147`），记录一个渠道「是什么、怎么连」。关键设计点是**它刻意把「渠道级配置」与「用户级凭据」分开**：
 
 - 渠道级：`transport`、`url`、`headers`（非敏感的固定头）、`auth_type`。
 - 用户级：靠 `AuthConfig.Fields`（表单字段定义）+ `Bindings`（把用户填的值**绑定**到运行时目的地：`skill_env` / `mcp_bearer_token` / `mcp_headers` / `mcp_env` / `mcp_query`）。
@@ -68,7 +68,9 @@ Leros 在 Worker 侧维护两套 MCP 角色，容易混淆，先厘清：
 
 1. 同一渠道模板可复用于不同用户，模板里没有用户私密信息。
 2. 凭据何时被放入定义（`ConnectorAuthDefinition.Values`）由接入时决定，且只存在于**不可变修订**里。
-3. 校验逻辑能静态检查绑定是否引用了未知字段（`mcp_platform_service.go:355` 的 `validateChannelAuthConfig`）。
+3. 校验逻辑能静态检查绑定是否引用了未知字段（`mcp_platform_service.go:410` 的 `validateChannelAuthConfig`）。
+
+> **演进说明(v0.3.12–v0.4.0)**：系统连接器的引入方式从「内置硬编码 seed」演化为「**按 Server 配置声明初始化**」，并新增 `CatAPI` 等纯配置化渠道、统一了系统级凭据绑定。详见下方「系统连接器：从 seed 到配置驱动」小节。
 
 ### 平台/Connector 模板：Skill + MCP 的三种组合模式
 
@@ -93,7 +95,7 @@ Leros 在 Worker 侧维护两套 MCP 角色，容易混淆，先厘清：
 
 ### MCPChannel（渠道模板）
 
-`backend/types/mcp_channel.go:126-140`
+`backend/types/mcp_channel.go:147-167`
 
 以 `channel`（小写 slug）为唯一键，`status` 控制是否对新连接开放；`auth_config` 携带认证如何工作（而非凭证本身）。
 
@@ -117,6 +119,56 @@ Leros 在 Worker 侧维护两套 MCP 角色，容易混淆，先厘清：
 - `Plugin`：身份 + `CurrentRevision` 指针。
 - `PluginRevision`：不可变 `Definition` JSON + `Status`(published) + `SourceFamilyRevisionID`。
 - `PluginRevisionContent`：`SKILL.md` 入口内容 + `ArtifactSHA256` + `FileIndex`(path/size/sha256 清单)。
+
+## 系统连接器：从内置 seed 到配置驱动（v0.3.12–v0.4.0 增量）
+
+早期系统连接器（百度网盘、网易邮箱等预置渠道）通过 `builtin_connector_seed.go` 硬编码内置。v0.3.12 起改为**「Server 配置声明 → 启动 seed reconcile」**：连接器模板不再写死在代码里，而是由部署配置的 `MCPConnectors` 列表驱动，可按配置初始化任意系统连接器。这也让 `CatAPI` 这类纯配置化渠道可以不经发版即接入。
+
+### 数据流：Configured → Sync → 幂等落库
+
+1. **配置声明**：`Config.MCPConnectors` 为批量连接器配置（`[]MCPConnectorConfig`）`[backend/config/config.go:69,74]()`。
+2. **启动注入**：server 把配置传入 seed 的 `Options.MCPConnectors` `[backend/cmd/leros/server.go:131]()`。
+3. **seed 入口**：`Run` 的步骤 5「配置声明的系统连接器模板（失败仅告警）」调用 `SyncConfiguredMCPConnectors`——连接器初始化失败不阻断进程启动 `[backend/internal/seed/seed.go:72-77]()`。
+4. **批量 reconcile**：`SyncConfiguredMCPConnectors` 按 channel 去重、非法批量输入隔离记 `failures`、逐个调 `SyncSystemConnectorTemplate` `[backend/internal/seed/mcp_connector_seed.go:19-72]()`。
+5. **单通道幂等落库**：`SyncSystemConnectorTemplate` 把 MCPChannel + Skill 产物 + Plugin + 不可变修订在**原子事务**内发布，行锁保证不重复 `[backend/internal/service/system_connector_template_service.go:27-57]()`。
+
+```mermaid
+sequenceDiagram
+    participant C as server 配置<br>(MCPConnectors)
+    participant S as seed.seed
+    participant SC as SyncConfiguredMCPConnectors
+    participant ST as SyncSystemConnectorTemplate
+    participant DB as PostgreSQL
+
+    C->>S: Options.MCPConnectors
+    S->>SC: SyncConfiguredMCPConnectors
+    SC->>SC: 按 channel 去重 + 隔离非法项
+    loop 每个系统连接器
+        SC->>ST: SyncSystemConnectorTemplate
+        ST->>ST: 校验 + 生成系统级 Plugin/MCPChannel/Skill
+        ST->>DB: 原子事务(Live)幂等落库
+    end
+```
+
+### 系统级 Plugin 的身份语义
+
+系统连接器落成 `OwnerScope=system, org_id=0` 的 Plugin——不是某个组织所有，而是系统目录级、可被任意组织复用。`SyncSystemConnectorTemplate` 按 `owner_scope=system AND org_id=0` 取出既有项并区分 `created/restored/updated` 三态 `[backend/internal/service/system_connector_template_service.go:132-180]()`。
+
+### 系统的演化意义
+
+这个改动把「增加一个平台连接器」从「改代码、发版、跑 seed」收敛为「在部署配置里加一段 channel 声明」，连接器成为**配置即能力**的数据。`mcp_connector_codes.go` 只硬编码 `corekg`/`baidu-netdisk` 两个平台 code（`[backend/internal/service/mcp_connector_codes.go:3-8]()`），其余（含 CatAPI）全部走纯配置通道——印证「连接器模板数据化」的演进方向。
+
+### 系统连接器的凭据统一绑定（v0.4.0）
+
+v0.4.0「统一凭据绑定」的语义：系统连接器模板的 `Bindings` 在 seed 时写入系统级 MCPChannel，用户在组织内连接时**从系统模板实例化、并把用户表单/托管凭据填进不可变修订的 `Auth.Values`**。凭据不再散落，而是收敛到「模板申明绑定 + 用户连接时填值」的统一路径。
+
+- 连接入口仍是「按用户」的 `ConnectMCPPlatform`（orgID+uin 身份），内部按 `AuthType` 分派 form / managed / none `[backend/internal/service/mcp_platform_service.go:48,85-117]()`。
+- **form（用户填值）**：`validateChannelAuthValues` → `instantiateSystemConnectorTemplate`，把用户填的值实例化进连接器 `[backend/internal/service/mcp_platform_service.go:232]()`。
+- **managed（托管 API key）**：核验 `handler==coreKGPlatformCode` 后经 `apiKeyIssuer.CreateAPIKey` 签发系统 API key，并把 key 填入 `api_key` 值 `[backend/internal/service/mcp_platform_service.go:92-112]()`。
+- **绑定动作**：`instantiateSystemConnectorDefinition` 把 `values` 写入 `definition.Auth.Values`，再由 `Auth.Bindings` 申明式映射到 header/env/query/bearer `[backend/internal/service/mcp_platform_service.go:274-291]()`。
+- **运行时展开**：绑定经 `prepareConnectorRuntimeEnv` 展开成环境变量，并做变量名黑名单防污染宿主环境（`connectorRuntimeEnvAllowed`）`[backend/internal/worker/agentrun/plugin_definition.go:61,114]()`。
+
+**CatAPI 就是这条配置驱动 + Bearer 绑定路径的典型实证**：它不是硬编码常量（`mcp_connector_codes.go` 无 `catapi`），而是通过 server 配置声明为系统连接器，靠通用 `Bindings.MCPHeaders["Authorization"]="Bearer {{api_key}}"` 完成凭据绑定——测试 `TestCatAPIMCPPlatformConnectUsesBearerHeaderBinding` 断言 `Authorization: Bearer catapi-secret` 即证明此路径 `[backend/internal/service/mcp_platform_service_test.go:198,208]()`。
 
 ## 核心流程时序
 
@@ -144,10 +196,10 @@ sequenceDiagram
     RT-->>R: Agent 回合内拿到结果继续推理
 ```
 
-- 服务端入口：`AddMCPPlugin` 校验并固化定义（`mcp_plugin_service.go:40`），运行前可 `TestMCPPlugin` 预先握手并数出 `ToolCount`（`mcp_plugin_service.go:229`）。
+- 服务端入口：`AddMCPPlugin` 校验并固化定义（`mcp_plugin_service.go:40`），运行前可 `TestMCPPlugin` 预先握手并数出 `ToolCount`（`mcp_plugin_service.go:233`）。
 - Worker 解码：`MCPServerConfigFromPluginSnapshot` 把修订 `Definition` 还原为可执行的 `agent.MCPServerConfig`，再次校验 URL（`agentrun/plugin_definition.go:20`）。
-- 外部运行时注入：`opencode/config.go:buildMCPConfig` 按 OpenCode V1 schema 把每种 transport 翻译成 `remote`(HTTP) / `local`(stdio) / `local`(SSE，经 `npx mcp-remote` 桥接)（`opencode/config.go:95`）。
-- Worker 还把自己暴露的 MCP Server（`/v1/mcp`）作为可被外部运行时挂载的端点之一，端点 URL 由 `buildWorkerMCPURL` 拼出（`cmd/leros/worker.go:553`）。
+- 外部运行时注入：`agent/runtime/opencode/config.go:buildMCPConfig` 按 OpenCode V1 schema 把每种 transport 翻译成 `remote`(HTTP) / `local`(stdio) / `local`(SSE，经 `npx mcp-remote` 桥接)（`agent/runtime/opencode/config.go:161`）。
+- Worker 还把自己暴露的 MCP Server（`/v1/mcp`）作为可被外部运行时挂载的端点之一，端点 URL 由 `buildWorkerMCPURL` 拼出（`cmd/leros/worker.go:594`）。
 
 ### 流程二：OAuth 动态接入 MCP 平台
 
@@ -200,6 +252,20 @@ sequenceDiagram
 - 入口与验签：`github/webhook.go:handleWebhook` 读 body、校验 `X-Hub-Signature-256`（配置了 secret 才验，可 `SkipWebhookVerify` 关闭，但注释警告仅限非生产）（`webhook.go:26`）。
 - 事件翻译与主题映射：`events.go` 的 `convertPush/convertPullRequest/convertIssueComment` 把 GitHub 对象摊平成统一 `Event`，`determineTopic` 完成「GitHub 事件类型 → Leros topic」的命名空间映射（`webhook.go:87`），发布到 `interaction.github.*` 主题（`pkg/event/topic.go:8`）。
 
+## 多人协作项目不向任务注入连接器（v0.4.0 增量）
+
+MCP 连接器按组织/项目装配，但存在一个安全与隔离的权衡：**多成员协作的项目要不要把某个成员配的连接器注入所有 AI 任务的 run？** v0.4.0 给出的答案是「**当项目协作人数 ≥2 时，不注入 MCP 连接器**」——这是把「连接器是会话级资源」还是「项目级共享资源」做了保守收敛。
+
+- 判定入口：装配 run 时先算 `shouldDisableProjectMCP`；当项目人类成员数 `humanCount >= 2` 时返回 `true`（禁用）`[backend/internal/service/message_poster.go:1134-1167]()`。
+- **剔除执行**：`resolveProjectPluginSnapshots` 在生成插件快照时，对禁用标志下 `Kind=="mcp"` 的行直接 `continue` 剔除——MCP 连接器不进快照，而非 MCP（Skill 等）保留 `[backend/internal/service/message_poster.go:1169-1243]()`。
+
+```c
+// shouldDisableProjectMCP 核心判定（hack 语义：>=2 人协作则禁用连接器注入）
+if humanCount >= 2 { return true }
+```
+
+**设计意图**：连接器连同其 Bearer token/Header 一旦注入 run，就落入 AI 执行上下文中。单人项目下这是「本人授权自己用」；多人项目下，某个体成员私有连接器的凭据可能被他人制造的任务间接使用，存在越权与敏感信息暴露风险。因此保守地「协作即禁用注入」，把连接器使用收敛回「发起者本人在其自身上下文里使用」。
+
 ## 与其他模块协同
 
 「插件/MCP 体系」不是孤岛，它是一张能力网，与 Leros 其余模块深度咬合：
@@ -217,7 +283,7 @@ sequenceDiagram
 Leros 没有单方面选择「只做 Client」或「只做 Server」，而是**同一进程两边都做**：
 
 - **对外**：Worker 暴露 `/v1/mcp`，把 `memory`/`skill_manage`/`artifact_declare` 这些内部工具翻成 MCP 工具，服务外部运行时（`worker/mcp/server.go:44`）。
-- **对内**：Agent 又作为 Client，把组织配置的外部 MCP 服务器注册进外部运行时去调用（`opencode/config.go:95`）。
+- **对内**：Agent 又作为 Client，把组织配置的外部 MCP 服务器注册进外部运行时去调用（`agent/runtime/opencode/config.go:161`）。
 
 权衡：让外部生态（Claude Code/OpenCode）能反过来消费 Leros 的能力，是「开放兼容」卖点的直接落地；代价是 MCP 工具暴露面需要极小心——`server_test.go:22` 特意断言 `node_shell`、`skill_use` 这类内部工具**不会**出现在公开的 MCP 工具集里，只暴露白名单。
 
@@ -226,7 +292,7 @@ Leros 没有单方面选择「只做 Client」或「只做 Server」，而是**�
 Leros 对「外部能力」采用**双轨**：既有直接连任意 MCP 端点的自由（自定义插件），又有受控的官方市场（`PluginMarketplaceItem`）。市场机制不引入「运行时动态拉码」，而是：
 
 - 安装 = 把市场项的**已固化为修订**的定义+内容**复制**进组织（`InstallOfficialPlugin`），并记录 `SourceMarketplaceItemID`/`SourcePluginRevisionID` 血缘。
-- 校验 = 引用完整性被代码四处强验（如 `resolveConnectorSkillDownloads` 里核对源插件 `origin`、SHA 逐字节一致后才下发下载 URL，`plugin_service.go:875`）。
+- 校验 = 引用完整性被代码四处强验（如 `resolveConnectorSkillDownloads` 里核对源插件 `origin`、SHA 逐字节一致后才下发下载 URL，`plugin_service.go:1270`）。
 
 权衡：市场走「快照 + 血缘」而非「实时引用」，牺牲了「市场改、所有组织立即变」的便捷，换来了**组织侧不可变、可审计、可独立回滚**的确定性——对企业私有域，这比中心化热更更重要。
 
@@ -234,7 +300,7 @@ Leros 对「外部能力」采用**双轨**：既有直接连任意 MCP 端点�
 
 对 GitHub/GitLab/企业微信这类协作平台，Leros 不是把复杂多渠道逻辑铺进核心，而是用统一 `Connector` 接口 + 每个渠道一个适配包收口，把「平台私有事件」降维成「统一 `event.Event` + 命名空间 topic」。
 
-权衡：这种「薄适配 + 事件标准化」边界清晰、新增渠道只需填一个包（GitLab 目前的空壳 `verifySignature`/`processEvent` 就是脚手架——`gitlab.go:80` 明确 `return nil`），符合「Plugin First、能力可插拔」哲学；代价是 GitHub 已实装、GitLab/企业微信仍待填充，渠道成熟度不齐暴露了「框架先行、实现滞后」的阶段性。
+权衡：这种「薄适配 + 事件标准化」边界清晰、新增渠道只需填一个包（GitLab 目前的空壳 `verifySignature`/`processEvent` 就是脚手架——`internal/api/connectors/gitlab/gitlab.go:80` 明确 `return nil`），符合「Plugin First、能力可插拔」哲学；代价是 GitHub 已实装、GitLab/企业微信仍待填充，渠道成熟度不齐暴露了「框架先行、实现滞后」的阶段性。
 
 ## 亮点与问题
 
@@ -248,8 +314,8 @@ Leros 对「外部能力」采用**双轨**：既有直接连任意 MCP 端点�
 ### 问题 / 风险
 
 - **凭据明文存储**：`ConnectorAuthDefinition.Values` 以明文存在 DB 修订里，源码注释自己也承认「待引入专用凭据库」（`plugin_definition.go:69`）——对 OAuth/表单凭据是最明显的安全欠账。
-- **渠道成熟度不齐**：GitLab 连接器 `verifySignature` 直接 `return nil`（`gitlab.go:80`）、`wework` 仅剩包注释声明（`wework/app.go`），核心框架成熟而实际渠道大多为壳。
-- **签名校验可选**：GitHub 未配置 `WebhookSecret` 时会跳过验签（`webhook.go:38`），存在误配置导致的安全面敞口，仅靠告警提示。
+- **渠道成熟度不齐**：GitLab 连接器 `verifySignature` 直接 `return nil`（`internal/api/connectors/gitlab/gitlab.go:80`）、`wework` 仅剩包注释声明（`wework/app.go`），核心框架成熟而实际渠道大多为壳。
+- **签名校验可选**：GitHub 未配置 `WebhookSecret` 时会跳过验签（`github/webhook.go:45`），存在误配置导致的安全面敞口，仅靠告警提示。
 - 【待主 agent 验证】连接器发布事件后的**消费/路由闭环**（事件如何触发会话）与「私钥/密钥落库存取与轮换」全貌不在本文件集内，需到到云侧基础设施与事件订阅链路核对。
 
 ## 覆盖率明细
@@ -272,7 +338,7 @@ Leros 对「外部能力」采用**双轨**：既有直接连任意 MCP 端点�
 | `internal/worker/agentrun/plugin_definition.go` | core | 100% | 运行时解码 |
 | `internal/api/connectors/*`（github/gitlab/wework） | 次要 | ~90% | GitHub 完整；GitLab/企微壳 |
 | `pkg/event/{event,topic}.go` | 次要 | 100% | 事件模型与主题 |
-| `builtin_connector_seed.go` | seed | 100% | 渠道/模板 seed |
+| `internal/seed/mcp_connector_seed.go` + `internal/service/system_connector_template_service.go` | seed | 100% | 系统连接器按配置初始化（演进说明：旧 `builtin_connector_seed.go` 已删除，v0.3.12 并入配置驱动） |
 | `builtin_worker_skill_seed.go` | seed | 100% | worker 技能 seed |
 | `builtin_skill_marketplace_seed.go` | seed | 100% | 市场 seed |
 | `ai_teammate_template_seed.go` | seed | 100% | 团队模板 seed |

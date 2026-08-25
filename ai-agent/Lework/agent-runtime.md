@@ -140,6 +140,30 @@ Worker 的 agentrun 是 `backend/agent` 唯一的业务侧消费者。边界在 
 - **双份翻译始终要同步**：`Preparer`（业务→`ExecutionRequest`）与 `NodeHandler`（`NodeEvent`→`messaging`）是两份脆弱的手写映射，字段增删需两处同步，是长期维护的风险点。
 - **外部 CLI 的进程编排复杂度**：OpenCode 的"多进程重试 + 健康检查轮询 + SSE + 长轮询 + 进度超时"的叠加（`server.go`/`events.go`），在异常场景（进程半死、SSE 断连、idle 误判）下的行为仍偏复杂，是故障的潜在温床。
 
+## 增量演进（v0.3.10–v0.4.0）
+
+### OpenCode 采样参数按模型注入（v0.3.10 / v0.3.11）
+
+配置层 `ModelConfig` 新增 `TopP / FrequencyPenalty / PresencePenalty` 采样参数 `[backend/agent/runtime.go:48-51]()`。OpenCode 适配通过 `buildConfigContent` 把它写进 opencode 的 model `options`，且刻意用 **snake_case 键**（`top_p`/`frequency_penalty`/`presence_penalty`）以兼容 vLLM 等 OpenAI 兼容服务（其只识别蛇形字段）`[backend/agent/runtime/opencode/config.go:41-75]()`。native 运行时同样把采样参数传给 Eino ChatModel `[backend/agent/runtime/native/runner.go:108-118]()`。
+
+### 输入预算截断（budget）（v0.4.0 关联）
+
+为避免长对话累计超过模型 `ContextLimit` 触发上游拒绝，native 运行时在驱动模型前做**输入预算截断**：`applyInputBudget` 按 `ContextLimit × 0.7` 预算对历史 + prompt 做字符级截断 `[backend/agent/runtime/native/runner.go:104-106,240-325]()`。OpenCode 侧则用 `modelCfg.ContextLimit/OutputLimit` 覆盖 `modelEntry.Limit` `[backend/agent/runtime/opencode/config.go:41-47]()`。
+
+### Eino ReAct 迭代上限抬升至 50（v0.3.11）
+
+`pkg/eino/flow.go` 把 ReAct 循环默认迭代上限从 Eino ADK 默认的 20 抬升至 **50**，以支撑多轮工具调用任务；`MaxIterations` 为 0 时用默认值 `[backend/pkg/eino/flow.go:44-47,76-79]()`。
+
+### OpenCode 多模态图片附件（v0.3.9）
+
+视觉能力按模型声明优雅降级：仅当 `modelCfg.Vision` 时才声明 `Modalities{Input:["text","image"],Output:["text"]}`；未声明时对全部附件降级为文本提示，避免 AI SDK 硬错误——多模态范围刻意收窄为**仅图片** `[backend/agent/runtime/opencode/config.go:77-87]()`。附件透传在 `invoker.go:buildMessageParts` 把图片转 `data:base64` 内联 file part `[backend/agent/runtime/opencode/invoker.go:284-312]()`。
+
+### OpenCode 固定配置目录 + 隔离任务级 Skill（v0.4.0）
+
+OpenCode 在 worker 工作目录下有固定持久化目录 `.opencode`（数据目录名常量化 `openCodeDataDirName = ".opencode"`）`[backend/agent/runtime/opencode/config.go:23-27]()`。关键的是**隔离宿主配置**：注入 `OPENCODE_DISABLE_PROJECT_CONFIG=1`、`OPENCODE_PURE=1`、`OPENCODE_DISABLE_AUTOUPDATE=1`、`OPENCODE_DISABLE_MODELS_FETCH=1` 等环境变量，并固定 `OPENCODE_CONFIG_DIR=<dataDir>`，让 OpenCode 不读取用户宿主全局配置 `[backend/agent/runtime/opencode/config.go:260-268,121-128]()`。任务级 Skill 经 `cfg.Skills = &skillsConfig{Paths: []string{skillDir}}` 注入 per-run 临时目录，而非宿主 CLI 全局目录——与 skill 模块的 run-scoped 视图设计一致。
+
+---
+
 ## 覆盖率明细
 
 以下为 `backend/agent` 模块全部非测试源码，均已实际读取（含根目录契约 + 四类 Runtime 的 invoker/parser/transport + 共享 `internal/cli` / `internal/process` / `internal/todo` + Worker 侧 `agentrun` 边界）。

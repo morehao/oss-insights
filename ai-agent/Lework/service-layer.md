@@ -237,6 +237,35 @@ stateDiagram-v2
 
 ---
 
+## 增量演进（v0.3.12–v0.5.2）
+
+### AI 队友身份约束（v0.3.12）
+
+既有设计让 AI 队友在每次 run 前用 `buildExecutionTarget` 注入自己的 SystemPrompt。v0.3.12 新增了一条**身份约束规则**：为了让 AI 队友自我介绍时输出稳定、不跑偏，worker 侧 `agentrun/context` 在组装系统提示词时追加一段 `<identity_constraints>`——当用户询问「你是谁 / 你是干什么的 / 你能做什么」或要求自我介绍时，**必须按约束输出** `[backend/internal/worker/agentrun/context/system_prompt.go:173-179]()`。
+
+这是对「AI 队友 = 有身份的员工」的强化：相比把自我介绍完全交给 LLM 自由发挥，约束让「我是谁、我能干什么」输出可预期、可审计，避免队友宣称自己具备实际没有的能力边界——是「身份」治理的一记收紧。
+
+### AI 队友共享权限（v0.5.2）
+
+既有权限模型把 AI 队友视作一个「组织资源」。v0.5.2 引入了**共享权限**：AI 队友的公开范围与协作成员角色可被配置，允许多个成员共同使用/治理一个队友，而非「创建者独占」。
+
+- **读写成套**：`GetDigitalAssistantPermissions`（读，要求 owner/admin `[backend/internal/service/digital_assistant_permission_service.go:17-39]()`）+ `UpdateDigitalAssistantPermissions`（写，事务内行级锁 `lockDigitalAssistantResource`，对 bindings 做 diff 增删改 `[backend/internal/service/digital_assistant_permission_service.go:41-136]()`）。
+- **成员约束**：`validateDigitalAssistantPermissionMembers` 保证至少一个 owner（单 owner 约束）、成员限定组织内 `[backend/internal/service/digital_assistant_permission_service.go:138-165]()`。
+- **访问控制**：`digitalAssistantAccessManager.resolveRole` 先查 `ResourceBinding`、public+active 兜底，`requireDirectRole` 强制直接角色 `[backend/internal/service/digital_assistant_access.go:34-112]()`。
+- **REST 入口**：`/GetDigitalAssistantPermissions`、`/UpdateDigitalAssistantPermissions` 把「AI 队友的公开范围和协作成员角色」暴露给前端 `[backend/internal/api/handler/digital_assistant_handler.go:303-351]()`。
+
+**设计意义**：共享权限让「AI 队友」从「创建者私产」变成「团队共享资产」——一个队友可以被组织内多个成员共同调度与治理，与「AI 是团队伙伴而非私人工具」的产品主线一致。它复用既有的 `ResourceBinding`（Uin/AssistantID 互斥绑定 + 角色），所以天然继承了「人类与 AI 统一治理」的权限基建，没有另起炉灶。
+
+### 默认模型解析（v0.4.0）
+
+模型管理独立成 `model-router.md` 关注面后，service 层与之协作的落点是「默认模型参与 run 装配」——组织管理员设置默认 LLM 模型后，`buildExecutionTarget` / run 装配时按该默认模型注入执行。详见 [`model-router.md`](model-router.md)。
+
+### 标书对比场景（v0.4.0）
+
+v0.4.0 落地了首个垂直场景「标书对比」：项目页发起对比、任务续聊对比，并把对比结果强化为对照产出。这是 service 层「一条消息编排一次执行」模式的复用——发起对比在项目/任务上下文里创建一次任务执行，复用 `session_service` 的回流。作为场景示例，它说明 service 层的横向可扩展性（新增业务场景不改编排骨架，只装配新上下文与产出模板）。
+
+---
+
 ## 亮点与问题
 
 ### 亮点

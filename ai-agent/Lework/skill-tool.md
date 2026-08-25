@@ -259,6 +259,28 @@ Skill 的正文结构（触发条件、带精确命令的编号步骤、坑点�
 - **Worker 侧 Skill 根目录与每 run 视图间可能存在版本漂移**：`PluginSkillPreparer` 安装 Skill 时用 `.seed-manifest` 记录 `name:sha256:revision` 并按 revision 判断是否需要重装，但 `readAndRepairSkillInstallManifest` 的"legacy format"分支会触发刷新重载，存在并发/时序上的自愈成本。
 - **Catalog 每 run 重建，无缓存**：`skill_use` 每次调用动态扫盘（无缓存）换取"始终反映最新"，但高频 list/get 会有 IO 开销；这是"一致性与性能"的取舍，文档里显式声明了（"dynamically scans the filesystem on every call — no cached state"）。
 
+## 增量演进（v0.3.11–v0.5.2）
+
+### Worker Skill 版本缓存（v0.4.1，补足上文「无缓存」的边界）
+
+上文「Catalog 无缓存」讲的是**运行时动态扫盘**层面；v0.4.1 在**资产装配层面**引入了版本缓存，二者并不冲突：Skill 的**下载/解包**复用（同一 `revision + sha256` 已安装则跳过下载）用 `.seed-manifest` 清单承载，而 catalog 读取仍实时扫盘保证最新。缓存命中判定 `[backend/internal/worker/agentrun/skill_preparer.go:218-228]()`，安装清单格式 `[backend/internal/worker/skillstate/manifest.go:17-27]()`。
+
+### 任务 Skill 目录清理（v0.4.1）
+
+run 级 Skill 视图 `{TaskDir}/skills` 在 run 结束时经 `cleanup` 闭包清理（import 回写 → 恢复 worker 仓库 → 删除 run 视图）`[backend/internal/worker/agentrun/skill_preparer.go:113-117,633-652,793-815]()`。持久缓存保留、run 视图删除（`skill_preparer_test.go:331-337`）。与既有「symlink 注入 + per-run 隔离」一节呼应：这是该机制的清理闭环，避免每次 run 残留。
+
+### 场景内置 Skill：技能随场景强制注入（v0.5.2）
+
+v0.5.2 把「考勤工资核算」技能收敛为**场景内置 Skill**：当 run 进入 `salary_accounting` 场景时，worker 强制 `installLatestSkills(["attendance-payroll"])`，从 server 下载该场景固定依赖的 Skill 最新版 `[backend/internal/worker/agentrun/skill_preparer.go:84,144-147]()`；server 侧 `new_message_scene.go` 完成场景归一化与附件约束 `[backend/internal/service/new_message_scene.go:22-23,131-137]()`。Skill 源为 `backend/skills/server/attendance-payroll/SKILL.md` + 确定性计算器 `scripts/payroll_calculator.py`。
+
+这是 Skill 系统「内置/市场/场景」三层来源里的新维度：**场景强绑定（Scene-Bound）** Skill——不靠 LLM 自主决策去 load，而是在特定业务场景下一次执行就强制注入，保证「进这个场景该有的技能一定有」。与 `ManifestMetadata.Always`（永远可用）不同，场景 Skill 是「条件必装」：仅在匹配场景生效，随需随取、不常驻。
+
+### 技能项目关联 / 隐藏 Worker 内置技能 / 技能引用与本地目录（v0.4.1）
+
+v0.4.1 完善了技能项目的关联与来源可见性：新增技能项目关联、技能引用与本地目录说明；**隐藏 Worker 内置技能**并刷新技能候选来源标签。语义上把「这个技能装在哪、由谁拥有、是不是内置」从实现细节变成了用户可感知/可管理的状态——技能候选列表的「来源标签」让用户区分内置/市场/自定义，避免混淆。
+
+---
+
 ## 覆盖率明细
 
 | 目录 | 文件数 | 已读/采样 | 覆盖率估算 |

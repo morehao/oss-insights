@@ -69,6 +69,11 @@ erDiagram
     SESSION_MESSAGE ||--o{ MESSAGE_RESOURCE : "uses resource"
     PROJECT ||--o{ PROJECT_FILE : "has files"
     FILE_UPLOAD ||--o{ PROJECT_FILE : "referenced by"
+    ORGANIZATION ||--o{ AUTOMATION : "owns"
+    AUTOMATION ||--o{ AUTOMATION_EXECUTION : "generates"
+    AUTOMATION_EXECUTION o|--o{ PROJECT : "creates project"
+    AUTOMATION_EXECUTION o|--o{ TASK : "creates task"
+    AUTOMATION_EXECUTION o|--o{ SESSION : "creates session"
 ```
 
 关系图中几个关键设计点：
@@ -76,6 +81,8 @@ erDiagram
 1. **真正的"租户/成员边界"不在 project_member，而在独立的一张 Resource + ResourceBinding 权限树**。`ProjectMember` 是历史表达，新权限模型把 project/task/file/artifact 统一成 `Resource` 节点，把"谁属于哪个项目"落到 `ResourceBinding`。`ListProjectIDsByUser` 正是 join resource_binding 取用户可访问项目：[`backend/internal/infra/db/project_dao.go:96-108`]()。
 2. **AI 队友被三张"装饰表"扩展**：`digital_assistant_prompt_block`（人设分层）、`digital_assistant_memory`（长期记忆）、`assistant_prompt_trace`（注入追踪），注释全部指向 "future retrieval-augmented persona"，即人设是"分层可组合 + 带溯源"，不是一个大字符串：[`backend/types/digital_assistant_evolution.go:31-50`]()。
 3. **会话是多态容器**：`Session` 用 `type ∈ {chat, task, project}` 同时承载三类上下文，靠 `project_id`/`task_id` 可空组合唯一索引 `uni_session_project_task` 约束 scope。
+4. **AI 队友共享权限（v0.5.2）不新增表，复用资源树**：v0.5.2 的「AI 队友共享权限」在数据模型层面**没有建新表**——它复用 `ResourceBinding`（Uin/AssistantID 互斥 + 角色），只是把 AI 队友从「创建者独占」扩展成可被多个成员以不同角色绑定/治理的资源。这印证了资源树设计的前瞻性：新增一种「被共享资源」不需要动表结构。
+5. **自动化（v0.3.9）以「配置 + 执行记录」双表落地**：`automation`（调度配置）与 `automation_execution`（每次触发的持久化 outbox + 防重），组合唯一索引 `(automation_id, occurrence_key)` 承载周期防重。见下方「自动化」一节与 [automation.md](automation.md)。
 
 ## 核心表设计
 
@@ -354,6 +361,53 @@ Marketplace 式预设队友档案，创建时 `system_prompt` 复制进 `Digital
 | last_error | text | — | 最近错误 |
 | last_started_at | timestamp | index | 最近启动时间 |
 | last_reconciled_at | timestamp | index | 最近 reconcile 时间 |
+
+### 自动化 — 定时任务（`backend/types/automation.go:21-66`）
+
+AI 队友的「定时值守」能力（v0.3.9 起，详见 [automation.md](automation.md)）。`Automation` 是长期调度配置（指令 + 日历/间隔 + 时区 + 固定队友），本身不执行，只在每次触发时生成一条 `AutomationExecution`。
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | bigserial | PK（gorm.Model） | 自增主键 |
+| public_id | varchar(255) | not null, uniqueIndex | `auto_xxx` 唯一标识 |
+| org_id | integer | not null, index | 所属组织 |
+| owner_id | integer | not null, index | 创建者（执行身份） |
+| name | varchar(100) | not null | 自动化名称 |
+| instruction | text | — | 每轮发送给 Agent 的完整指令 |
+| enabled | boolean | not null default true（指针区分显式 false） | 是否接受周期触发 |
+| schedule_mode | varchar(16) | not null | calendar / interval |
+| schedule_spec | jsonb | not null default '{}' | 版本化规范化调度规则（FormConfig + Spec） |
+| timezone | varchar(64) | not null default 'Asia/Shanghai' | IANA 时区 |
+| assistant_id | bigint | not null, index | 固定默认 AI 队友 |
+| next_run_at | timestamp | — | 下一次计划执行时间（UTC） |
+| last_run_at | timestamp | — | 最近实际生成 execution 时间 |
+| project_id | bigint | index | 当前自动化项目（可空） |
+| project_generation | integer | not null default 0 | 项目代数（删除后换代重建） |
+
+#### AutomationExecution — 每次触发的执行记录（`backend/types/automation_execution.go:18-94`）
+
+`Automation` 是配置、`AutomationExecution` 是「每一次触发的持久化事实」，兼当 Server 侧 outbox。`(automation_id, occurrence_key)` 组合唯一索引是周期最终的防重边界，`occurrence_key` 用理论计划时间。
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | bigserial | PK（gorm.Model） | 自增主键 |
+| public_id | varchar(255) | not null, uniqueIndex | `autoexec_xxx` |
+| automation_id | bigint | not null, index, unique(ux_auto_exec_occurrence) | 所属自动化 |
+| org_id / owner_id | bigint | not null, index | 组织 + 执行身份 |
+| trigger_type | varchar(16) | not null, index | scheduled / manual |
+| occurrence_key | varchar(128) | unique(ux_auto_exec_occurrence) | 周期防重键（理论计划时间） |
+| status | varchar(16) | not null default 'queued', index | queued/running/succeeded/failed/skipped |
+| scheduled_at | timestamp | not null, index | 理论触发时间（UTC） |
+| not_after | timestamp | — | Worker 最晚开始时间 |
+| started_at / finished_at | timestamp | — | 实际起止 |
+| name_snapshot / instruction_snapshot / assistant_id_snapshot | text/text/bigint | not null | 触发时刻配置快照 |
+| missed_count | integer | not null default 0 | 被折叠的更早遗漏数 |
+| project_id / task_id / session_id / message_id | bigint | index | 已创建业务实体引用 |
+| run_id | varchar(255) | index | Worker Run 标识 |
+| attempt_count | integer | not null default 0 | 投递重试次数 |
+| lease_owner / lease_until | varchar/timestamp | — | 多实例领取租约 |
+| error_code / error_msg | varchar/text | — | 稳定错误码 + 可展示失败信息 |
+| dispatched_at | timestamp | — | 命令写进 JetStream 时间 |
 
 ### 插件族 — 技能/插件（`backend/types/plugin.go:54-137`）
 

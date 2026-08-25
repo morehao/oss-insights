@@ -8,12 +8,18 @@
 
 - [`agent-runtime.md`](agent-runtime.md) — 可脱离业务独立驱动的 Agent 执行层：多 Runtime（native/Claude/Codex/OpenCode）+ 强类型 NodeEvent 契约
 - [`worker-system.md`](worker-system.md) — Worker 管理系统：SQLite inbox 的 at-least-once 崩溃恢复、RunCoordinator 并发模型、agentrun 业务边界
+- [`automation.md`](automation.md) — 自动化定时调度：Planner/Dispatcher 两阶段、遗漏折叠、CAS 防重、租约领取，把 AI 从随叫随到变成可定时值守
 - [`service-layer.md`](service-layer.md) — 业务编排层：把一条消息翻译成「项目+任务+会话+AI 队友执行」的完整链路
 - [`skill-tool.md`](skill-tool.md) — Skill/Tool 能力系统：Tool 原子能力 + Skill 组合能力，SKILL.md 数据驱动、run-scoped 注入
 - [`permission-auth.md`](permission-auth.md) — 权限/认证/多租户：基于资源的能力授权、worker token、内置 vs 委托 IAM 双模式
 - [`mcp-plugin.md`](mcp-plugin.md) — MCP + 插件/集成体系：插件市场、OAuth 动态接入、GitHub 渠道连接器
-- [`data-model.md`](data-model.md) — 数据模型与存储：三层存储谱系、GORM AutoMigrate + 手写补偿迁移、Replayable 落库
+- [`model-router.md`](model-router.md) — 模型调度：统一 IR 协议归一、Worker 代理、Server 模型管理/默认模型/连接测试
+- [`data-model.md`](data-model.md) — 数据模型与存储：三层存储谱系、GORM AutoMigrate + 手写补偿迁移、Replayable 落库（含 Automation 双表）
 - [`frontend.md`](frontend.md) — 前端客户端（Web + Electron）：长短双层 SSE 实时管线、双端同构、乐观更新
+- [`CHANGELOG.md`](CHANGELOG.md) — 各版本变更汇总（自 v0.3.9 起）
+
+> **本版增量更新说明（v0.3.9 → v0.5.2）**：本次解读把源码从既有基准（约 8/04）增量更新到 v0.5.2，新增能力包括——**自动化定时调度**（`automation.md`）、**模型管理与路由**（`model-router.md`）、**AI 队友共享权限**、**系统 MCP 连接器按配置初始化 + CatAPI + 凭据统一绑定**、**OpenCode 采样/多模态/固定配置目录**、**Worker Skill 缓存与任务目录清理**、**K8s 按 Deployment 隔离 workspace**、以及前端**工作台/考勤核算 / Token 展示 / HTML 预览 / 代码块主题**。各子文档以「增量演进（版本号）」小节就地补充，历史结构未被破坏；各版本详细变更见 [`CHANGELOG.md`](CHANGELOG.md)。
+
 
 ## 根因：AI 对话是一次性消费，劳动力是长期雇佣
 
@@ -44,9 +50,11 @@ Lework 是一套**企业级 AI 工作协作系统（AI Workspace）**，通过 `
 | 项目工作区 | 每个项目绑定 Gitea 私有仓库，AI 产出 file 级资产、可版本回放 |
 | 多 Runtime 执行 | native（Eino）+ Claude Code / Codex / OpenCode 外部 CLI，统一 `agent.Runtime` 契约 |
 | Skill / Tool 能力系统 | Tool 原子能力 + Skill 组合能力（SKILL.md 数据驱动，agent 可自写自改） |
-| MCP + 插件市场 | 接入企业私有 MCP 服务器、OAuth 动态接入、官方插件/技能市场 |
+| MCP + 插件市场 | 接入企业私有 MCP 服务器、OAuth 动态接入、官方插件/技能市场；系统连接器按配置初始化 |
+| 自动化调度 | 日历/间隔定时任务，Planner/Dispatcher 两阶段、遗漏折叠、CAS 防重，AI 可定时值守 |
+| 模型管理 | 统一 LLM 代理 + 模型增删改查/默认模型/连接测试，多供应商协议归一 |
 | 记忆沉淀 | 短期上下文 + 项目级 `MEMORY.md` 长期知识，沉淀进 Git 可审计 |
-| 企业治理 | 多租户隔离、基于资源的能力授权、worker token、任务审批、执行审计、成本追踪 |
+| 企业治理 | 多租户隔离、基于资源的能力授权、AI 队友共享、worker token、任务审批、执行审计、成本追踪 |
 
 ### 技术栈一览
 
@@ -149,10 +157,12 @@ sequenceDiagram
 |------|------|-----------|------|
 | agent 执行层 | 三核之一 | 业务无关的多 Runtime 执行契约，`Runtime First, Model Second` 的物理载体 | [`agent-runtime.md`](agent-runtime.md) |
 | Worker 系统 | 主链路心脏 | 用「先落盘再 Ack」的 SQLite inbox 实现 at-least-once 的可持续执行 | [`worker-system.md`](worker-system.md) |
+| 自动化调度 | 定时值守 | Planner/Dispatcher 两阶段把 AI 从随叫随到变成可周期执行 | [`automation.md`](automation.md) |
 | 业务编排层 | 对话→劳动翻译官 | 一条消息编排出项目/任务/会话/队友执行 | [`service-layer.md`](service-layer.md) |
 | Skill/Tool | 能力系统 | 原子 Tool + 组合 Skill，SKILL.md 数据驱动可生长 | [`skill-tool.md`](skill-tool.md) |
 | 权限/认证 | 治理底座 | 基于资源的能力授权 + 双模式认证（Deny by Default） | [`permission-auth.md`](permission-auth.md) |
 | MCP/插件 | 手与生态 | 接入外部 MCP / 插件市场 / 渠道连接器 | [`mcp-plugin.md`](mcp-plugin.md) |
+| 模型路由 | 模型即资源 | 统一 IR 协议归一 + Server 模型管理/默认模型 | [`model-router.md`](model-router.md) |
 | 数据模型 | 状态外置 | 三层存储 + 双轨迁移 + Replayable 落库 | [`data-model.md`](data-model.md) |
 | 前端 | 人机界面 | 长短双层 SSE 实时驾驶舱，双端同构 | [`frontend.md`](frontend.md) |
 

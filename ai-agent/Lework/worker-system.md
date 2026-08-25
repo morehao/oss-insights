@@ -270,6 +270,36 @@ sequenceDiagram
 
 ---
 
+## 增量演进（v0.3.11–v0.4.1）
+
+### Worker Skill 缓存（v0.4.1）
+
+Worker 工作区下独立 Skill 缓存 + 安装清单：`.leros/skills/.seed-manifest` 记录 `code:sha256:revision:syncPolicy` 四字段，命中判定比较已安装记录与期望 descriptor 的 `revision` + `sha256` 一致且已有 `SKILL.md` 即跳过下载/解包直接复用 `[backend/internal/worker/agentrun/skill_preparer.go:218-228]()`。缓存命中场景（`skill_preparer_test.go:304-306`）断言「expected matching install to skip requests」。这是对「每个 run 重下 Skill」的性能收敛——同一 Skill 版本未变就不用重复拉取，只在版本/哈希漂移时刷新。
+
+### 任务 Skill 目录清理（v0.4.1）
+
+run 级 Skill 视图 = `{TaskDir}/skills`（`taskSkillViewRoot`, `[backend/internal/worker/agentrun/skill_preparer.go:633-642]()`）。run 结束时返回的 `cleanup` 闭包做三件事：**import 回写任务 Skill 目录 → 恢复 worker Skill 仓库 → 删除 run Skill 视图** `[backend/internal/worker/agentrun/skill_preparer.go:113-117]()`。清理语义：持久缓存被保留、run 视图被删除（`skill_preparer_test.go:331-337` 断言「task cleanup removed persistent Skill cache / kept first task Skill view」），避免每次 run 累积残留目录。
+
+### Automation run 禁用管理 Skill（v0.3.9 关联）
+
+Automation 触发的一次 run 在投递时声明 `DisabledPlugins{Kind: skill, Code: "lework-automation-manager"}`，经 worker 的 `applyDisabledPluginPolicy` 从 run 的 `Plugins` 剔除——自动化执行上下文里不允许 agent 主动调用「管理自动化」的 Skill，防止自适应/递归管理 `[backend/internal/worker/agentrun/disabled_plugins.go:85-107]()`。它证明 worker 的任务装配支持**按任务策略动态禁用插件**，是实现「自动化 run 与交互式 run 行为差异」的机制。详见 [automation.md](automation.md)。
+
+### Kubernetes 调度器隔离 workspace（v0.4.1）
+
+Worker 由 K8s 调度器按 Deployment 拉起，workspace 宿主目录与挂载目录**按 `orgID + workerID` 隔离**：`workspacePath(orgID, workerID) = joinHostPath(root, orgID, workerID)`，配 `HostPathDirectoryOrCreate` 宿主编 + 容器内 `MountPath`，并注入 `LEROS_WORKSPACE_ROOT` 环境变量与 `--workspace-root` 启动参数 `[backend/internal/worker/scheduler/kubernetes_scheduler.go:205,264-266,284,220,246,493-498]()`。另有 `workspaceSpecDrifted` 漂移检测反复比对宿主编/挂载/Env/启动参数，确保实际 Pod 与期望一致 `[backend/internal/worker/scheduler/kubernetes_scheduler.go:356-382]()`。这解决了「多个 worker Pod 共享同一 workspace 导致隔离失效」的问题，让弹性伸缩的 worker 各自持有独立数据目录。
+
+### Worker 镜像相关（v0.3.11 / v0.4.0）
+
+- **基础镜像装 xlrd**：Worker 基础镜像安装 `xlrd==2.0.1` 以支持读取老式 `.xls`（Excel 97-2003）文件 `[deployments/build/Dockerfile.worker-base:132,148]()`。
+- **镜像默认 IfNotPresent 拉取**：调度器默认 `corev1.PullIfNotPresent` 而非每次强制拉取，可用配置覆盖，减少重复拉镜像的网络开销 `[backend/internal/worker/scheduler/kubernetes_scheduler.go:307,468-474]()`。
+- **移除 CallerHTTP 内部超时**：v0.4.0 起 `NewCallerHTTP` 不再内置默认 `http.Client{}` 的 Timeout，超时改由外部注入 client 或请求 ctx 控制，避免长请求被内部短超时提前切断 `[backend/internal/llm/caller_http.go:39-41]()`。
+
+### OpenCode 固定配置目录 + 隔离任务级 Skill（v0.4.0，跨模块佐证）
+
+Worker 拉起 OpenCode 时固定 `OPENCODE_CONFIG_DIR` 并注入 `OPENCODE_DISABLE_PROJECT_CONFIG` / `OPENCODE_PURE` 等隔离环境变量，任务级 Skill 经 `skillsConfig.Paths` 注入 per-run 临时目录而非宿主 CLI 全局（`worker.go:257` 注释「Skill 会在每个 Run 中注入临时目录，不能写入宿主 CLI 全局目录」）。详见 [agent-runtime.md](agent-runtime.md)。
+
+---
+
 ## 覆盖率明细
 
 标准：核心模块（`run/`、`agentrun/`、`command/run/inbox/`、`eventpub/`）≥65%，其余 ≥30%。

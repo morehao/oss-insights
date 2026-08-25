@@ -243,6 +243,38 @@ UI 层其实封装好了 `websocket.ts`（心跳、重连、离线队列基本�
 4. **编辑框与发送链路耦合度较高**：`StructuredComposer`、`useComposerSkillOptions`、`buildComposerMetadata` 等把"@人 / skill token / 附件上传"都挂在 composer 状态上，配合多个 `.test.tsx`，维护难度偏高。
 5. **依赖体积偏重**：`@leros/app-ui` 同时依赖 pdfjs-dist、xlsx、@silurus/ooxml、jszip（`packages/app-ui/package.json:20-28`），为文件预览功能拉了整套文档解析栈，Web 首包体积可能受压（有鉴于此仍有 `import.meta.url` 按需加载的尝试，见 `apps/desktop/src/renderer/src/App.tsx:34-37`）。
 
+## 增量演进（v0.3.10–v0.5.2）
+
+### 工作台新增「考勤工资核算」场景（v0.5.2）
+
+既有首页是 `WorkbenchPanel`（任务工作台）。v0.5.2 侧边栏第二项新增专属**工作台视图**「工作台」，落地考勤+工资核算场景：
+
+- 导航定义：`layoutSlice` 的 core 导航组第二项 `{ id: "workbench", label: "工作台", icon: "IconWorkbench" }` `[frontend/packages/store/slices/layoutSlice.ts:478]()`。
+- 视图路由：`Shell` 里 `currentView === "workbench"` 渲染 `PayrollWorkbench`（而非聊天工作台）`[frontend/packages/app-ui/components/layout/Shell.tsx:78-79]()`。
+- 核算页 `PayrollWorkbench`：提供考勤/历史工资/花名册三类角色附件上传（`:295-370`），并把 `"salary_accounting"` 场景标记连同文件传给 `sendWorkbenchMessage` 发起任务 `[frontend/packages/app-ui/components/layout/PayrollWorkbench.tsx:187-222,206]()`。
+
+这是「把场景内置 Skill 封装成语义化工作台」的前端落地：用户不是手动选 Skill，而是进一个「考勤工资核算」页面、传文件、点发起——后端 `new_message_scene` 识别 `salary_accounting` 场景并强制注入对应内置 Skill（见 [skill-tool.md](skill-tool.md)）。
+
+### HTML 源码预览 + 统一 Markdown 代码块（v0.4.1）
+
+文件预览生态扩展出 `html` kind 的**预览/源码双视图**：`FilePreviewDrawer` 提供「预览 / 源码」切换，预览态用 `Blob([text], {type:"text/html"})` 生成 objectUrl 渲染 iframe，源码态复用统一 `CodeBlock` 组件 `[frontend/packages/app-ui/components/layout/FilePreviewDrawer.tsx:65,178-180,866-905]()`。同时 `MarkdownRenderer` 把所有 `pre` 统一换成 `CodeBlock`，Markdown 代码块样式全局一致 `[frontend/packages/app-ui/components/common/MarkdownRenderer.tsx:120]()`。
+
+### 聊天代码块亮暗主题切换并记住偏好（v0.4.0）
+
+代码块新增亮/暗主题切换开关，偏好经 localStorage + CustomEvent 持久化并跨组件同步（`leros-code-block-theme` key）`[frontend/packages/app-ui/components/common/CodeBlock.tsx:21,72]()`、`[frontend/packages/app-ui/components/common/codeBlockTheme.ts:3-22]()`。这是「实时看 AI 产物」体验的小幅增强：源码/日志代码块可随观感切换，且记住用户偏好不重启丢失。
+
+### 助手回复展示 Token 消耗（v0.3.10）
+
+助手回复气泡下方新增 `MessageTokenUsage` 指示器，读消息 `usage.totalTokens`（回退 `metadata.tokens`），展示「输入 / 输出」token 用量 `[frontend/packages/app-ui/components/chat/AIMessageBubble.tsx:85-120,305]()`；数值用 `formatTokenCount` 做 `1.0K/M` 友好缩写 `[frontend/packages/store/utils/format.ts:130-135]()`。这直接回扣 README「成本追踪 / 调用成本可见」卖点的**人机可见侧**。
+
+### 产物文件时间按日历日展示（v0.5.2）
+
+产物/任务文件时间改用 `formatArtifactTime`：按本地**日历日**差展示「今天 / 昨天 / 具体年月日」，避免跨天后仍显示「今天」的歧义 `[frontend/packages/store/utils/format.ts:89-103]()`，供消息气泡与任务侧栏共用 `[frontend/packages/store/utils/format.ts:32-36]()`。
+
+### 私有化部署 UI 收敛到 app-ui（v0.3.11 佐证）
+
+`apps/` 仅剩 `apps/web` 与 `apps/desktop` 两个入口壳，私有化部署相关 UI 全集中在 `packages/app-ui`（`Shell`/`WorkbenchPanel`/`org-admin` 等均为 app-ui 内共享组件）——印证既有文档「双端同构 + app-ui 承载全部业务视图」的设计，并对私有化形态做了收敛：私有化与 SaaS 复用同一套 app-ui 视图，仅入口不同。
+
 ## 覆盖率明细
 
 | 主张/功能 | 验证文件 | 状态 |

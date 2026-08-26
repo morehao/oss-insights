@@ -41,7 +41,7 @@ RAGFlow 的回应是 README 点明的“**Quality in, quality out**”——先�
 
 ## 架构总览：双栈并存的演进史
 
-RAGFlow 最鲜明的架构事实是 **Go 与 Python 双栈并存**，且由**运行时环境变量**决定哪套在跑，而非编译期写死。核心证据在 docker `.env` 的 `API_PROXY_SCHEME`，当前默认取 `python`，且 `go` / `hybrid` 两种部署模式被显式注释出来（[docker/.env:227-229]()）：
+RAGFlow 最鲜明的架构事实是 **Go 与 Python 双栈并存**，且由**运行时环境变量**决定哪套在跑，而非编译期写死。核心证据在 docker `.env` 的 `API_PROXY_SCHEME`，当前默认取 `python`，且 `go` / `hybrid` 两种部署模式被显式注释出来（[docker/.env:240-241]()）：
 
 <!-- anchor: # API_PROXY_SCHEME=go # use go server deployment … API_PROXY_SCHEME=python # use pure python server deployment -->
 
@@ -103,7 +103,7 @@ flowchart LR
 | `cmd/ragflow_server.go` | 单二进制四种 mode（api/admin/ingestor/syncer）入口与公共初始化 | Go |
 | `internal/router` `internal/handler` `internal/service` | 三层业务：路由 → 请求处理 → 领域服务 | Go |
 | `internal/agent/` | Canvas DSL、eino 运行时、组件/工具注册，Agent 工作流核心 | Go |
-| `internal/agentic_rag/`, `internal/agent/retrievalbridge` | Agentic RAG 检索工具与检索增强/融合 | Go |
+| `internal/agent/harness/`, `internal/agent/retrievalbridge` | Agentic RAG 检索状态机与检索增强/融合 | Go |
 | `internal/ingestion/`、`internal/deepdoc/` | 摄取服务编排与文档解析封装 | Go |
 | `internal/entity/` `internal/dao/` | GORM 实体与数据访问（schema 真源） | Go |
 | `internal/admin/` `internal/server/` | Admin 控制面/许可 + 服务配置/生命周期 | Go |
@@ -114,7 +114,7 @@ flowchart LR
 
 ## 启动流程
 
-docker compose 启动后，entrypoint 按 `API_PROXY_SCHEME` 选择后端，Go 栈四种 mode 从同一个 `main` 出发走公共初始化（配置 → DB → 文档引擎 → Redis → 存储 → 消息队列），再进各 mode 分支（[cmd/ragflow_server.go:399-423]()）：
+docker compose 启动后，entrypoint 按 `API_PROXY_SCHEME` 选择后端，Go 栈四种 mode 从同一个 `main` 出发走公共初始化（配置 → DB → 文档引擎 → Redis → 存储 → 消息队列），再进各 mode 分支（[cmd/ragflow_server.go:281-420]()）：
 
 <!-- anchor: 	switch *arguments.mode { … 		fmt.Printf("Invalid server mode: %s\n", *arguments.mode) -->
 

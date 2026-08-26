@@ -1,6 +1,6 @@
 # RAGFlow 检索-重排-上下文-生成管线：多路召回 + 融合重排 + Grounded 引用
 
-> 本解读按 **ai-infra（叠加 ai-agent ⊗ framework）类规格**产出。定位：RAGFlow 双栈中围绕「query → 多路召回 → 融合重排 → 上下文组装 → LLM 生成 → 带引用输出」完整 RAG 管线的深读，覆盖 Go 新生代主服务（`internal/agent/retrievalbridge/`、`internal/agentic_rag/`、`internal/service/`）与 Python 传统引擎（`rag/nlp/`、`rag/llm/`、`rag/graphrag/`）。真源引用以源码仓库 `/Users/morehao/Documents/study/ai-agent/ragflow`（`git 2db8eb6`）为根，引用后紧邻 `<!-- anchor: 首行 … 末行 -->` 指纹供程序重定位校验。
+> 本解读按 **ai-infra（叠加 ai-agent ⊗ framework）类规格**产出。定位：RAGFlow 双栈中围绕「query → 多路召回 → 融合重排 → 上下文组装 → LLM 生成 → 带引用输出」完整 RAG 管线的深读，覆盖 Go 新生代主服务（`internal/agent/retrievalbridge/`、`internal/agent/harness/`、`internal/service/`）与 Python 传统引擎（`rag/nlp/`、`rag/llm/`、`rag/graphrag/`）。真源引用以源码仓库 `/Users/morehao/Documents/study/ai-agent/ragflow`（当前 `dev-20260826`，`git 2db8eb6` 初版基线；本次增量已核对 `internal/agentic_rag/` → `internal/agent/harness/` 重构，见 [CHANGELOG.md](CHANGELOG.md)）为根，引用后紧邻 `<!-- anchor: 首行 … 末行 -->` 指纹供程序重定位校验。
 
 **分析结构对位**（对应模块级解构七点）：①角色→「在项目中的角色」；②根因→「解决什么问题与根因」；③设计思路→「设计思路」；④数据结构→「关键数据结构」；⑤核心流程→「核心流程」（含传统/Agentic/GraphRAG 三条 mermaid）；⑥协同→「与其他模块协同」；⑦设计决策→「关键设计决策」。标题采用语义式命名，不绑定序号。
 
@@ -45,7 +45,7 @@ RAGFlow 在**两个层面做"召回后处理"**，分工明确：
   - OceanBase/SereneDB → 本地 `RerankStandard`（引擎会把 chunk 向量带回来）。
   - Elasticsearch → 两遍法 `RerankWithKNN`：第一遍文本检索，第二遍只按候选 chunk id 过滤做 KNN 算干净余弦分。
 
-**放弃的替代方案**：把 chunk 向量全部搬运到应用层做本地余弦。这个方案实现简单，但①每个检索都要把大批向量序列化传回，网络/内存开销大；②分页+重排时向量反复传输。RAGFlow 的取舍是**让向量留在引擎里算**（ES/Infinity 侧算），应用层只拿分数——这一点在 Python `_knn_scores` 里有明确注释"让 chunk vectors never leave the engine"（[rag/nlp/search.py:394-425]()）。
+**放弃的替代方案**：把 chunk 向量全部搬运到应用层做本地余弦。这个方案实现简单，但①每个检索都要把大批向量序列化传回，网络/内存开销大；②分页+重排时向量反复传输。RAGFlow 的取舍是**让向量留在引擎里算**（ES/Infinity 侧算），应用层只拿分数——这一点在 Python `_knn_scores` 里有明确注释"让 chunk vectors never leave the engine"（[rag/nlp/search.py:396-427]()）。
   <!-- anchor: async def _knn_scores(self, sres: "Dealer.SearchResult", idx_names: str | list[s … return self.dataStore.get_scores(res) -->
 
 ### 融合公式：不是"二选一"，而是"词面分数×权重 + 语义分数×权重 + 排名特征加成"
@@ -82,7 +82,7 @@ sim = tkWeight * tksim + vtWeight * vsim + rank_fea
   <!-- anchor: func citationPrompt() string { … func citationPrompt() string { -->
   该指令在 Python 端由 `rag/prompts/generator.py` 的 `citation_prompt` 用 Jinja 模板渲染（[rag/prompts/generator.py:214-216]()）。
   <!-- anchor: def citation_prompt(user_defined_prompts: dict = {}) -> str: … return template.render() + "\n\nIMPORTANT: The example IDs above (45, 46, 78, et -->
-- **下游（答案侧）**：当模型没有按格式引用（或被禁用引用时），Python 侧 `insert_citations` 在生成后对答案做**句子切分→逐句向量化→与各 chunk 算混合相似度**（阈值 0.63 起步、逐轮 ×0.8 放宽），命中才补打 `[ID:x]` 引用（[rag/nlp/search.py:283-360]()）。这是"用 embedding 校验模型说法的来源"，把幻觉风险降到"模型胡说但恰好在某个 chunk 语义里找得到锚点"这一层。
+- **下游（答案侧）**：当模型没有按格式引用（或被禁用引用时），Python 侧 `insert_citations` 在生成后对答案做**句子切分→逐句向量化→与各 chunk 算混合相似度**（阈值 0.63 起步、逐轮 ×0.8 放宽），命中才补打 `[ID:x]` 引用（[rag/nlp/search.py:285-362]()）。这是"用 embedding 校验模型说法的来源"，把幻觉风险降到"模型胡说但恰好在某个 chunk 语义里找得到锚点"这一层。
   <!-- anchor: def insert_citations(self, answer, chunks, chunk_v, embd_mdl, tkweight=0.1, vtwe … return res, seted -->
 
 ### 何时走 GraphRAG：一种"问题拆解 + 图检索"的特殊召回路
@@ -92,7 +92,7 @@ GraphRAG 不在默认召回里，而是独立的一条 `KGSearch` 检索路径�
 1. **LLM 改写**：把问题转债成 `answer_type_keywords`（问题要什么类型答案）+ `entities_from_query`（问题里的实体）([rag/graphrag/search.py:46-66]())。
   <!-- anchor: async def query_rewrite(self, llm, question, idxnms, kb_ids): … raise e -->
 2. **按多条路取图元素**：按实体做嵌入召回、按类型按 pagerank 召回、按文本关系召回、按 n-hop 路径聚合([rag/graphrag/search.py:168-191]())。
-  <!-- anchor: ents_from_query = self.get_relevant_ents_by_keywords(ents, filters, idxnms, kb_i … logging.info("Retrieved N-hops: {}".format(list(nhop_pathes.keys()))) -->
+  <!-- anchor: ents_from_query = await self.get_relevant_ents_by_keywords(ents, filters, idxnms, kb_i … logging.info("Retrieved N-hops: {}".format(list(nhop_pathes.keys()))) -->
 3. **融合加分**：类型命中的实体 sim×2、关系所在边命中则×(s+1)、n-hop 附加路径一并并入([rag/graphrag/search.py:193-218]())。
   <!-- anchor: # P(E|Q) => P(E) * P(Q|E) => pagerank * sim … rels_from_txt[(f, t)] = {"sim": nhop_pathes[(f, t)]["sim"] * (s + 1), "pagerank" -->
 4. **排序**：实体/关系都按 `sim * pagerank` 排序截断([rag/graphrag/search.py:220-221]())，命中不够就再取社区报告([rag/graphrag/search.py:277-295]())。
@@ -114,7 +114,7 @@ GraphRAG 不在默认召回里，而是独立的一条 `KGSearch` 检索路径�
 - `nlp.RetrievalRequest` 表达用户检索意图：`[path:[internal/service/nlp/retrieval.go:49-65]()]()`
   <!-- anchor: type RetrievalRequest struct { … } -->
   > 含 `Question`、`TenantIDs/KbIDs/DocIDs`（租户/知识库/文档三级作用域）、`Top/Page/PageSize`（候选池与分页）、`SimilarityThreshold/VectorSimilarityWeight`（两个核心调优旋钮）、`RerankModel/EmbeddingModel`（是否需要外部重排）、`RankFeature`（文档级标签权重）。
-- `nlp.RetrievalResult` 是给上层（chat / agent 工具）看的最终形态：`chunks + doc_aggs + total`（[internal/service/nlp/retrieval.go:68-72]()），其中每个 chunk 同时携带 `similarity / term_similarity / vector_similarity` 三种相似度，便于上层区分"它因词面还是语义命中"（[internal/service/nlp/retrieval.go:313-315]()）。
+- `nlp.RetrievalResult` 是给上层（chat / agent 工具）看的最终形态：`chunks + doc_aggs + total`（[internal/service/nlp/retrieval.go:68-72]()），其中每个 chunk 同时携带 `similarity / term_similarity / vector_similarity` 三种相似度，便于上层区分"它因词面还是语义命中"（[internal/service/nlp/retrieval.go:295-297]()）。
   <!-- anchor: type RetrievalResult struct { … } -->
   <!-- anchor: resultChunk["similarity"] = sim[i] … resultChunk["vector_similarity"] = vectorSimilarity[i] -->
 - 引擎底层返回的 `nlp.RetrievalSearchResult` 才是候选集全貌：`IDs`（有序 chunk id）、`Field`（id→字段映射）、`QueryVector`（供重排用）、`Keywords`（供高亮）、`Total`（阈值内总数）([internal/service/nlp/retrieval.go:594-605]())。
@@ -128,7 +128,7 @@ GraphRAG 不在默认召回里，而是独立的一条 `KGSearch` 检索路径�
 
 ### 上下文组装：`kbinfos` map
 
-多路召回的汇聚容器，贯穿 chat 管线的 Phase 8→10：各召回路（向量/TOC/子chunk/web/KG）都把结果写进 `kbinfos["chunks"]`，最后统一交给 `kbPrompt` 转成模型可读知识块（[internal/service/chat_pipeline.go:620-731]()）。
+多路召回的汇聚容器，贯穿 chat 管线的 Phase 8→10：各召回路（向量/TOC/子chunk/web/KG）都把结果写进 `kbinfos["chunks"]`，最后统一交给 `kbPrompt` 转成模型可读知识块（[internal/service/chat_pipeline.go:617-734]()）。
   <!-- anchor: "chunks":   []map[string]interface{}{}, … kbinfos = map[string]interface{}{ -->
 Go 的 `kbPrompt` 给每个 chunk 加 `\nID: n` + `Content` 等树节点（[internal/service/deep_researcher.go:720-789]()）。
   <!-- anchor: func kbPrompt(kbinfos map[string]interface{}, maxTokens int, hashID bool) []stri … return knowledges -->
@@ -184,64 +184,76 @@ sequenceDiagram
 - **融合进引擎**：向量与文本的加权求和发生在引擎侧（`FusionExpr`），应用层不搬运 chunk 向量（`internal/service/nlp/retrieval.go:704,714`）。
 - **重排是优雅分级的**：有外部 reranker 用模型（`RerankByModel`），Infinity 直接读 `_score`，OceanBase 本地重排，ES 用两遍 KNN（[internal/service/nlp/retrieval.go:472-545]()）。
   <!-- anchor: if req.RerankModel != nil && searchResult.Total > 0 { … ) -->
-- **分页基于一个"候选窗口"**：`RERANK_LIMIT` 约 64 个、且必须是 page_size 的倍数，避免深分页漂移——Python 侧 `_rerank_window`（[rag/nlp/search.py:556-578]()），Go 侧同构计算（[internal/service/nlp/retrieval.go:112-130]()）。
-  <!-- anchor: def _rerank_window(page_size: int, top: int = 0) -> int: … return window -->
-  <!-- anchor: pageSize := req.PageSize … } -->
+- **分页基于一个"rerank 候选窗口"**：重排候选数由显式 `rerank_candidates_count` 参数控制（默认 64），运行时不靠预计算窗口函数而是**在入口断言分页不越界**——`page * page_size <= rerank_candidates_count`，且 `rerank_mdl` 存在时强制 `page=1`（Python [rag/nlp/search.py:574](rag/nlp/search.py) / [rag/nlp/search.py:593-596](rag/nlp/search.py)），Go 侧同构计算（`RerankCandidatesCount` 默认 64，`req.Page > rerankCandidatesCount/pageSize` 时拒绝 [internal/service/nlp/retrieval.go:117-123](internal/service/nlp/retrieval.go)）。
+  <!-- anchor: rerank_candidates_count=64, -->
+  <!-- anchor: if page * page_size > rerank_candidates_count: -->
+  <!-- anchor: if req.RerankCandidatesCount == nil { … return nil, fmt.Errorf("rerank_candidates_count(%d) must be greater than or equal to page(%d) * page_size(%d)", … -->
+  > **演进说明（dev-20260826）**：本段初版描述的分页窗口函数 `_rerank_window` 已在上游移除，改为上述内联的 `rerank_candidates_count` 参数 + 入口断言（见 [CHANGELOG.md](CHANGELOG.md)）。
 - **查后清洗**：候选集在做重排前先 `PruneDeletedChunks`，剔除文档已被删的孤儿 chunk（[internal/service/nlp/retrieval.go:1013-1110]()，Python [rag/nlp/search.py:87-129]()）。
   <!-- anchor: // PruneDeletedChunks removes chunks whose documents no longer exist … } -->
   <!-- anchor: async def _prune_deleted_chunks(self, sres: SearchResult) -> SearchResult: … ) -->
 - **上下文预算**：`kbPrompt` 在 *0.97 的 token 预算处截断，保证塞进模型 window（[rag/prompts/generator.py:139-152]()）。
   <!-- anchor: def kb_prompt(kbinfos, max_tokens, hash_id=False): … break -->
-### Agentic RAG：ReAct 多轮"思考-检索-阅读"循环
+### Agentic RAG：route 驱动的图式检索状态机
 
-与传统"一次检索→一次生成"不同，`agentic_rag` 把检索能力**掰成四个正交工具**交给模型在多轮里自由组合（[internal/agentic_rag/agent.go:74-83]()）：
-  <!-- anchor: func DefaultTools(tenantID string, datasetIDs []string) []tool.BaseTool { … } -->
+> **演进说明（dev-20260826）**：本档案初版（基线 `git 2db8eb6`）记录的 Agentic RAG 是随 `internal/agentic_rag/` 一起的「ReAct 多轮思考-检索-阅读」形态（think / todo_write / grep_chunks / search_chunks / list_chunks / run_javascript 六工具，`DefaultTools`）。上游其后以 `23a0711`（Revert "port smart-reasoning agentic RAG to eino ADK"）**删除 `internal/agentic_rag/`** 后，Agentic RAG 改为 `internal/agent/harness/` 下统一的**图式状态机**——不再把检索拆成专用工具交给模型任意组合，而是由 route 决定策略、按 mode 裁剪一套系统检索工具、走「pre_search → planner → orchestrator → formalize_answer」的固定流水线。下列节点/行号均以当前 `dev-20260826` 为准。
 
-| 工具 | 召回维度 | 用途 | 关键实现 |
-|------|---------|------|----------|
-| `search_chunks` | 语义 | 1-5 条 embed 查询，合并去重 | `tool_search_chunks.go:214-246` |
-| `grep_chunks` | 词面/正则 | 精确标识/错误码，返回 ~80字符 snippet | `tool_grep_chunks.go:151-175` |
-| `list_chunks` | 阅读 | 按 doc_id 分页读全文 | `tool_list_chunks.go` |
-| `think` | 推理 | 无状态思考记录 | `tool_think.go:139-158` |
+当前 Agentic RAG 由 `internal/agent/harness/` 承载，核心是**一条线性图式管线**：路由节点先判定是否需要多层分解，再决定走 `direct_search`（一次混合检索→答案）还是 `decompose_and_search / agentic_research / deep_research`（先 pre_search 喂给 planner、orchestrator 多轮到满足为止、formalize 出答案）。整条管线由 `RunAgenticRAG` 驱动，route 预计算后交给 `RunAgenticRAGWithRoute` 顺序执行（[internal/agent/harness/agentic_rag.go:54](internal/agent/harness/agentic_rag.go) / [internal/agent/harness/agentic_rag.go:60](internal/agent/harness/agentic_rag.go)）：
+  <!-- anchor: func RunAgenticRAG(ctx context.Context, db *gorm.DB, question, keywords, modeLabel string, search SearchFn) AnswerResult { -->
+  <!-- anchor: func RunAgenticRAGWithRoute(ctx context.Context, db *gorm.DB, question, keywords, modeLabel string, route RouteDecision, search SearchFn) AnswerResult { -->
 
-四个工具的检索实现分别落在 `internal/agentic_rag/` 下：`search_chunks` 逐条 query 检索并合并去重（[internal/agentic_rag/tool_search_chunks.go:214-246]()）。
-  <!-- anchor: for _, q := range queries { … } -->
-`grep_chunks` 对 chunk 内容正则匹配后返回 snippet（[internal/agentic_rag/tool_grep_chunks.go:151-175]()）。
-  <!-- anchor: chunks, err := svc.Grep(ctx, runtime.GrepRequest{ … } -->
-`think` 仅记录推理步骤（[internal/agentic_rag/tool_think.go:139-158]()）。
-  <!-- anchor: func (t *ThinkTool) InvokableRun(_ context.Context, argumentsInJSON string, _ .. … return "Thought process recorded", nil -->
+| mode | 策略 | 是否需要分解 | 编排轮数 | 并行研究 agent | 工具集（AvailableTools） |
+|------|------|:---:|:---:|:---:|------|
+| `low` | direct_search | 否 | 1 | 1 | hybrid_search |
+| `medium` | decompose_and_search | 是 | 3 | 1 | hybrid_search |
+| `high` | agentic_research | 是 | 3 | 2 | hybrid_search / web_search / ontology_navigate / dataset_navigation_by_tree / graph_explore / inspector_* |
+| `ultra` | deep_research | 是 | 4 | 3 | 上集 + bm25_search / structured_query / mindmap_navigate / wiki_query / 全部 inspector_* |
+
+mode 到「策略 + 编排预算 + 工具白名单」的映射集中在 `THINKING_MODES`（[internal/agent/harness/types.go:144](internal/agent/harness/types.go)），`GetMode` 按 label 取配置（[internal/agent/harness/types.go:184](internal/agent/harness/types.go)）：
+  <!-- anchor: var THINKING_MODES = map[string]ExecutionStrategy{ -->
+  <!-- anchor: func GetMode(label string) (ExecutionStrategy, bool) { -->
+
+`high`/`ultra` 由 `AgenticResearch` 执行**双层循环**：orchestrator 把总问题拆成若干 claim，研究 agent 按 `MaxParallelAgents` 分批并行研究每条，每轮末尾用「构图打分 + LLM sufficiency 评审」决策梯判读证据是否足够，不满足则补 follow-up 继续（[internal/agent/harness/agentic.go:36](internal/agent/harness/agentic.go)）；其余 mode 走 `RunAgenticRAGWithRoute` 的线性短链。设计上刻意让高/超档**复用同一套 pipeline**（共享 Kbinfos、文档路由、构图 gating），而非另起炉灶——注释明确"high/ultra 是 medium 的严格超集，不是平行实现"（[internal/agent/harness/agentic.go:33](internal/agent/harness/agentic.go)）：
+  <!-- anchor: // It drives the SAME pipeline (shared Kbinfos, compilation gating, doc routing) -->
+  <!-- anchor: func AgenticResearch(ctx context.Context, db *gorm.DB, pipeline *Pipeline, question string, claims []*ClaimTarget, mode ExecutionStrategy) OrchestratorResult { -->
 
 ```mermaid
 sequenceDiagram
-    participant M as 智能模型
-    participant AG as ChatModelAgent
-    participant SC as search_chunks
-    participant GC as grep_chunks
-    participant LC as list_chunks
-    participant TK as think
+    participant M as 智能模型(研究 agent)
+    participant PP as "ProductionRunner<br>(pipeline.go:150)"
+    participant OR as OrchestratorRoute
+    participant KB as kbinfos 共享证据
+    participant SE as "检索/导航工具<br>(hybrid/graph/nav…)"
 
-    M->>AG: 用户问题(带 tenant/dataset 作用域)
-    Note over AG: DefaultTools 注入6工具
-    M->>TK: 先规划(靠 search_chunks 种子)
-    TK-->>M: 思考记录
-    M->>SC: [{q1,q2,q3}, top_n=12]
-    Note over SC: TopK=topN*4 扩候选->去重->滤图
-    SC-->>M: XML chunks(全量内容)
-    M->>GC: regex "马元义|董重|斩"
-    GC-->>M: XML 命中+score
-    Note over M: 读到关键 doc_id
-    M->>LC: 读该 doc 后续 chunk(deep read)
-    LC-->>M: 阅读顺序全文
-    Loop 最多50轮(agent.go:66)
-        M->>AG: 中间思考->决策下一工具
-        Note over AG: 同轮 tool_call 并发
+    M->>OR: 用户问题 + mode(low/medium/…)
+    Note over OR: route 判定是否需 decomposition
+    alt direct_search(low)
+        OR->>PP: 一次 hybrid_search
+        PP->>SE: hybrid_search
+        SE-->>PP: chunks
+        PP->>KB: kbinfos.Merge(去重, 记全局索引)
+        OR-->>M: 直接生成答案
+    else decompose/agentic/deep(medium+)
+        OR->>PP: pre_search 种子检索
+        PP->>KB: 种子 chunks -> SeedChunks
+        OR->>PLANNER: 依据种子生成 claims 计划
+        Loop MaxOrchestratorCycles 轮
+            OR->>PP: 并行研究 agent(每 claim)
+            PP->>SE: 按 mode 白名单调用工具
+            PP->>KB: doc_scope 继承 + 去重合并
+            OR->>PP: LLM 足够性评审 + 构图打分
+            Note over OR: 不足则追加 follow-up, 超则终止
+        end
+        OR-->>M: formalize_answer(带引用/推理)
     end
-    AG-->>M: 最终答案(带引用/推理)
 ```
 
-设计要点：`search_chunks` 是"深读载体"（返回**全量** chunk 文本），`grep_chunks` 是"定位器"（只给 snippet，深度阅读交给 `list_chunks`）——刻意分离"找"与"读"，避免每次检索都塞爆上下文；二者的 XML 输出都**显式排除 graph 生成的实体/关系块**（[internal/agentic_rag/tool_search_chunks.go:239-243]()），让模型读"原文散文"而非"图三元组"。检索上下文做了护栏：`engineCallContext` 兜底 eino ReAct 在模型刚发 tool_call 后可能已 cancel 的 context（[internal/agentic_rag/tool_search_chunks.go:206-210]()）。
-  <!-- anchor: // actual document prose rather than extracted graph triples … } -->
-  <!-- anchor: // already-canceled context right after the model emits tool_calls; a canceled … defer ecancel() -->
+关键机制仍在 `internal/agent/tool/`：检索工具统一注册于 `registry.go`（`hybrid_search`/`vector_search`/`bm25_search` 等），`tool/agentic_search.go` 的 `AgenticSearchTool` 是 hybrid/vector/bm25 检索工具体（[internal/agent/tool/agentic_search.go:63](internal/agent/tool/agentic_search.go)）：
+  <!-- anchor: type AgenticSearchTool struct { -->
+而 harness 的 `Pipeline` 是唯一工具调度入口——按 mode 白名单 + 构图可用性过滤工具，并在检索类工具间注入 `doc_scope` 继承（routing 工具产出相关文档集后，文档内工具自动继承该作用域）（[internal/agent/harness/pipeline.go:150](internal/agent/harness/pipeline.go) / [internal/agent/harness/pipeline.go:449](internal/agent/harness/pipeline.go)）：
+  <!-- anchor: func (p *Pipeline) Execute(ctx context.Context, toolName string, args map[string]interface{}) ToolResult { -->
+  <!-- anchor: func (p *Pipeline) AvailableTools(modeTools []string) []string { -->
+这套设计的取舍：把"模型自由挑工具"收敛为"系统按 mode 预裁剪工具 + 固定管线"，换来的是工具调用可控性（白名单、构图 gating、路由作用域）、可复现（同一 pipeline）与并行调度（claim 级并发批次）；代价是丧失了初版 ReAct 形态下模型对工具组合的临场自由度。
 
 ### GraphRAG 搜索路径
 
@@ -274,7 +286,7 @@ sequenceDiagram
   <!-- anchor: src := []string{ … } -->
 - **与 agent-platform / canvas 的关系**：`internal/agent/retrievalbridge` 是刻意的**适配层**——它避免 `internal/agent/tool` 反向 import `internal/service`（[internal/agent/retrievalbridge/enhancer.go:17-19]()），把 service 层检索/重排接口以 `Enhancer`、`MemoryAdapter` 的形式暴露给 agent 工具，消除双向依赖。Canvas 检索工具（`RetrievalTool`）通过 `runtime.GetRetrievalService()` 注入 service 实现，做到了检索能力"一套实现、多前端消费"。
   <!-- anchor: // Package retrievalbridge connects the agent retrieval interfaces to the … package retrievalbridge -->
-- **与 data-model 的关系**：chunk 数据模型直接决定检索字段；`PruneDeletedChunks` 依赖 DAO 里 Document 的记录存在性做查后清洗（[internal/service/nlp/retrieval.go:1041-1049]()），把"数据库行已删但索引仍有残留向量"的 write 一致性缝隙在读路径兜住（Python 注释 [rag/nlp/search.py:87-92]()）。
+- **与 data-model 的关系**：chunk 数据模型直接决定检索字段；`PruneDeletedChunks` 依赖 DAO 里 Document 的记录存在性做查后清洗（[internal/service/nlp/retrieval.go:1041-1049]()），把"数据库行已删但索引仍有残留向量"的 write 一致性缝隙在读路径兜住（Python 注释 [rag/nlp/search.py:86-91]()）。
   <!-- anchor: docs, err := s.documentDAO.GetByIDs(ctx, dao.DB, uniqueDocIDs) … } -->
   <!-- anchor: async def _prune_deleted_chunks(self, sres: SearchResult) -> SearchResult: … # Keep this as a fallback, not as the primary delete mechanism. -->
 - **Go/Python 双栈的一致性**：Go 复用 Python 时代的算法（`RerankByModel` 等注释明确"mirrors Python search.py L404-L429"，[internal/service/nlp/reranker.go:40-51]()），关键 float 求和刻意用同样的累加顺序保证逐位一致（如 `tokensToDict` 与 Python dict 插入序对齐，[internal/service/nlp/reranker.go:447-448]()）。
@@ -345,6 +357,8 @@ sequenceDiagram
 | rag/graphrag/general/index.py | 1019 | 150 | 15 | 已读 extractor 选择(118-147)、run_graphrag_for_kb 核心(256-375)；其余为合并/重试/解析工具 |
 | rag/prompts/generator.py | 1003 | 120 | 12 | 已读 kb_prompt/citation_prompt/memory_prompt；其余为各类 agent prompt 模板 |
 
+> **演进说明（dev-20260826）**：上表 `内部 agentic_rag 的六文件`（`internal/agentic_rag/{agent,tool_search_chunks,tool_grep_chunks,tool_list_chunks,tool_think}.go`）是**初版基线 `git 2db8eb6` 时通读过的真实文件**，反映那一刻的 Agentic RAG 形态；该目录已在当前源码中删除（重构进 `internal/agent/harness/`，见上文「Agentic RAG」节与 [CHANGELOG.md](CHANGELOG.md)）。表中其余文件（`retrievalbridge/`、`rag/nlp/*`、`rag/graphrag/*` 等）仍在当前源码存在，覆盖率记录保持有效。
+
 **合计/覆盖判定**：核心可归因管线文件（`retrievalbridge/`、`nlp/retrieval.go`、`nlp/reranker.go`、`agentic_rag/` 六文件、`rag/nlp/search.py`、`rag/nlp/query.py`、`rag/graphrag/search.py`、`rag/app/*`）均已 100% 通读，形成完整"深读骨架" ✅；但对 `chat_pipeline.go`、`skill_search.go`、`embedding_model.py` 这类**大而全文件**只读了关键段，文件级行覆盖率偏低，整体**未达"核心模块≥90% 全行覆盖"** ❌——以便"论断覆盖率"（设计骨架）优先，在下一轮用并行 subagent 对 `chat_pipeline.go`(4561L)、`skill_search.go`、`embedding_model.py`、`chat_model.py`、`graphrag/general/index.py` 补扫至 ≥90% 行后才能宣称达标。
 
 ## 待主 agent 验证项
@@ -360,7 +374,7 @@ sequenceDiagram
 ## 核心发现与设计启示
 
 1. **"多层融合"是 RAGFlow 区别于工具拼接的核心**：引擎内 `weighted_sum` 融合（召回初筛）+ 引擎外 `Rerank*` 重排（排序/分页），且统一到 `sim = tk*vt + vt*vsim + rank_fea` 这一条公式，Go 与 Python 逐位对齐。
-2. **"向量永不离引擎"**是性能关键取舍：ES 用两遍 KNN（先文本召回→再按 chunk id 过滤算干净余弦），避免批量向量回传应用层（[rag/nlp/search.py:394-425]()）。
+2. **"向量永不离引擎"**是性能关键取舍：ES 用两遍 KNN（先文本召回→再按 chunk id 过滤算干净余弦），避免批量向量回传应用层（[rag/nlp/search.py:396-427]()）。
   <!-- anchor: async def _knn_scores(self, sres: "Dealer.SearchResult", idx_names: str | list[s … return self.dataStore.get_scores(res) -->
 3. **Grounded citation 是双保险**：prompt 侧 `ID:n` 编号 + citation 指令，Python 侧 post-hoc `insert_citations` 句子级 embedding 校验补引用，堵住"模型自由发挥出处"。
 4. **路径偏差**：任务给的 `rag/app/qa.py`、`rag/app/one.py` 实为 ingestion chunker，非生成管线；真正的上下文组装在 `rag/prompts/generator.py` 与 Go `chat_pipeline.go` Phase 10。

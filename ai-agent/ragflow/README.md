@@ -14,6 +14,11 @@
 - [rag-pipeline.md](rag-pipeline.md) — 检索-重排-上下文-生成：多路召回 + 融合重排 + Grounded 引用
 - [agent-platform.md](agent-platform.md) — Agent 平台：Canvas DSL + eino 运行时 + 工具/MCP/记忆/多渠道
 - [deployment-admin.md](deployment-admin.md) — 部署与运维：多 mode 二进制 + Admin 心跳 + 三级配置
+- [CHANGELOG.md](CHANGELOG.md) — 各版本变更汇总（跨版本演进一览）
+
+## 本版增量说明（dev-20260826）
+
+> 对照初版解读（基线 `git 2db8eb6`）的增量更新：①Agentic RAG 已从 `internal/agentic_rag/` 的 ReAct 六工具重构为 `internal/agent/harness/` 的图式状态机；②新增 Azure DevOps / Azure Blob 两个数据源连接器；③对全部子文档引用做深度行号重核。详见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 核心能力
 
@@ -21,7 +26,7 @@
 |--------|------|---------|
 | 深度文档理解 | OCR / 版面分析 / 表格重组 / 多模态视觉 解析 PDF/DOCX 等复杂版式 | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
 | 模板式切分 | 内置切分模板，可视化与人工干预，可解释 | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
-| 异构数据源 | Word/Slides/Excel/图片/扫描件/结构化数据/网页/Confluence/Notion/S3 等 | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
+| 异构数据源 | Word/Slides/Excel/图片/扫描件/结构化数据/网页/Confluence/Notion/S3/Azure DevOps/Azure Blob 等 | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
 | 多路召回 + 融合重排 | 全文 + 向量 + 图等多路召回，`weighted_sum` 融合 + `Rerank*` 重排 | [rag-pipeline.md](rag-pipeline.md) |
 | Grounded 引用 | 带可溯源引用的回答，降幻觉；prompt 侧编号 + 句子级 embedding 校验 | [rag-pipeline.md](rag-pipeline.md) |
 | Agent 工作流 | Canvas DSL → eino 运行时，可编排、可恢复、可追踪 | [agent-platform.md](agent-platform.md) |
@@ -37,7 +42,7 @@
 | `internal/entity` + `internal/dao` | GORM schema 真源 + 迁移(手工+AutoMigrate) | [data-model.md](data-model.md) |
 | `${DOC_ENGINE}` 检索引擎 | ES/Infinity：后缀约定索引映射 + 索引命名路由 | [data-model.md](data-model.md) |
 | `internal/ingestion` / `deepdoc` | 消息驱动摄取状态机 + 文档解析/切分 | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
-| `internal/agent/retrievalbridge` / `internal/agentic_rag` | 检索融合/增强 + Agentic RAG 工具 | [rag-pipeline.md](rag-pipeline.md) |
+| `internal/agent/retrievalbridge` / `internal/agent/harness` | 检索融合/增强 + Agentic RAG 检索状态机 | [rag-pipeline.md](rag-pipeline.md) |
 | `internal/agent/canvas` + `runtime` | Canvas DSL 双视图 + eino 运行时 | [agent-platform.md](agent-platform.md) |
 | `internal/agent/tool` + `internal/mcp` | 工具/组件注册 + 双向 MCP | [agent-platform.md](agent-platform.md) |
 | `internal/admin` + `internal/server` | 控制面心跳 + 配置三级/生命周期 | [deployment-admin.md](deployment-admin.md) |

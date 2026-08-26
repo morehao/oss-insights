@@ -15,7 +15,7 @@ RAGFlow 的定位是「企业级 RAG 上下文层（context layer）」，差异
 | MCP | `internal/mcp/` + `tool/mcp.go` | 既消费外部 MCP，也把自己暴露为 MCP 服务器 |
 | 沙箱 | `internal/agent/sandbox/` + `tool/code_exec*.go` | 代码执行客户端 + 多 provider 抽象 |
 | 多渠道 | `internal/channels/` | Feishu/Discord/WhatsApp/Line 等接入调和器 |
-| 检索智能体 | `internal/agentic_rag/` + `harness/` | 不依赖画布的深度检索 ReAct 线 |
+| 检索智能体 | `internal/agent/harness/` + `internal/agent/tool/` | 不依赖画布的深度检索图式管线（route→planner→orchestrator） |
 
 技术栈上，`component` 与 `tool` 大多实现 eino 的 `BaseTool` / `Component` 接口，LLM 调用走 `internal/entity/models` 的 `EinoChatModel`（`ToolCallingChatModel`），因此整条 Agent 链路与 eino 生态深度绑定。
 
@@ -86,11 +86,11 @@ DSL 是唯一事实来源。前端保真存 `graph.nodes/graph.edges`，运行�
 <!-- anchor: type CanvasState struct { … SessionID          string -->
 - 序列化走 **eino 自注册 + 自定义 Marshal/Unmarshal**：`state.go` 的 `init()` 把 `CanvasState` 注册进 `compose.RegisterSerializableType`（`[internal/agent/runtime/state.go:125-127]()`），否则中断恢复时 eino 报 unknown type。
 <!-- anchor: func init() { … _ = compose.RegisterSerializableType[CanvasState]("runtime.CanvasState") -->
-- checkpoint 双通道：Redis 可用时 `buildAgentRunOptions`（`[cmd/ragflow_server.go:1009-1033]()`）装 `canvas.NewRedisCheckPointStore(24h)` + `canvas.NewRunTracker(24h)`；Redis 挂掉则返回零值结构，`AgentService` 视 nil 为「in-memory / 无追踪」继续服务。这是**降级而非中断**的关键设计决策。
+- checkpoint 双通道：Redis 可用时 `buildAgentRunOptions`（`[cmd/ragflow_server.go:1007-1029]()`）装 `canvas.NewRedisCheckPointStore(24h)` + `canvas.NewRunTracker(24h)`；Redis 挂掉则返回零值结构，`AgentService` 视 nil 为「in-memory / 无追踪」继续服务。这是**降级而非中断**的关键设计决策。
 
 ### 运行与事件：Runner 四结局 → SSE
 
-`canvas.Runner`（`[internal/agent/canvas/runner.go:220-324]()`）驱动一次画布执行，把结果归一到 `RunEvent` 通道，HTTP 层再转 SSE 帧。四种结局：正常完成、eino interrupt（wait-for-user，记录 interrupt id 供下次 resume）、取消/超时（静默）、其它错误。`RunFunc` 契约（`[internal/agent/canvas/runner.go:153]()`）让 Runner 与 Compile/Invoke 解耦——service 层注入真实实现。
+`canvas.Runner`（`[internal/agent/canvas/runner.go:258-380]()`）驱动一次画布执行，把结果归一到 `RunEvent` 通道，HTTP 层再转 SSE 帧。四种结局：正常完成、eino interrupt（wait-for-user，记录 interrupt id 供下次 resume）、取消/超时（静默）、其它错误。`RunFunc` 契约（`[internal/agent/canvas/runner.go:153]()`）让 Runner 与 Compile/Invoke 解耦——service 层注入真实实现。
 <!-- anchor: func (r *Runner) Run( … return out -->
 
 ## 关键数据结构
@@ -167,10 +167,10 @@ type MCPToolAdapter struct {
 `BotService.AgentbotCompletion`（`[internal/service/bot.go:151-170]()`）先做一次 IDOR 快速门卫（`loadCanvas`），再代理给 `AgentService.RunAgent`——上游廉价快失败避免空转 LLM token 与画布遥测。
 <!-- anchor: func (s *BotService) AgentbotCompletion( … ch, err := s.agentService.RunAgent(ctx, tenantID, agentID, -->
 
-随后 `RunAgent`（`[internal/service/agent.go:1455-1456]()`）经分布式 lease、版本 DSL 载入、会话建行、`root` 组装后，转交 `canvas.Runner` 驱动。
+随后 `RunAgent`（`[internal/service/agent.go:1447-1448]()`）经分布式 lease、版本 DSL 载入、会话建行、`root` 组装后，转交 `canvas.Runner` 驱动。
 <!-- anchor: func (s *AgentService) RunAgent(ctx context.Context, userID, canvasID, sessionID, version string, userInput any, files []map[string]interface{}) (<-chan canvas.RunEvent, error) { -->
 
-`buildRunFunc`（`[internal/service/agent.go:1846-2127]()`）真正完成解码、状态初始化、`canvas.Compile`、`cc.Workflow.Invoke` 与结果持久化。
+`buildRunFunc`（`[internal/service/agent.go:1842-2125]()`）真正完成解码、状态初始化、`canvas.Compile`、`cc.Workflow.Invoke` 与结果持久化。
 <!-- anchor: func (s *AgentService) buildRunFunc(canvasID string, versionRow *entity.UserCanvasVersion, dsl map[string]any) canvas.RunFunc { … workflowOutput, invokeErr := cc.Workflow.Invoke(ctx2, map[string]any{"query": wfInput}, invokeOpts...) -->
 
 ```mermaid
@@ -298,8 +298,8 @@ sequenceDiagram
 - **调度/缓存**：`internal/engine/redis` 供 checkpoint/runTracker/interrupt；`tokenizer.WithRunUsage` 做 token 计量进 `workflow_finished` 事件。
 - **消息队列**：`engine.GetMessageQueueEngine().PublishTask`（NATS）承载 memory 抽取任务的异步投递（`[internal/service/memory_message_service.go:342-385]()`）。
 - **沙箱**：`internal/agent/sandbox/` 提供多 provider 抽象（aliyun/e2b/tenki/ucloud-ssh 等），`agent/tool/code_exec*.go` 是执行客户端；真正的沙箱运行环境在 Python 侧 `agent/sandbox/`（executor_manager + sandbox_base_image + gVisor）。README 的「Python/JavaScript code executor」**实现分离**：Go 侧是客户端/协议，运行体在 Python。
-- **检索智能体**：`internal/agentic_rag/agent.go` 提供一条不依赖画布的轻量 ReAct 线，`Run` 用 eino **ADK** 的 `adk.ChatModelAgent`（非 `flow/agent/react`）跑「smart-reasoning」循环，默认工具集 think/todo_write/grep_chunks/search_chunks/list_chunks/run_javascript（`[internal/agentic_rag/agent.go:74-83]()`），检索工具按 tenant/dataset 作用域。
-<!-- anchor: func DefaultTools(tenantID string, datasetIDs []string) []tool.BaseTool { … NewRunJavascriptTool(), -->
+- **检索智能体**：不依赖画布的深度检索在 `internal/agent/harness/` 提供，`AgenticResearch`/`RunAgenticRAG` 是可复用检索状态机（其"检索智能体"形态已从早期 `internal/agentic_rag/` 的 ReAct 六工具重构为该图式管线，见 [rag-pipeline.md](rag-pipeline.md) 与 [CHANGELOG.md](CHANGELOG.md)）：入口 `RunAgenticRAG`（[internal/agent/harness/agentic_rag.go:54](internal/agent/harness/agentic_rag.go)），工具调度统一走 `internal/agent/harness/pipeline.go` 的 `Pipeline`（按 mode 裁剪 + 构图 gating + doc_scope 作用域）。
+<!-- anchor: func RunAgenticRAG(ctx context.Context, db *gorm.DB, question, keywords, modeLabel string, search SearchFn) AnswerResult { -->
 
 跨模块结论：chunk 解析/切分质量（ingestion 关注面）决定检索质量，而画布决定「检索结果如何被 LLM 编排」，二者共同实现「Quality in, quality out」。双栈上 Go 是新主服务、Python 是历史引擎，`internal/agent` 与 Python `agent/canvas.py` 并存，经 `dsl`/`runtime`/`tool` 的兼容层互认。
 
@@ -315,7 +315,7 @@ sequenceDiagram
 
 ### 决策二：Redis checkpoint 是「可选降级」，不是硬依赖
 
-`buildAgentRunOptions`（`[cmd/ragflow_server.go:1009-1033]()`）把 Redis 当可选件：可用则装 24h TTL 的 `NewRedisCheckPointStore` + `NewRunTracker`；否则返回零值结构，`AgentService` 视 nil 为 in-memory/无追踪继续服务。
+`buildAgentRunOptions`（`[cmd/ragflow_server.go:1007-1029]()`）把 Redis 当可选件：可用则装 24h TTL 的 `NewRedisCheckPointStore` + `NewRunTracker`；否则返回零值结构，`AgentService` 视 nil 为 in-memory/无追踪继续服务。
 <!-- anchor: func buildAgentRunOptions() agentRunOptions { … common.Info("agent: redis-backed run infra installed (24h TTL on checkpoint store + run tracker; eino default serializer)") -->
 
 - **权衡**：牺牲 Redis 缺失时跨进程续跑与取消协调（UserFillUp resume 在分布式下退化），换取「无 Redis 也能起服务」——契合 stand-alone 模式与无 Redis CI。
@@ -332,7 +332,7 @@ DSL 是唯一事实，前端只写图、后端只读 DSL 建图。`NormalizeForC
 
 「Quality in, quality out」的完整闭环是：解析/切分（ingestion）产出 high-fidelity chunk → 检索（rag-pipeline）多路召回 → Agent 画布（本文）把它们编排进 LLM 决策循环并落工具/MCP/记忆/沙箱 → 经多渠道（channels / chatbot）与对外 API 落地。画布不是孤立的「流程图编辑器」，而是整个 context layer 的编排内核。
 
-双栈演进上，Go 主服务把 Python 时代的 DSL 与运行时契约逐一重写为 `internal/agent/runtime` + `internal/agent/canvas`，同时保留对 v1 遗留节点（`ExitLoop`、`IterationItem`）的兼容以保障迁移期不破历史画布；`internal/agentic_rag` 用 eino ADK 走「不依赖画布」的轻量 ReAct，为深度检索与未来 Agent 形态预留路径。README 宣传的核心点（Agentic workflow/MCP、code executor、Memory、多 channel、pre-built templates）在源码中均有对应实现载体。
+双栈演进上，Go 主服务把 Python 时代的 DSL 与运行时契约逐一重写为 `internal/agent/runtime` + `internal/agent/canvas`，同时保留对 v1 遗留节点（`ExitLoop`、`IterationItem`）的兼容以保障迁移期不破历史画布；`internal/agent/harness/` 拉起一条「不依赖画布」的 agentic 检索图式管线，为深度检索与未来 Agent 形态预留路径（早期 `internal/agentic_rag/` 的 ReAct 形态已并入 harness，见 [CHANGELOG.md](CHANGELOG.md)）。README 宣传的核心点（Agentic workflow/MCP、code executor、Memory、多 channel、pre-built templates）在源码中均有对应实现载体。
 
 ## 待验证 / 缺口
 

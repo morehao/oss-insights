@@ -2,7 +2,7 @@
 
 > 本解读按 **agent 类型规格** 产出。
 > 项目：tutti — **Where people and agents build in tune.**
-> 仓库：https://github.com/anomalyco/tutti （Apache-2.0）
+> 仓库：https://github.com/tutti-os/tutti （Apache-2.0）
 
 ## 根因
 
@@ -17,9 +17,10 @@ tutti 要解决的根本问题是：**把用户从"多 AI agent 之间的信使"
 | 维度 | 描述 |
 |------|------|
 | 核心能力 | Real-time shared workspace / Big @（跨 agent 引用会话、文件、任务）/ "+" 引用 / 任务编排 / 应用生态（Agent 与人都能用）/ 多 provider agent 通协 |
-| 形态 | 本地优先（local-first）桌面应用：Electron 壳层 + Go 守护进程（tuttid） |
-| 生态 | 自带 App Center（image/UI/design/docs/presentation），Agent Extension 接第三方 ACP agent，Connector 接外部 CLI/MCP 能力 |
+| 形态 | 本地优先（local-first）桌面应用：Electron 壳层 + Go 守护进程（tuttid）；v0.2.30 起支持 Windows x64 桌面版 |
+| 生态 | 自带 App Center（image/UI/design/docs/presentation），Agent Extension 接第三方 ACP agent，Connector 接外部 CLI/MCP 能力（含远程 MCP） |
 | 适用人群 | 同时用多个 AI agent、被跨 agent 上下文搬运折磨的开发与创作者 |
+| 版本边界 | 开源版 = 单人多 agent 本地协作；Tutti · VM（商业 EA）= 多用户/多设备实时 Room 共享，需邀请码，不在开源仓库内 |
 
 ## 技术栈一览
 
@@ -36,8 +37,9 @@ tutti 要解决的根本问题是：**把用户从"多 AI agent 之间的信使"
 
 | 维度 | 数值（近似） |
 |------|------|
-| Go 守护进程源文件 | services/tuttid 下 ~1,100+ 个 .go 文件 |
-| 最重模块 | service/agent（~6 万行）、service/workspace（~2.9 万行）、service/agentstatus（~2 万行） |
+| Go 守护进程源文件 | services/tuttid 下 ~1,350 个 .go 文件 |
+| 最重模块 | service/agent（~7 万行、245 个 .go）、service/workspace（~3 万行）、service/agentstatus（~2 万行） |
+| 共享运行时 | packages/agent/daemon/runtime（ACP/Codex/Claude SDK 适配器，377 个 .go 文件） |
 | Monorepo | 27+ npm 包 + 多个 Go module（go.work） |
 | 文档体系 | docs/architecture + docs/specs + docs/adr 持续演进 |
 
@@ -58,9 +60,11 @@ tutti 要解决的根本问题是：**把用户从"多 AI agent 之间的信使"
 - [`memory-system.md`](memory-system.md) — 记忆系统：Local-First SQLite 分层存储、事件流投影、消息版本游标
 - [`tutti-mode-orchestration.md`](tutti-mode-orchestration.md) — 多 Agent 编排：以 SQLite 为真值的 Saga 闭环，checkpoint 节拍 + 独立审核 + 防冲突
 - [`app-ecosystem.md`](app-ecosystem.md) — 应用生态：App Center / Factory / Runner，Agent 反向造应用与子进程隔离
-- [`connector-market.md`](connector-market.md) — 连接器市场：外部 CLI/MCP 能力接入，fail-closed 验签 + 幂等安装
+- [`connector-market.md`](connector-market.md) — 连接器市场：外部 CLI/MCP 能力接入，v0.2.30 起共享 packages/connector + 远程 MCP
 - [`agent-extensions.md`](agent-extensions.md) — Agent Extension：第三方 ACP 智能体的声明式接入
+- [`acp-protocol.md`](acp-protocol.md) — ACP 协议：双向 JSON-RPC 契约、标准 ACP 适配器、会话/turn 生命周期与权限交互
 - [`transport-security.md`](transport-security.md) — 传输与安全：loopback 随机端口 + listener-info 握手 + bearer token + Electron 安全边界
+- [`CHANGELOG.md`](CHANGELOG.md) — 各版本变更汇总
 
 ---
 
@@ -108,8 +112,9 @@ flowchart TB
 | `service/tuttimodeplan` / `tuttimodeexecution` | Tutti Mode：目标→Plan→Issue→执行编排 | [`tutti-mode-orchestration.md`](tutti-mode-orchestration.md) |
 | `service/collabrun` | 横向协作（fork/delegate/consult/handoff）记账 | [`tutti-mode-orchestration.md`](tutti-mode-orchestration.md) |
 | `service/workspace` | workspace 应用、App Factory/Runner、包来源 | [`app-ecosystem.md`](app-ecosystem.md) |
-| `service/connectormarket` | 连接器安装/运行时/命令 broker | [`connector-market.md`](connector-market.md) |
+| `service/connector`（+ `packages/connector`） | 连接器安装/运行时/命令 provider、远程 MCP | [`connector-market.md`](connector-market.md) |
 | `service/eventstream` | 业务事件订阅/发布、协作广播 | [`tutti-mode-orchestration.md`](tutti-mode-orchestration.md) |
+| `packages/agent/daemon/runtime` | ACP/Codex/Claude SDK provider 适配器引擎 | [`acp-protocol.md`](acp-protocol.md) |
 | `server` + `types/httputil` + `api/daemon_events` | HTTP/WS 服务、鉴权、事件流 | [`transport-security.md`](transport-security.md) |
 | `data/` + `packages/agent/store-sqlite` | SQLite 持久化、可嵌入 Agent 存储 | [`memory-system.md`](memory-system.md) |
 
@@ -134,15 +139,15 @@ sequenceDiagram
 
 ## 关键源码入口（真源引用）
 
-- 服务组装入口：`main.go:58` 经 `buildTuttiServer()` 把 listener 与依赖图装配成 HTTP server。[services/tuttid/wiring.go:140-142]() 是手工组合根的起点，从环境解析 listener spec 再组装各服务。
+- 服务组装入口：`main.go:58` 经 `buildTuttiServer()` 把 listener 与依赖图装配成 HTTP server。[services/tuttid/wiring.go:154-156]() 是手工组合根的起点，从环境解析 listener spec 再组装各服务。
   <!-- snippet: func buildTuttiServer() (*http.Server, net.Listener, *tuttiWiring, error) {
 	listenerSpec, err := tuttiserver.ListenerSpecFromEnv()
 	if err != nil { -->
-- 业务事件主题目录：[services/tuttid/service/eventstream/catalog.go:18-21]() 集中声明 workspace 级事件 topic（`agent.collaboration.updated` / `connector.market.changed` / `agent.model.catalog.invalidated` 等），是信号-and-对账的"脏信号"清单源。
-  <!-- snippet: 	TopicAgentCollaborationUpdated                      = "agent.collaboration.updated"
-	TopicAgentModelCatalogInvalidated                   = "agent.model.catalog.invalidated"
-	TopicAgentQuickPromptUpdated                        = "agent.quickprompt.updated"
-	TopicConnectorMarketChanged                         = "connector.market.changed" -->
+- 业务事件主题目录：[services/tuttid/service/eventstream/catalog.go:20-23]() 集中声明 workspace 级事件 topic（`agent.collaboration.updated` / `connector.market.changed` / `agent.model.catalog.invalidated` 等），是信号-and-对账的"脏信号"清单源。
+  <!-- snippet: 	TopicAgentCollaborationUpdated                       = "agent.collaboration.updated"
+	TopicAgentModelCatalogInvalidated                    = "agent.model.catalog.invalidated"
+	TopicAgentQuickPromptUpdated                         = "agent.quickprompt.updated"
+	TopicConnectorMarketChanged                          = "connector.market.changed" -->
 
 ## 工程实践亮点
 
@@ -179,9 +184,10 @@ API 变更流程：改 `tuttid.v1.yaml` → `pnpm generate:api` 生成 Go handle
 - 诚实的安全边界：App 生成器无 sandbox/VM，靠目录边界 + 二级受限 token；连接器 fail-closed 验签 + 只接无凭据能力。
 
 **主要风险**
-- service/agent 已 ~6 万行、76+ 文件，是最大复杂度源，随更多 agent target 增长边界难管。
+- service/agent 已 ~7 万行、245 个 .go 文件，是最大复杂度源，随更多 agent target 增长边界难管。
 - wiring.go 中 `store.(workspacedata.XxxStore)` 未检查转型，接口未实现时静默返回 nil。
-- 可移植性：Tutti · VM 计划中，Windows 支持进行中；扫码生态（mobile）仍在演进。
+- 可移植性：Windows 桌面版 v0.2.30 已随正式发布落地；Tutti · VM 属商业 EA（需邀请码），扫码生态（mobile）仍在演进。
+> **演进说明(v0.2.30)**：原"Tutti · VM 计划中，Windows 支持进行中"已过时——Windows x64 桌面下载已入正式 release，Tutti · VM 进入 Early Access（仅建 Room 需邀请码）。
 
 ## 值得借鉴的设计（可跨项目迁移）
 

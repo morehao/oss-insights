@@ -46,12 +46,12 @@ sequenceDiagram
 2. **daemon reconcile**：`manager.go:80-93` 的 `Reconcile` 读 feature flags，对 enabled 源拉取并校验签名 release。
 3. **验证安装**：解包为不可变安装，拒绝路径穿越/符号链接/可执行文件/尺寸超限，写 `<state>/agent/extensions/<agentKey>/<version>/`。
 4. **注册 Agent Target**：`registerTarget`（manager.go:498）写含 `agent_extension` launch ref 的 Target，图标以 data URL 内联。这样 renderer 无需为每个扩展加分支。
-5. **运行时解析**：会话创建时，[services/tuttid/service/agentextension/runtime_resolver.go:46-48]() 要求 launch ref 必须是 `agent_extension`，否则拒绝；然后生成**标准的 ACP 适配器**。
+5. **运行时解析**：会话创建时，[services/tuttid/service/agentextension/runtime_resolver.go:64-66]() 要求 launch ref 必须是 `agent_extension`，否则拒绝；然后生成**标准的 ACP 适配器**。
 <!-- snippet: 	if kind, _ := input.ProviderTargetRef["kind"].(string); kind != "agent_extension" {
 		return nil, fmt.Errorf("dynamic provider %q requires an agent_extension target", input.Provider)
 	} -->
 
-[services/tuttid/service/agentextension/runtime_resolver.go:64-66]() 统一走 `NewStandardACPAdapter`，把任何第三方都收编为标准 ACP stdio 适配器：
+[services/tuttid/service/agentextension/runtime_resolver.go:82-84]() 统一走 `NewStandardACPAdapter`，把任何第三方都收编为标准 ACP stdio 适配器：
 <!-- snippet: func newRuntimeAdapter(binding RuntimeBinding, agentTargetID string, transport agentruntime.ProcessTransport, host agentruntime.HostMetadata) (agentruntime.Adapter, error) {
 	return agentruntime.NewStandardACPAdapter(runtimeAdapterConfig(binding, agentTargetID), transport, host)
 } -->

@@ -122,6 +122,8 @@ stateDiagram-v2
 
 ## 多协议抽象：把 ACP/OpenHands 收敛成统一载荷
 
+> ACP 协议的完整消费链（provider 注册表 / 配置流 / 模型解析 / 凭据体系 / 登录态探测 / 命令编辑）见深度子文档 [`acp-protocol.md`](acp-protocol.md)。
+
 前端不直接 spawn ACP 子进程。`buildStartConversationRequest` 按 `isAcpAgent(settings)`（读 `agent_settings.agent_kind`）分派到 ACP/OpenHands 两个 builder，产出的都是**同构的 StartConversationPayload**——工作目录、MCP config、secrets 都以此统一字段塞进 payload，由 agent-server 侧解析成子进程 `[src/api/agent-server-adapter.ts:816-819,843-909,911-991,1085-1168]()`。
 
 ### ACP 身份标注：tag + agent.kind 双保险

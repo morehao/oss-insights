@@ -44,7 +44,7 @@ flowchart TB
 
 这是最独特的设计点：**让一个 Agent 会话本身就充当 App 生成器**。App Factory 创建 job 后，用目标 agent target 起一个 Agent Session，把这个 agent 的 `cwd` 设为草稿目录、注入 `appFactorySkill` 等额外技能，让 agent 直接在草稿里产出完整的 App 包。
 
-[services/tuttid/service/workspace/app_factory.go:286-287]() 的 `Create`：校验 agent target → mint appId → 创建草稿目录（`job.DraftDir`）→ 起 Agent 会话作为生成器。
+[services/tuttid/service/workspace/app_factory.go:289-290]() 的 `Create`：校验 agent target → mint appId → 创建草稿目录（`job.DraftDir`）→ 起 Agent 会话作为生成器。
 <!-- snippet: func (s *AppFactoryService) Create(ctx context.Context, workspaceID string, input CreateAppFactoryJobInput) (workspacebiz.AppFactoryJob, error) {
 	workspace, err := s.workspaceSummary(ctx, workspaceID) -->
 
@@ -65,7 +65,7 @@ queued -> generating -> preparing -> validating -> ready -> published
 - `AppRunner.Start`（apps_runner.go:87）走 `preparing → starting → running`，且**进程排队串行启动**（`queue chan struct{}` 有界信号量，apps_runner.go:41/148）。
 - 启动即派生一个**独立子进程**，注入一组 `TUTTI_APP_*` 环境变量，把目录边界彻底分开：
 
-[services/tuttid/service/workspace/apps_runner.go:236-244]() 的目录边界设计——只读包目录、scratch runtime、持久 data、独立 database、logs、可复用 toolchain root，全部分开：
+[services/tuttid/service/workspace/apps_runner.go:257-265]() 的目录边界设计——只读包目录、scratch runtime、持久 data、独立 database、logs、可复用 toolchain root，全部分开：
 <!-- snippet: 		"TUTTI_APP_PACKAGE_DIR=" + input.PackageDir,
 		"TUTTI_APP_RUNTIME_DIR=" + input.RuntimeDir,
 		"TUTTI_APP_DATA_DIR=" + input.DataDir,

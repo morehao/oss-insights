@@ -22,6 +22,9 @@ manifest 是**外部仓库（`@openhands/extensions`）声明的指令数据**�
 - **关闭集白名单**：命令只许安全字符且逐词禁绝对路径/`..`（防逃出解压目录）`[src/manifests/manifest-validation.ts:165-178]()`；字段名、trigger 单种、repo-picker 事件源、占位符只许已知 namespace、copy 禁 markup `[src/manifests/manifest-validation.ts:25-49]()`
 - **派生行为**：请求体完全由主/表单推导（name、trigger、repos、prompt），条目只声明"差异"，镜像 `extensions` 侧 reference 实现 `[src/manifests/automation-setup.ts:185-347]()`
 - **template provenance（本版新增）**：创建时把 `{id, version, config}` 作为 `template` 发送，服务端识别"同一条目再次 setup"复用已有 automation；prompt 条目取顶部 `version`，bundle 条目取 `setup.bundle.version` `[src/manifests/automation-setup.ts:236-246,314-318]()`
+- **preset_metadata（增量新增）**：`Automation` 新增 service-owned 的 `preset_metadata`（preset 状态原样回传，GUI 只读其中 template provenance 块，且必须经 `automation-catalog` 的 guarded helper 读、不直接摸裸字段）`[src/types/automation.ts:47-52]()`
+
+<!-- anchor:    * Service-owned preset state, returned verbatim. The GUI reads only the …   preset_metadata?: Record<string, unknown> | null; -->
 
 ```mermaid
 sequenceDiagram
@@ -40,6 +43,24 @@ sequenceDiagram
         U-->>Server: 创建含 template={id,v}
     end
 ```
+
+### manifest 声明的 dashboard 指标：名字封闭、实现唯一
+
+dashboard 卡片的 metric / filter / sort 名字由 interface manifest 声明成 **closed sets**（如 `OVERVIEW_METRICS` = automations / needs-attention / total-runs / average-duration）`[src/manifests/types.ts:339-345]()`。
+
+<!-- anchor: /** Values this host computes over the loaded automations and their runs. */ … ] as const; -->
+
+而每个名字的**唯一实现**全部集中在 `automation-insights.ts`——其余 manifests 只做组合、不做业务，避免"同一指标在 dashboard 与 detail 各算一份"漂移 `[src/manifests/automation-insights.ts:5-13]()`。
+
+<!-- anchor:    * The interface manifest's dashboard surface names metrics, filter predicates, …    * and durations consider only COMPLETED and FAILED runs — a cancelled or -->
+
+派生统计遵守一条**"可知道才说"纪律**：`completedTotal` 优先用 automation service 1.9.0 起上报的 `status_counts`（lifetime 计数，不受分页影响、sparse——无 run 的状态不出现 key）`[src/types/automation.ts:126-131]()`。
+
+<!-- anchor:    * Lifetime run counts by status, unaffected by pagination. Sparse — a …   status_counts?: Partial<Record<AutomationRunStatus, number>>; -->
+
+服务端不报时，仅当样本恰好覆盖全历史（`total ≤ 样本长度`）才用样本计数，否则置 `null`——"不知道就是不知道，绝不猜" `[src/manifests/automation-insights.ts:94-100]()`。
+
+<!-- anchor:   let completedTotal: number | null; …     completedTotal = null; -->
 
 ## 触发与运行状态机
 
@@ -67,6 +88,24 @@ stateDiagram-v2
 ### 健康度派生
 
 `checkHealth()` 5s 超时 fail-fast `[src/api/automation-service/automation-service.api.ts:762-787]()`；`useAutomationHealth` 30s stale、失败不重试（立即展示错误态）`[src/hooks/query/use-automation-health.ts:7-14]()`；`automations-list` 先 gate health 再拉 automation 列表——`isBackendHealthy` 为 false 就跳 `BackendNotConfigured` 而非拉列表 `[src/routes/automations-list.tsx:131-133,350-358]()`。
+
+### run 摘要聚合与 fan-out 限流
+
+home/dashboard 的每次展示会对**每个 automation 各发一个 runs 请求**——全量 fan-out 能耗尽 automation service 的连接池（约 15 连接，池满后 30s 超时卡死所有请求），因此用全局共享的 FIFO 信号量 `automationRunRequestsLimiter` 把并发压在 3 个；排队中若 query 被取消（观察者卸载）则直接让位、不占网络 `[src/hooks/query/concurrency-limiter.ts:48-55]()`。
+
+<!-- anchor:  * Shared by every per-automation runs query: the dashboard and home page each … export const automationRunRequestsLimiter = new ConcurrencyLimiter(3); -->
+
+轮询策略随之收紧：15s 间隔（刻意慢于详情页 3s——每 automation 一请求的 fan-out 下，全 in-flight 时请求率与一个打开中的详情页相当）`[src/hooks/query/use-latest-automation-runs.ts:14-18]()`。
+
+<!-- anchor:      * Poll interval while a run is non-terminal. Deliberately slower than the 3s …      * same request rate as one open detail page. -->
+
+`staleTime` 60s、`retry: false`（服务不健康时沉降为 "unknown" 而非猛刷）、`refetchOnWindowFocus: false`，只在**最近一次 run 非终态**时继续轮询，让 status/conversation_id 变化无需手动刷新 `[src/hooks/query/use-latest-automation-runs.ts:67-83]()`。
+
+<!-- anchor:       staleTime: 60 * 1000, …         return isInFlight ? IN_FLIGHT_POLL_INTERVAL_MS : false; -->
+
+health 派生在摘要基础上收口：disabled 一律判 disabled（不管历史）；摘要未决（loading/error/无 summary）判 unknown 不妄言；其后才由最近一次 run 定夺（FAILED→failing、PENDING/RUNNING→running、终态→healthy）`[src/manifests/automation-insights.ts:128-145]()`。
+
+<!-- anchor: export function deriveAutomationHealth( …   return "healthy"; -->
 
 ## 全局关联与权衡
 

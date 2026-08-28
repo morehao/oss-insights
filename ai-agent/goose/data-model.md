@@ -2,9 +2,11 @@
 
 > schema 定义与迁移均在 `crates/goose/src/session/session_manager.rs`。
 
+> **演进说明（main@f87c4d7）**：依据代码快照比对。`CURRENT_SCHEMA_VERSION` 升到 **v16**（新增 `idx_messages_session_created` 复合索引）；详见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 根因
 
-会话数据模型的根本问题：**一句话、一条消息、一次 token 消耗，怎么组织成一组相互关联、可演进、可查询的表，支撑"恢复对话、跨会话召回、成本核算、上下文压缩"四件事**。goose 的答案是：一个 `sessions.db`（SQLite），核心四张用户表 + 一张版本表，外加一张由 provider inventory 建的表；schema 通过版本表 + 逐版迁移持续推进到 v15。
+会话数据模型的根本问题：**一句话、一条消息、一次 token 消耗，怎么组织成一组相互关联、可演进、可查询的表，支撑"恢复对话、跨会话召回、成本核算、上下文压缩"四件事**。goose 的答案是：一个 `sessions.db`（SQLite），核心四张用户表 + 一张版本表，外加一张由 provider inventory 建的表；schema 通过版本表 + 逐版迁移持续推进到 v16。
 
 ## 数据模型主动探测命中
 
@@ -117,13 +119,13 @@ erDiagram
     }
 ```
 
-> 说明：`sessions.thread_id` 无强外键，`threads/thread_messages` 表由 migration v10 预建但当前无写入代码（见演进策略的"预建表"讨论）；`schema_version` 用自身 PK 记录历史版本（v1-v15 各一行）。
+> 说明：`sessions.thread_id` 无强外键，`threads/thread_messages` 表由 migration v10 预建但当前无写入代码（见演进策略的"预建表"讨论）；`schema_version` 用自身 PK 记录历史版本（v1-v16 各一行）。
 
 ## 核心表设计（字段表，作为 ER 图之外的结构化补充）
 
 ### schema_version
 
-职责：记录 schema 当前与历史版本。`create_schema` 只写一行的现值（`CURRENT_SCHEMA_VERSION=15`），迁移循环会追加每一版。（`[crates/goose/src/session/session_manager.rs:968-980]()`）
+职责：记录 schema 当前与历史版本。`create_schema` 只写一行的现值（`CURRENT_SCHEMA_VERSION=16`），迁移循环会追加每一版。（`[crates/goose/src/session/session_manager.rs:968-980]()`）
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -208,7 +210,7 @@ goose 不引入外部 migration 工具，用自研的最小机制：
 
 1. `pool()` 初始化时先查 `schema_version` 表是否存在于 sqlite_master（`[crates/goose/src/session/session_manager.rs:930-935]()`）。
 2. 不存在 → `create_schema` 全新建库 + `import_legacy` 导入旧 JSONL。
-3. 存在 → `run_migrations`：读当前 MAX(version)，若 `< 15`，在 `BEGIN IMMEDIATE` 里对 `(current_version+1)..=15` 逐个 `apply_migration` 并在每版后 `update_schema_version` 追加一行（`[crates/goose/src/session/session_manager.rs:1204-1227]()`）。
+3. 存在 → `run_migrations`：读当前 MAX(version)，若 `< 16`，在 `BEGIN IMMEDIATE` 里对 `(current_version+1)..=16` 逐个 `apply_migration` 并在每版后 `update_schema_version` 追加一行（`[crates/goose/src/session/session_manager.rs:1204-1227]()`）。
 
 ```rust
 for version in (current_version + 1)..=CURRENT_SCHEMA_VERSION {
@@ -223,6 +225,7 @@ for version in (current_version + 1)..=CURRENT_SCHEMA_VERSION {
 **演进手法有两条主线**：
 
 - **加列为主**：migration v2-v15 绝大多数是 `ALTER TABLE ADD COLUMN`（`user_recipe_values_json`、`metadata_json`、`message_id`、`goose_mode`、`archived_at`、`project_id`、`accumulated_cost`、cache 四列、`parent_session_id`）。这是 SQLite 对新手最友好的演进——`ALTER TABLE ADD COLUMN` 幂等且不动既有数据。
+- **索引先行**：v16 不再加列，而是补 `idx_messages_session_created`（`messages(session_id, created_timestamp, id)` 复合索引）——会话列表与消息分页的高频查询由此走索引而非全表扫（`[crates/goose/src/session/session_manager.rs:1586-1592]()`）。至此演进从"扩展结构"转入"优化访问路径"。
 - **数据批量回填/重分类**：v7 给历史行补 `message_id`（`UPDATE messages SET message_id = 'msg_' || session_id || '_' || id`，`[crates/goose/src/session/session_manager.rs:1352-1359]()`）；**v9 把历史 user 会话里名为 `ACP Session` 的整批重分类成 `Acp`**（`[crates/goose/src/session/session_manager.rs:1374-1386]()`）——这是 session_type 靠枚举值演进、用 SQL 一次性迁移存量数据的范例。
 - **防重复建表守卫**：每次 `ADD COLUMN` 前都先 `PRAGMA table_info` 判列是否存在，`CREATE TABLE IF NOT EXISTS` 全加 `IF NOT EXISTS`——因为新建库（`create_schema`）与旧库迁移（`apply_migration`）路径不同，须幂等。
 

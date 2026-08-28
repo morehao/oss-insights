@@ -1,5 +1,7 @@
 # Provider 抽象与 LLM 接入
 
+> **演进说明（main@f87c4d7）**：依据代码快照比对。context limit 统一到 provider API（`ContextLimitResolver` + `context_limit.rs` 入口）、`ProviderConstructor` 新增 `use_default_model` 分支等；详见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 根因
 
 本模块属于 goose（Linux Foundation AAIF 旗下、横跨桌面/CLI/API 三种形态的通用 AI Agent）。它的设计哲学是把 15+ 个远程 LLM provider、本地 CPU/Metal 推理（llama.cpp/mlx）、以及 70+ 个 MCP 扩展全部纳入**同一个 agent 主循环**（system + messages + tools → 流式回复 → 工具调用 → 回填结果）。
@@ -63,7 +65,7 @@ graph TB
 
 `Provider` trait 里真正**必须实现**的方法只有一个 `stream()`，入参完全统一——`ModelConfig` + system 提示 + 消息列表 + 工具列表，返回 `MessageStream`：
 
-[crates/goose-provider-types/src/base.rs:429-436]()
+[crates/goose-provider-types/src/base.rs:499-506]()
 <!-- snippet: 
     /// Primary streaming method that all providers must implement.
     async fn stream(
@@ -76,11 +78,13 @@ graph TB
 
 其余几十个方法（`complete`、`get_context_limit`、`fetch_supported_models`、`configure_oauth`、`refresh_credentials` 等）全部带默认实现，是**可选覆盖点**。这把"各家差异"压到一个面：远程 HTTP 各家与本地推理的唯一共同责任，就是**从一个模型配置和一组消息、工具里，吐出一条（可能分块的）回复流**。主 Agent 循环无需区分"我在跟谁说话"。
 
+其中 `get_context_limit` 的解析在 #11213 后被**统一收敛到 provider API**：默认实现经 `ContextLimitResolver::new(self.get_name())`（[base.rs:524-525]）按 provider 名查模型能力表/元数据，`crates/goose/src/context_limit.rs` 再提供 `get_context_limit(provider, model)` 统一入口——先看 `GOOSE_CONTEXT_LIMIT` 配置覆盖，否则落 provider API。上下文上限从此不再是各 provider 各自为政的估算，而是可被配置、可被模型能力表兜底的单一解析链。
+
 ### complete() = stream() 的默认派生：一次性 vs 回调的权衡
 
 `complete()` 没有独立实现，而是默认基于 `stream()` + `collect_stream()` 聚合而来：
 
-[crates/goose-provider-types/src/base.rs:438-447]()
+[crates/goose-provider-types/src/base.rs:508-517]()
 <!-- snippet: 
     async fn complete(
         &self,
@@ -95,7 +99,7 @@ graph TB
 
 `stream_from_single_message()` 把单个 Message+Usage 包成一次性 MessageStream，让不支持流式的端点也能伪装成流：
 
-[crates/goose-provider-types/src/base.rs:418-421]()
+[crates/goose-provider-types/src/base.rs:480-483]()
 <!-- snippet: 
 pub fn stream_from_single_message(message: Message, usage: ProviderUsage) -> MessageStream {
     let stream = futures::stream::once(async move { Ok((Some(message), Some(usage))) });
@@ -108,7 +112,7 @@ pub fn stream_from_single_message(message: Message, usage: ProviderUsage) -> Mes
 
 `MessageStream` 的 Item 是 `(Option<Message>, Option<ProviderUsage>)` 二元组，两个字段都可能为空：
 
-[crates/goose-provider-types/src/base.rs:308-313]()
+[crates/goose-provider-types/src/base.rs:347-352]()
 <!-- snippet: 
 /// A message stream yields partial text content but complete tool calls, all within the Message object
 /// So a message with text will contain potentially just a word of a longer response, but tool calls
@@ -119,7 +123,7 @@ pub type MessageStream = Pin<
 
 注释直接写明了语义：**文本内容是分片的，但工具调用必须完整聚合后才一次性吐出**。`collect_stream()` 的合并逻辑印证了这点——连续文本块做拼接，非文本块（工具调用、图片）直接追加：
 
-[crates/goose-provider-types/src/base.rs:359-396]()
+[crates/goose-provider-types/src/base.rs:396-433]()
 <!-- snippet: 
     while let Some(result) = stream.next().await {
         let (msg_opt, usage_opt) = result?;
@@ -162,7 +166,7 @@ pub type MessageStream = Pin<
 
 聚合收尾时，`(None, Some(usage))` 分支返回一个空 assistant 消息（只有用量，类心跳式 final usage 项），`(None, None)` 分支则报 `ExecutionError("Stream yielded no message")`：
 
-[crates/goose-provider-types/src/base.rs:398-416]()
+[crates/goose-provider-types/src/base.rs:460-478]()
 <!-- snippet: 
     match (final_message, final_usage) {
         (Some(msg), usage) => {
@@ -220,7 +224,7 @@ pub trait ProviderDef: ProviderDescriptor + Send + Sync {
 
 以 OpenAI 为例，`OpenAiProviderDef::from_env` 只是薄封装，把几十行 host/base_path/API key 解析放进独立 `from_env()`：
 
-[crates/goose/src/providers/openai_def.rs:38-47]()
+[crates/goose/src/providers/openai_def.rs:51-60]()
 <!-- snippet: 
 impl ProviderDef for OpenAiProviderDef {
     type Provider = OpenAiProvider;
@@ -237,7 +241,7 @@ impl ProviderDef for OpenAiProviderDef {
 
 `ProviderRegistry` 本质是一个 `HashMap<String, ProviderEntry>`，每个 entry 存 metadata、一个包装成 `Arc<dyn Provider>` 的**构造器闭包**、以及 inventory 相关解析器：
 
-[crates/goose/src/providers/provider_registry.rs:24-34]()
+[crates/goose/src/providers/provider_registry.rs:25-35]()
 <!-- snippet: 
 #[derive(Clone)]
 pub struct ProviderEntry {
@@ -251,18 +255,19 @@ pub struct ProviderEntry {
     tls_config: Option<TlsConfig>,
 } -->
 
-`constructor` 的类型是 `Arc<dyn Fn(Vec<ExtensionConfig>, Option<PathBuf>, Option<TlsConfig>) -> BoxFuture<'static, Result<Arc<dyn Provider>>>`（`ProviderConstructor` 别名，[crates/goose/src/providers/provider_registry.rs:12-20]()）。注册时把泛型 `F: ProviderDef` 的 `from_env` / `from_env_with_working_dir` 捕获进闭包并**擦除泛型**：
+`constructor` 的类型是 `Arc<dyn Fn(Vec<ExtensionConfig>, Option<PathBuf>, Option<TlsConfig>, bool) -> BoxFuture<'static, Result<Arc<dyn Provider>>>`（`ProviderConstructor` 别名，[crates/goose/src/providers/provider_registry.rs:12-21]()）。注册时把泛型 `F: ProviderDef` 的 `from_env` / `from_env_with_working_dir` 捕获进闭包并**擦除泛型**；最后的 `bool` 是 `use_default_model`——对应 ACP 宿主请求「用默认模型」的场景，命中时走 `F::from_env_with_default_model`：
 
-[crates/goose/src/providers/provider_registry.rs:136-147]()
+[crates/goose/src/providers/provider_registry.rs:125-137]()
 <!-- snippet: 
-                constructor: Arc::new(|extensions, working_dir, tls_config| {
+                constructor: Arc::new(|extensions, working_dir, tls_config, use_default_model| {
                     Box::pin(async move {
-                        let provider = match working_dir {
-                            Some(working_dir) => {
-                                F::from_env_with_working_dir(extensions, working_dir, tls_config)
-                                    .await?
-                            }
-                            None => F::from_env(extensions, tls_config).await?,
+                        let provider = if use_default_model {
+                            F::from_env_with_default_model(extensions, tls_config).await?
+                        } else if let Some(working_dir) = working_dir {
+                            F::from_env_with_working_dir(extensions, working_dir, tls_config)
+                                .await?
+                        } else {
+                            F::from_env(extensions, tls_config).await?
                         };
                         Ok(Arc::new(provider) as Arc<dyn Provider>)
                     })
@@ -270,7 +275,7 @@ pub struct ProviderEntry {
 
 这是"注册表模式 + 工厂模式"的组合：**注册发生在启动期（类型擦除），实例化发生在运行时收到同名请求时**。好处是 provider 枚举、模型拾取器、UI 展示都不需要真正实例化；坏处是构造期错误被推迟到 `create()` 调用时（延迟失败），且 declarative 构造器闭包要被 clone（[crates/goose/src/config/declarative_providers.rs:399-402]() 注释明确指出闭包移入注册表、未来才被调用）。`get_from_registry` 是运行时取用统一入口：
 
-[crates/goose/src/providers/init.rs:251-258]()
+[crates/goose/src/providers/init.rs:253-260]()
 <!-- snippet: 
 pub async fn get_from_registry(name: &str) -> Result<ProviderEntry> {
     let guard = get_registry().await.read().unwrap();
@@ -291,7 +296,7 @@ static REGISTRY: OnceCell<RwLock<ProviderRegistry>> = OnceCell::const_new(); -->
 
 每个 provider 一行 `register_with_inventory`（或 `register`）注册，如 OpenAI：
 
-[crates/goose/src/providers/init.rs:154-157]()
+[crates/goose/src/providers/init.rs:156-159]()
 <!-- snippet: 
         registry.register_with_inventory::<OpenAiProviderDef>(
             true,
@@ -300,7 +305,7 @@ static REGISTRY: OnceCell<RwLock<ProviderRegistry>> = OnceCell::const_new(); -->
 
 `init_registry()` 一口气注册 30+ 个 provider，并给带缓存的 provider（github_copilot、databricks、xai_oauth 等）挂 cleanup 钩子（[crates/goose/src/providers/init.rs:182-214]()）。`register` 的第一个 bool 决定 `provider_type` 是 `Preferred` 还是 `Builtin`：
 
-[crates/goose/src/providers/provider_registry.rs:151-155]()
+[crates/goose/src/providers/provider_registry.rs:141-145]()
 <!-- snippet: 
                 provider_type: if preferred {
                     ProviderType::Preferred
@@ -314,7 +319,7 @@ static REGISTRY: OnceCell<RwLock<ProviderRegistry>> = OnceCell::const_new(); -->
 
 `register_declarative_providers` 把自定义/内置配置按 `engine` 路由到对应实现：
 
-[crates/goose/src/config/declarative_providers.rs:349-364]()
+[crates/goose/src/config/declarative_providers.rs:371-386]()
 <!-- snippet: 
 pub fn register_declarative_providers(
     registry: &mut crate::providers::provider_registry::ProviderRegistry,
@@ -335,7 +340,7 @@ pub fn register_declarative_providers(
 
 engine 为 OpenAI 时分流：HuggingFace / OllamaCloud 有专门实现，否则默认 `from_custom_config` 落到 OpenAI 兼容组装：
 
-[crates/goose/src/config/declarative_providers.rs:448-464]()
+[crates/goose/src/config/declarative_providers.rs:470-486]()
 <!-- snippet: 
             } else {
                 registry.register_with_name::<OpenAiProviderDef, _, _>(
@@ -357,7 +362,7 @@ engine 为 OpenAI 时分流：HuggingFace / OllamaCloud 有专门实现，否则
 
 这解释了为什么"OpenAI 兼容"能覆盖 Groq、Mistral、DeepSeek 等大量网关：**它们共享 OpenAI chat/completions（或新版 responses）协议，goose 用一个 `OpenAiProvider` 加可更换的 base_path/host 就全收编了**。副作用是差异靠 provider 名黑名单 + 运行时 `sanitize_request_for_compat` 硬编码补齐：
 
-[crates/goose-providers/src/openai.rs:413-428]()
+[crates/goose-providers/src/openai.rs:437-452]()
 <!-- snippet: 
     /// Providers known to reject `max_completion_tokens` and require
     /// the legacy `max_tokens` field instead.
@@ -382,7 +387,7 @@ engine 为 OpenAI 时分流：HuggingFace / OllamaCloud 有专门实现，否则
 
 所有远程 provider 共享同一个 `ApiClient`，内聚：host/base_path 拼接、`AuthMethod`（NoAuth / BearerToken / ApiKey header / Custom 动态认证）、TLS 配置、超时、默认查询参数，以及一个 `request_builder` 装饰器钩子：
 
-[crates/goose-providers/src/api_client.rs:23-39]()
+[crates/goose-providers/src/api_client.rs:25-41]()
 <!-- snippet: 
 pub struct ApiClient {
     client: Client,
@@ -406,7 +411,7 @@ pub enum AuthMethod {
 
 流式请求链是 `provider.with_retry(...) → api_client.request(base_path).model_headers(...).streaming(...).response_post(payload)`。`ApiRequestBuilder::send_request` 统一应用 headers、认证、timeout、装饰器：
 
-[crates/goose-providers/src/api_client.rs:496-512]()
+[crates/goose-providers/src/api_client.rs:583-599]()
 <!-- snippet: 
         if let Some(decorator) = &self.client.request_builder {
             request = decorator(request)?;
@@ -552,7 +557,7 @@ toolshim 的代价明显：**解释器模型是一次额外 LLM 往返，延迟�
 #[cfg(feature = "local-inference")]
 use super::local_inference::LocalInferenceProvider; -->
 
-[crates/goose/src/providers/init.rs:79-80]()
+[crates/goose/src/providers/init.rs:80-81]()
 <!-- snippet: 
         #[cfg(feature = "local-inference")]
         registry.register::<LocalInferenceProvider>(false); -->
@@ -567,7 +572,7 @@ use super::local_inference::LocalInferenceProvider; -->
 
 本地推理核心是 `InferenceRuntime`：以 `ModelCacheKey`（backend_id + model_id + chat_template）为键管理 `ModelSlot`，用 `Notify` 做加载状态机（`Empty → Loading → Loaded`）。`get_or_init` 懒构造并注册 llama.cpp 与 mlx 两个后端：
 
-[crates/goose-local-inference/src/lib.rs:105-123]()
+[crates/goose-local-inference/src/lib.rs:104-122]()
 <!-- snippet: 
 impl InferenceRuntime {
     pub fn get_or_init() -> Result<Arc<Self>> {
@@ -616,7 +621,7 @@ pub(super) trait LocalInferenceBackend: Send + Sync {
 
 `LocalInferenceProvider::stream` 与远程 provider 的最大不同在于**模型加载是延迟的、阻塞的**，所以它通过 `tokio::mpsc` 把"加载动作 + 生成动作"全部搬到 `tokio::spawn` 的后台任务执行，主函数返回的 `MessageStream` 只是 `try_stream!` 消费通道：
 
-[crates/goose-local-inference/src/lib.rs:765-787]()
+[crates/goose-local-inference/src/lib.rs:760-782]()
 <!-- snippet: 
                         let other_model_slots = runtime.other_model_slots(&cache_key);
                         for slot in other_model_slots {
@@ -650,7 +655,7 @@ pub(super) trait LocalInferenceBackend: Send + Sync {
 
 核心是 `StreamingEmulatorParser`——一个**流式**状态机（Normal / InCommand / InExecuteBlock），逐 chunk 解析、跨 chunk 缓存缓冲，保证分片也能正确还原工具边界：
 
-[crates/goose-local-inference/src/tool_emulation.rs:133-148]()
+[crates/goose-local-inference/src/tool_emulation.rs:145-160]()
 <!-- snippet: 
 pub(crate) struct StreamingEmulatorParser {
     buffer: String,
@@ -671,7 +676,7 @@ impl StreamingEmulatorParser {
 
 解析出的动作再经 `message_for_emulator_action` 转成 `MessageContent::tool_request`（`ShellCommand` 转成 `developer__shell`、`ExecuteCode` 转成 `code_execution__execute_typescript`），从而进入标准的工具调用流程：
 
-[crates/goose-local-inference/src/tool_emulation.rs:286-298]()
+[crates/goose-local-inference/src/tool_emulation.rs:480-492]()
 <!-- snippet: 
         EmulatorAction::ShellCommand(command) => {
             let tool_id = Uuid::new_v4().to_string();

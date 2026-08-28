@@ -2,6 +2,8 @@
 
 > 覆盖 goose 的工具调用权限治理与安全防护子系统。
 
+> **演进说明（main@f87c4d7）**：依据代码快照比对。同步 inspector 注册链 / Chat 跳过 / 许可检查的裸引用行号到当前 `agent.rs`；8 月安全提交以边界收紧为主，不改变本模块描述的机制架构；详见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 根因——为什么需要这个模块
 
 goose 是跨桌面 / CLI / API 三形态的通用 Agent，主循环里让模型调用任意本地工具的权限与能力越界，是本模块要拦截的根本问题。
@@ -46,11 +48,11 @@ graph TB
     PCR --> APPR["handle_approval_tool_requests 审批握手"]
 ```
 
-说明：四个 inspector 的**加入顺序即优先级**，security（最高）→ egress → adversary → permission（中高）→ repetition（最低），见 `agents/agent.rs:715-742`。
+说明：四个 inspector 的**加入顺序即优先级**，security（最高）→ egress → adversary → permission（中高）→ repetition（最低），见 `agents/agent.rs:799` 起注册链。
 
 ### 主循环如何把决策链串起来
 
-eval 拿到模型产出的 `remaining_requests` 后，先调 `inspect_tools` 跑全部 inspector，得到 `inspection_results`（`agents/agent.rs:2377-2386`）。随后 `process_inspection_results_with_permission_inspector` 把这些结果**加工成三类** `PermissionCheckResult`（`agents/agent.rs:2388-2401`），再分别交给三条执行路径（`agents/agent.rs:2413-2433`）。
+eval 拿到模型产出的 `remaining_requests` 后，先调 `inspect_tools` 跑全部 inspector，得到 `inspection_results`（`agents/agent.rs:2806-2814`）。随后 `process_inspection_results_with_permission_inspector` 把这些结果**加工成三类** `PermissionCheckResult`（`agents/agent.rs:2815-2829`），再分别交给三条执行路径（`agents/agent.rs:2830-2850`）。
 
 加工逻辑本身在 `process_inspection_results`（`permission/permission_inspector.rs:73-131`）：先取 `inspector_name == "permission"` 的结果作 baseline，然后 `apply_inspection_results_to_permissions`（`tool_inspection.rs:170-261`）让其它 inspector 的 `Deny`/`RequireApproval` 覆盖 baseline 的 `Allow`。核心语义：
 
@@ -117,7 +119,7 @@ sequenceDiagram
 > <!-- snippet-base64:ICAgICAgICAgICAgICAgICAgICAgICAgLy8gMS4gQ2hlY2sgdXNlci1kZWZpbmVkIHBlcm1pc3Npb24gZmlyc3QKICAgICAgICAgICAgICAgICAgICAgICAgaWYgbGV0IFNvbWUobGV2ZWwpID0gcGVybWlzc2lvbl9tYW5hZ2VyLmdldF91c2VyX3Blcm1pc3Npb24odG9vbF9uYW1lKSB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICBtYXRjaCBsZXZlbCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgUGVybWlzc2lvbkxldmVsOjpBbHdheXNBbGxvdyA9PiBJbnNwZWN0aW9uQWN0aW9uOjpBbGxvdywKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBQZXJtaXNzaW9uTGV2ZWw6Ok5ldmVyQWxsb3cgPT4gSW5zcGVjdGlvbkFjdGlvbjo6RGVueSwKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBQZXJtaXNzaW9uTGV2ZWw6OkFza0JlZm9yZSA9PiB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEluc3BlY3Rpb25BY3Rpb246OlJlcXVpcmVBcHByb3ZhbChOb25lKQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgLy8gMi4gQ2hlY2sgZm9yIGEgcmVhZC1vbmx5IGFubm90YXRpb24gaW4gU21hcnRBcHByb3ZlIG1vZGUKICAgICAgICAgICAgICAgICAgICAgICAgfSBlbHNlIGlmIGdvb3NlX21vZGUgPT0gR29vc2VNb2RlOjpTbWFydEFwcHJvdmUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICYmIHNlbGYuaXNfcmVhZG9ubHlfYW5ub3RhdGVkX3Rvb2wodG9vbF9uYW1lKQogICAgICAgICAgICAgICAgICAgICAgICB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICBJbnNwZWN0aW9uQWN0aW9uOjpBbGxvdwogICAgICAgICAgICAgICAgICAgICAgICB9 -->
 > -->
 
-**Auto / Chat 直接短路**：`GooseMode::Auto` 无脑 Allow（`permission_inspector.rs:161`），`Chat` 直接 `continue` 跳过（不产出任何裁决，由主循环在 Chat 模式下强制跳过工具，`agents/agent.rs:2360-2376`）。Auto 模式是"放弃权限治理"，信任一切——这是用户显式选择自由度的代价。
+**Auto / Chat 直接短路**：`GooseMode::Auto` 无脑 Allow（`permission_inspector.rs:161`），`Chat` 直接 `continue` 跳过（不产出任何裁决，由主循环在 Chat 模式下强制跳过工具，`agents/agent.rs:2786-2803`）。Auto 模式是"放弃权限治理"，信任一切——这是用户显式选择自由度的代价。
 
 ### 决策二：SmartApprove 的"负向缓存"递归学习
 
@@ -185,7 +187,7 @@ let confirmation = confirmation_rx.await ...; // 阻塞直到前端回传
 
 **审批的权限记忆副作用**（`agents/tool_execution.rs:181-199`）：用户选 `AlwaysAllow` → 写 user 级 `AlwaysAllow`；选 `AlwaysDeny` → 写 `NeverAllow`。这形成用户每次点击都在训练权限表的学习闭环。**安全 finding 的决策会被记录**（`tool_execution.rs:149-163`）——即便最终放行，审计日志里也留下 BLOCK/ALLOW 标记。
 
-> `[crates/goose/src/agents/tool_execution.rs:181-185]()` — 审批结果的权限学习副作用（完整分支见 165-199）
+> `[crates/goose/src/agents/tool_execution.rs:218-222]()` — 审批结果的权限学习副作用（完整分支见 165-199）
 > <!-- snippet-base64:ICAgICAgICAgICAgICAgICAgICBpZiBjb25maXJtYXRpb24ucGVybWlzc2lvbiA9PSBQZXJtaXNzaW9uOjpBbHdheXNBbGxvdyB7CiAgICAgICAgICAgICAgICAgICAgICAgIHNlbGYudG9vbF9pbnNwZWN0aW9uX21hbmFnZXIKICAgICAgICAgICAgICAgICAgICAgICAgICAgIC51cGRhdGVfcGVybWlzc2lvbl9tYW5hZ2VyKCZ0b29sX2NhbGwubmFtZSwgUGVybWlzc2lvbkxldmVsOjpBbHdheXNBbGxvdykKICAgICAgICAgICAgICAgICAgICAgICAgICAgIC5hd2FpdDsKICAgICAgICAgICAgICAgICAgICB9 -->
 
 ### 决策六：PromptInjectionScanner——规则为主 + ML 可选增强

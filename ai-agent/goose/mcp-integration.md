@@ -2,6 +2,8 @@
 
 > 本解读是 goose（Linux Foundation AAIF 下以 Rust 实现的通用 Agent）关于「MCP 接入层」的深读，聚焦它如何以 MCP 客户端身份连入 70+ 外部扩展、把工具并入 Agent 的工具表、并在宿主内自研对内 MCP Server。讨论基于源码根 `crates/goose/` 与 `crates/goose-mcp/`。
 
+> **演进说明（main@f87c4d7）**：依据代码快照比对。`child_process_client` 改用 `spawn_long_lived_mcp_subprocess` + stderr 异步读；sampling `create_message` 修复（reasoning-first，text/image 提取）。本篇多数引用为无指纹弱校验（WEAK）存量，未改动；详见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 根因：用开放协议承载「能力即插即用」
 
 goose 的主循环是「LLM ↔ 工具」闭环：LLM 生成工具调用，主循环执行、回流结果。若所有能力的接入方式都自造一份接口，新增一个外部能力就要改一遍主循环与前端协议。goose 的选择是**把能力边界收敛到单一开放协议 MCP（Model Context Protocol）**：每个外部扩展都被封装成「MCP Server」（进程、HTTP 端点或进程内同库实现），goose 主循环只作为**统一 MCP 客户端**消费这些 server 暴露的 tools/resources/prompts。于是「接入一个新扩展」被压成了「写一个 ExtensionConfig + 起一个 MCP connection」，主循环的 Agent 逻辑、工具分发、权限、记忆渲染一律不受扩展数量影响。
@@ -86,7 +88,7 @@ sequenceDiagram
 
 goose 基于 RMCP（Rust MCP 实现）构造客户端。`McpClient` 内部持有一个 `RunningService<RoleClient, GooseClient>`，其中 `RoleClient` 表明本端在 MCP 会话里是客户端角色，`GooseClient` 是这端实际的消息处理实现。
 
-> [crates/goose/src/agents/mcp_client.rs:576-579]()
+> [crates/goose/src/agents/mcp_client.rs:639-642]()
 > <!-- snippet: pub struct McpClient {
 >     client: Mutex<RunningService<RoleClient, GooseClient>>,
 >     notification_subscribers: Arc<Mutex<Vec<mpsc::Sender<ServerNotification>>>>,
@@ -94,7 +96,7 @@ goose 基于 RMCP（Rust MCP 实现）构造客户端。`McpClient` 内部持有
 
 `McpClient` 只负责「出站请求」这一侧（把 list_tools / call_tool 等翻译成协议消息、等待响应），而 `GooseClient` 实现 `ClientHandler`，处理「server → 本端」的入站回调。MCP 不是单向拉取，server 可以在会话里反向请求客户端做事，这四类入站能力最能体现 goose 的设计取舍：
 
-- `create_message`（sampling）：外部 server 可以在一次工具执行里反向请 goose 用「自己的 provider + 当前会话上下文」补一次 LLM 生成，再把结果送回调用方。goose 在这里复用 `resolve_sampling_model_config` 取全局 provider/model，并把 server 传来的采样消息转成本地 `Message`，走与主循环一致的补全路径（[crates/goose/src/agents/mcp_client.rs:402-487]()）。这意味着 server 不需要自带模型，能力的推理成本仍由宿主统一承担。
+- `create_message`（sampling）：外部 server 可以在一次工具执行里反向请 goose 用「自己的 provider + 当前会话上下文」补一次 LLM 生成，再把结果送回调用方。goose 用 `resolve_session_id` 优先取请求显式上下文、否则回落活跃请求作用域，复用 `resolve_sampling_model_config` 取全局 provider/model，把 server 传来的采样消息转成本地 `Message` 后走 `provider.complete`（非流式补全），结果优先取文本、否则取首张可见 image（[crates/goose/src/agents/mcp_client.rs:433-524]()）。这意味着 server 不需要自带模型，能力的推理成本仍由宿主统一承担。
 - `create_elicitation`（elicitation）：server 需要向用户要表单/确认/授权时，通过 `ActionRequiredManager` 把请求转给前端的「需要用户动作」通道，并等待至多 300 秒（[crates/goose/src/agents/mcp_client.rs:489-551]()）。它需要一个 `tool_call_request_id` 才能把 elicitation 对应到正在进行的某次工具调用上——这引出了后面的「会话关联」机制。
 - `list_roots`：向 server 暴露宿主当前工作目录，作为 `file://` root（[crates/goose/src/agents/mcp_client.rs:347-353]()）。
 - `on_tool_list_changed`：收到 server 的「工具表变了」通知后，向 `ExtensionManager` 请求失效工具缓存（[crates/goose/src/agents/mcp_client.rs:380-382]()）。这是缓存正确性的关键，见后文。
@@ -103,7 +105,7 @@ goose 基于 RMCP（Rust MCP 实现）构造客户端。`McpClient` 内部持有
 
 出站不是裸发消息，而是把调用上下文作为 `Extensions._meta` 塞进请求头（session_id / working_dir / tool_call_request_id），这样 server 端回环调用（elicitation 回到本端）时能认出「这是哪次会话、哪次工具调用」。
 
-> [crates/goose/src/agents/mcp_client.rs:963-968]()
+> [crates/goose/src/agents/mcp_client.rs:1117-1122]()
 > <!-- snippet: fn inject_session_context_into_request(
 >     request: ClientRequest,
 >     session_id: Option<&str>,
@@ -115,7 +117,7 @@ goose 基于 RMCP（Rust MCP 实现）构造客户端。`McpClient` 内部持有
 
 `send_request_with_context`（[crates/goose/src/agents/mcp_client.rs:671-705]()）里有个刻意为之的锁纪律：内层锁只在 send 时持有，真正的响应等待发生在锁外，让同一连接上的并发工具调用可重叠。
 
-> [crates/goose/src/agents/mcp_client.rs:687-691]()
+> [crates/goose/src/agents/mcp_client.rs:774-778]()
 > <!-- snippet:        // happens outside the lock so concurrent calls can overlap. The guard
 >        // unregisters the active tool call on drop, covering cancellation and
 >        // dropped reply streams as well as normal completion.
@@ -138,12 +140,13 @@ goose 基于 RMCP（Rust MCP 实现）构造客户端。`McpClient` 内部持有
 
 客户端 `connect` 接受任意满足 `IntoTransport<RoleClient, …>` 的 transport（[crates/goose/src/agents/mcp_client.rs:585-609]()），transport 的选择完全由上层决定，客户端本身不知道底层是什么：
 
-- **stdio（独立进程）**：`child_process_client` 用 `TokioChildProcess` 拉起子进程，把 `stderr` 单拉出来作诊断，stdio 作为 duplex transport。有个细节——**子进程初始化失败时把 stderr 拼进错误**，让「why it failed to start」可读。
+- **stdio（独立进程）**：`child_process_client` 用 `spawn_long_lived_mcp_subprocess` 拉起子进程，把 `stderr` 单独拉出交给 `tokio::spawn` 后台读满，stdio 作为 transport。有个细节——**初始化失败时把 stderr 内容拼进错误**（`ProcessExit::new(stderr_content, error)`），让「why it failed to start」可读。
 
-> [crates/goose/src/agents/extension_manager.rs:434-436]()
-> <!-- snippet:    let (transport, mut stderr) = TokioChildProcess::builder(command)
->        .stderr(Stdio::piped())
->        .spawn()?; -->
+> [crates/goose/src/agents/extension_manager.rs:454-457]()
+> <!-- snippet:    let (transport, mut stderr) = spawn_long_lived_mcp_subprocess(command).await?;
+>        let mut stderr = stderr.take().ok_or_else(|| {
+>            ExtensionError::SetupError("failed to attach child process stderr".to_owned())
+>        })?; -->
 
 它还用 `SearchPaths` 做 PATH 解析（含 npx/uvx 可执行定位）并注入工作目录。
 
@@ -162,7 +165,7 @@ goose 基于 RMCP（Rust MCP 实现）构造客户端。`McpClient` 内部持有
 
 值得注意的「**进程内内置 server**」的建立方式：Builtin 分支若不在 `PLATFORM_EXTENSIONS` 里，就从注册表 `get_builtin_extension` 取一个 `SpawnServerFn`。
 
-> [crates/goose/src/agents/extension_manager.rs:1079-1085]()
+> [crates/goose/src/agents/extension_manager.rs:1590-1596]()
 > <!-- snippet:        let (server_read, client_write) = tokio::io::duplex(65536);
 >        let (client_read, server_write) = tokio::io::duplex(65536);
 >        extension_fn(server_read, server_write);
@@ -179,7 +182,7 @@ goose 基于 RMCP（Rust MCP 实现）构造客户端。`McpClient` 内部持有
 
 每个 server 的 `list_tools` 返回的原始工具名，在进入公共工具表前会被改写。
 
-> [crates/goose/src/agents/extension_manager.rs:1448-1452]()
+> [crates/goose/src/agents/extension_manager.rs:1986-1990]()
 > <!-- snippet:                            let public_name = if expose_unprefixed {
 >                                tool.name.to_string()
 >                            } else {
@@ -224,7 +227,7 @@ goose 的扩展来源分两大类，都汇入同一个 `ExtensionManager`：
 - **内置（bundled）**：随 goose 发行、进程内同进程对跑，`goose-mcp` crate 定义。`BUILTIN_EXTENSIONS` 是一个 `Lazy<HashMap<&str, SpawnServerFn>>`，用宏把一个实现了 `ServerHandler` 的 server 及其名字装进去（[crates/goose-mcp/src/lib.rs:48-64]()）：autovisualiser / computercontroller / memory / tutorial。每个 `SpawnServerFn` 吃一对 duplex 并 spawn 起来 serving（[crates/goose-mcp/src/lib.rs:31-46]()），`spawn_and_serve` 里挂一个 `running.waiting()` 保持存活。宿主侧对应的注册表是 `builtin_extension.rs` 的 `BUILTIN_REGISTRY`（[crates/goose/src/builtin_extension.rs:7-28]()），`register_builtin_extension`/`get_builtin_extension` 供 `add_extension` 查表。两个注册表名称一致、一内一外，靠名字对齐。
 - **内置 server 的实现样本**：`MemoryServer`（[crates/goose-mcp/src/memory/mod.rs:76-135]()）用 `#[tool_router]` 宏把 impl 里的方法变成 MCP tool，并通过 `ServerHandler::get_info` 把「分类化存储说明 + 当前全局记忆内容」拼进 instructions 返回给客户端。
 
-> [crates/goose-mcp/src/memory/mod.rs:456-458]()
+> [crates/goose-mcp/src/memory/mod.rs:511-513]()
 > <!-- snippet: impl ServerHandler for MemoryServer {
 >     fn get_info(&self) -> ServerInfo {
 >         InitializeResult::new(ServerCapabilities::builder().enable_tools().build()) -->

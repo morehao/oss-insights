@@ -1,6 +1,15 @@
+---
+type: 通用 AI Agent 运行时（agent ⊗ framework）
+title: goose 通用 AI Agent
+description: Linux Foundation AAIF 的 Rust 通用 AI Agent 深度解读：单主 Agent 循环、统一 Provider trait、MCP 接入、SQLite 会话与上下文压缩、ACP 协议双向打通、Skill/Recipe 体系、工具权限审批
+tags: [agent, rust, mcp, acp, provider, aaif]
+---
+
 # goose 通用 AI Agent
 
 > 本解读按 **agent ⊗ framework 类规格** 产出（Rust 实现的通用 AI Agent，叠加 framework 语言维度）。本地源码见 `aaif-goose/goose`（GitHub）主分支 checkout，未锁定具体 tag。
+
+> **本版增量更新说明（代码快照比对）**：对齐当前 `main`（2026-08-28）。因本地为浅克隆（depth=1）未取上游 git diff，本次依据**代码快照比对**（非官方 changelog）。主要变化：moim 重构为 turn-context 独立 agent-only 消息、`tool_stream` 移入 `tool_execution.rs`、recipe retry 接管空轮回退、context limit 统一到 provider API、ACP/SDK 重命名 GDK、新增 `goose-agent` 等 crate、SQLite schema 升 v16、MCP sampling 修复。详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 根因
 
@@ -31,7 +40,7 @@ goose 是 Linux Foundation 旗下 Agentic AI Foundation（AAIF）的通用 AI Ag
 | 权限与安全 | 工具级审批、SmartApprove、Prompt 注入扫描、对抗/出站拦截 |
 | 执行编排 | 多会话隔离 + 嵌套子代理 + `goose review` 确定性并行 + Telegram 网关 |
 
-**技术栈一览**：Rust（约 23 万行，核心 crate `crates/goose` 14.7 万行）、`async-trait` / `tokio`、`sqlx` + SQLite、`rmcp`（MCP）、`agent-client-protocol`（ACP）、`uniffi`（Python/Kotlin 绑定）、`schemars`（工具 Schema）、`llamacpp` / `mlx`（本地推理）。多 crate 拆分：`goose`（核心）、`goose-provider-types` / `goose-providers`（LLM 接入）、`goose-mcp`（内置 MCP server）、`goose-cli`、`goose-local-inference`、`goose-sdk`/`goose-sdk-types`/`goose-acp-macros`（ACP/SDK）。
+**技术栈一览**：Rust（约 27 万行，核心 crate `crates/goose` 14.7 万行）、`async-trait` / `tokio`、`sqlx` + SQLite、`rmcp`（MCP）、`agent-client-protocol`（ACP）、`uniffi`（Python/Kotlin 绑定）、`schemars`（工具 Schema）、`llamacpp` / `mlx`（本地推理）、`iroh`（P2P 漫游）。多 crate 拆分：`goose`（核心）、`goose-agent`（GDK 的 Agent Loop，inference 编排已并入）、`goose-provider-types` / `goose-providers`（LLM 接入）、`goose-context-management`（会话压缩）、`goose-mcp`（内置 MCP server）、`goose-cli`、`goose-local-inference`、`goose-roaming`（iroh 底座 P2P 漫游传输）、`goose-download-manager`（下载管理与清理）、`goose-sdk`/`goose-sdk-types`/`goose-acp-macros`（ACP/SDK）。
 
 ## 架构总览
 
@@ -80,14 +89,19 @@ graph TB
 ```
 crates/
 ├── goose/                  核心运行时（agent 循环 / 会话 / 权限 / MCP 客户端 / ACP / 网关 / 调度器）
+├── goose-agent/            GDK 的 Agent Loop（主循环抽象；inference 操作编排已并入）
 ├── goose-provider-types/   Provider trait、消息流、ProviderDescriptor（纯类型契约）
 ├── goose-providers/        Anthropic / OpenAI / Databricks 等 HTTP 实现 + 统一 ApiClient
+├── goose-context-management/  会话压缩（compaction）独立 crate，供 GDK uniffi 复用
 ├── goose-mcp/              内置 MCP Server 集合（memory / computercontroller / autovisualiser…）
 ├── goose-local-inference/  本地 CPU / MLX 推理后端（模型映射、tool_emulation）
 ├── goose-cli/              命令行入口与子命令（configure / tui / review / gateway / recipe…）
 ├── goose-acp-macros/       #[custom_methods] 宏：从请求类型生成 JSON-RPC 分发器
 ├── goose-sdk-types/        goose 对 ACP 的自定义扩展请求/通知类型
-└── goose-sdk/              对外 SDK（uniffi 编 Python/Kotlin 进程内 API）
+├── goose-sdk/              对外 SDK（uniffi 编 Python/Kotlin 进程内 API）
+├── goose-roaming/          iroh 底座的 P2P 漫游传输（把 agent 暴露到互联网）
+├── goose-download-manager/ 下载管理与残留清理
+└── goose-test / goose-test-support/  MCP 测试工具
 ```
 
 **推荐阅读顺序**：先 [`agent-loop.md`](agent-loop.md) 理解主循环，再 [`provider-architecture.md`](provider-architecture.md) 看模型怎么来，[`mcp-integration.md`](mcp-integration.md) 看工具怎么接，最后 [`acp-protocol.md`](acp-protocol.md) 看独特的双向生态打通。
@@ -113,7 +127,7 @@ crates/
 | **本地推理** | 独立 crate + feature gate，llama.cpp/MLX，tool_emulation | [`provider-architecture.md`](provider-architecture.md) |
 | **MCP 接入层** | 自研 MCP client + ExtensionManager 工具汇总与派发 | [`mcp-integration.md`](mcp-integration.md) |
 | **会话 / 上下文** | SQLite 写入 + compaction 阈值 0.8 + 工具对压缩 | [`session-and-context.md`](session-and-context.md) |
-| **数据模型** | schema v15 逐版迁移、usage_ledger 独立计费 | [`data-model.md`](data-model.md) |
+| **数据模型** | schema v16 逐版迁移、usage_ledger 独立计费 | [`data-model.md`](data-model.md) |
 | **权限 / 安全** | 工具审批决策链 + prompt 注入扫描 + 对抗拦截 | [`permission-and-safety.md`](permission-and-safety.md) |
 | **ACP 协议** | 同一标准双向打通生态（被嵌入 + 反接外部 agent） | [`acp-protocol.md`](acp-protocol.md) |
 | **执行 / 子代理** | session 隔离生命周期 + 嵌套子 Agent + review 确定性并行 | [`execution-and-subagents.md`](execution-and-subagents.md) |
@@ -132,7 +146,7 @@ crates/
 ## 不足与风险
 
 - **体量庞大**：23 万行 Rust（核心 14.7 万行），学习曲线陡峭；对新贡献者，主循环 `reply_impl` 数千行是主要进入障碍。
-- **单主循环的正交子循环多**：moim 注入、compaction、subagent、retry、hook 都与主循环耦合，跨 crate 字符串耦合有脆弱的测试守护（`agents/moim.rs`）。
+- **单主循环的正交子循环多**：turn-context 注入、compaction、subagent、retry、hook 都与主循环耦合，跨 crate 字符串耦合有脆弱的测试守护（`agents/moim.rs`）。
 - **次核心模块引用弱校验**：execution/subagent/skill 等文档中的部分引用仅经路径存在 + 行号未越界弱校验，未全部补精确指纹（见各篇文末）。
 - **本地推理能力面受限**：本地模型无原生工具调用时依赖 tool_emulation 模拟，能力与远程前沿模型有差距（`goose-local-inference/src/tool_emulation.rs`）。
 
@@ -146,5 +160,5 @@ goose 是"大而深"的通用 Agent 运行时范本：以**单一主 Agent 循�
 |------|------|
 | 协议 / 语言 | Apache-2.0 / Rust |
 | 仓库 | [github.com/aaif-goose/goose](https://github.com/aaif-goose/goose) |
-| 代码量 | 约 23 万行 Rust（467 个 `.rs` 文件）；核心 crate `goose/` 14.7 万行 |
+| 代码量 | 约 27 万行 Rust（467+ 个 `.rs` 文件）；核心 crate `goose/` 14.7 万行 |
 | 生态定位 | Linux Foundation AAIF 项目；驱动 ecosystem（桌面/CLI/API） |

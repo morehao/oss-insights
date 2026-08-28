@@ -1,6 +1,6 @@
 # OpenHands Agent Canvas
 
-> 本解读按 **ai-agent ⊗ TypeScript 前端 ⊗ 可部署服务** 规格产出（回落 `_default.md`，无独立 TS 前端类型规格）。基于 `@openhands/agent-canvas` v1.15.0（仓库 checkout：`OpenHands/OpenHands` Agent Canvas 前端，tag `v1.15.0`，commit `150e76046`）。本文档为全量重写版（基于 v1.15.0 源码，非 v1.10.0 旧稿），纳入 **Skill 技能体系**与 **MCP 外部能力接入**两个此前未覆盖、且上版本新增显式化改造的关注面。
+> 本解读按 **ai-agent ⊗ TypeScript 前端 ⊗ 可部署服务** 规格产出（回落 `_default.md`，无独立 TS 前端类型规格）。基于 `@openhands/agent-canvas`，本文档自 v1.15.0（commit `150e76046`）**增量至 v1.16.0 release（`64c126965`）+ main@`226a6d2e6`**（含 1.17.0 前已并入的 Canvas Extensions 等新能力）。本版增量：新增 **ACP 协议深度解读**（[`acp-protocol.md`](acp-protocol.md)）与 **Canvas Extensions 扩展前端**两个新关注面，增补 automation value statements / run fan-out 限流、pin home route、workspace mode 记忆等新能力；跨版本变更汇总见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 根因
 
@@ -16,7 +16,8 @@ Agent Canvas 是一个 **React + TypeScript** 的桌面/Web 前端（`@openhands
 | 核心能力 | 说明 |
 |---|---|
 | 多后端连接与切换 | 一个 UI 注册/切换多个 local/cloud 后端，`?backend=` 直达；fallback 语义保证 GUI 服务不断链 |
-| 第三方 agent 抽象 | 统一 OpenHands 与 ACP agent（Claude Code / Codex / Gemini），收敛成统一 StartConversationPayload |
+| 第三方 agent 抽象 | 统一 OpenHands 与 ACP agent（Claude Code / Codex / Gemini），收敛成统一 StartConversationPayload；provider 注册表 / 模型解析 / 凭据 / 探测见 [`acp-protocol.md`](acp-protocol.md) |
+| Canvas Extensions 扩展 | local 后端扩展市场：`canvas-extension.json` manifest、页面贡献挂载、agentServer 代理请求 |
 | 实时会话流 | 原生 WebSocket 拉取事件，REST 历史 + `resend_mode='since'` 增量续接，握手 watchdog + 并联心跳保活 |
 | BYO Model / LLM Profiles | 任意 LLM 提供商可配；LLM profiles 的 query key 掺入 `backend.id`+`orgId` 按后端隔离 |
 | **Skill 技能体系** | 显式 allow-list 装载目录技能 + deny-list 管控自建技能；`disabled_skills` 下推后端排除注入 |
@@ -115,6 +116,7 @@ docker/  helm/  bin/  scripts/    容器/Helm 部署、CLI launcher、本地栈�
 - [`automations.md`](automations.md) — 自动化编排：Automation Server 契约、manifest/catalog、触发与 run 实时 phase
 - [`skills-system.md`](skills-system.md) — Skill 技能体系：显式 allow-list 装载、deny-list 管控、disabled_skills 下推、迁移机制
 - [`mcp.md`](mcp.md) — MCP 外部能力接入：mcp_config、marketplace、凭据加密脱敏、健康分级探测
+- [`acp-protocol.md`](acp-protocol.md) — ACP 协议接入：provider 注册表单一数据源、配置流到子进程、模型解析优先级与 Gemini 特例、凭据体系、登录态探测、命令编辑、错误码
 - [`electron-desktop.md`](electron-desktop.md) — Electron 桌面交付：主进程栈启动、运行时自包含、Windows/Linux 打包、进程生命周期
 - [`client-storage.md`](client-storage.md) — 客户端存储层：本地元数据分层持久化、读强写弱、sanitize 校验与演进
 
@@ -130,6 +132,7 @@ docker/  helm/  bin/  scripts/    容器/Helm 部署、CLI launcher、本地栈�
 | **Automation 触发与运行** | schedule(event) 触发、run 状态轮询、健康度派生、manifest 准入 | [`automations.md`](automations.md) |
 | **Skill 体系** | allow-list 装载目录技能、deny-list 管控自建技能、disabled_skills 下推、迁移 | [`skills-system.md`](skills-system.md) |
 | **MCP 接入** | mcp_config 装载、marketplace、凭据脱敏、健康分级探测 | [`mcp.md`](mcp.md) |
+| **ACP 协议接入** | 把 Claude Code/Codex/Gemini CLI 收编成统一载荷：注册表、模型解析、凭据、探测、命令编辑 | [`acp-protocol.md`](acp-protocol.md) |
 | **Electron 主进程** | 桌面栈启动编排、uv/node 运行时注入、两阶段就绪、进程树优雅关闭 | [`electron-desktop.md`](electron-desktop.md) |
 | **Electron 打包** | asar:false + node_modules 瘦身 + Windows npm 修复 + Linux .deb | [`electron-desktop.md`](electron-desktop.md) |
 | **客户端存储** | 后端/健康/会话 UI 态的分层持久化、sanitize 校验、明文 key 边界 | [`client-storage.md`](client-storage.md) |
@@ -145,6 +148,10 @@ docker/  helm/  bin/  scripts/    容器/Helm 部署、CLI launcher、本地栈�
 - **桌面形态"免 Docker + 运行时自包含"**：Finder 启动的 .app 拿不到用户 PATH，故把 uv/node 打包进 resources 并前置 PATH（`electron/main.mjs:142-151`）——见 [`electron-desktop.md`](electron-desktop.md)。
 - **读取端永远防御、写入端静默吞错**：localStorage 是 user-writable，健康/会话态全部读强校验（防手改 `-1` 推翻失败封顶），写侧 try/catch 静默（`src/api/backend-registry/health-storage.ts:31-39`）——见 [`client-storage.md`](client-storage.md)。
 - **前导倒逼后端接口演进**：版本探测 + 最低兼容版本断言，前端可预先拦截不兼容的 Agent Server（`src/api/agent-server-compatibility.ts:293-318`）。
+- **外部 agent 收编的"配置即协议"**：Canvas 不 spawn ACP 子进程，只把 `acp_command`/`acp_model`/凭据配成统一载荷交给 agent-server；provider 数据镜像自 SDK、Canvas 只补 UI 字段，避免双份维护——见 [`acp-protocol.md`](acp-protocol.md)。
+- **扩展即"页面贡献 + host 代理"**：Canvas Extensions 让第三方以 `canvas-extension.json` 声明页面，运行时由 host 提供 `registerPage` 与 `agentServer.request` 代理，扩展不接触凭据（`src/types/canvas-extension.ts:87-89`）。
+
+<!-- anchor:     request: <T = unknown>( …     ) => Promise<T>; -->
 
 ## 不足与风险
 
@@ -152,6 +159,9 @@ docker/  helm/  bin/  scripts/    容器/Helm 部署、CLI launcher、本地栈�
 - **多 agent 协议抽象依赖订阅源**：automation 模板与 skill 目录来自已发布 npm 包，宿主对 catalog 结构高度耦合，包升级可能破坏承载 UI 或引入未经检测的新 skill。
 - **本地直跑风险高**：`npm run dev` 让 agent 直连本机文件系统，桌面形态免 Docker 意味着没有容器根文件系统隔离（agent-server 直接操作 `~/.openhands/...`），文档明确提示仅限可信环境；本地后端的 apiKey 明文进 localStorage，是本地单用户模型接受的取舍。
 - **ACP 登录态探测脆弱**：无专用端点，靠借 agent-server bash 跑 CLI 命令分类回退 "unknown"（`src/api/acp-service/acp-service.api.ts:86-98`）。
+- **Canvas Extensions 仅 local**：扩展查询门控 local 后端，cloud 后端无此能力、旧后端 404 时管理页降级为"不支持"，扩展无法跨后端复用 `[src/hooks/query/use-canvas-extensions.ts:13-27]()`。
+
+<!-- anchor:   const connectionRevision = active.backend.connectionRevision ?? 0; …     refetchOnWindowFocus: true, -->
 
 ## 可借鉴的设计
 

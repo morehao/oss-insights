@@ -16,7 +16,28 @@ localStorage 分三层，各层键、读写目标、生命周期不同：
 | 健康状态 | `openhands-backend-health` `[src/api/backend-registry/health-storage.ts:3]()` | 失败封顶是**跨页面刷新**的（"状态在 localStorage"）`[src/api/backend-registry/health-store.ts:43-44]()` |
 | 会话 UI 态 | `conversation-state-${conversationId}`、`pending-task-draft-${taskId}` `[src/utils/conversation-local-storage.ts:14-17]()` | 按会话粒度；临时 `task-` ID 不落盘 |
 
-另加 Zustand persist 层：`openhands-sidebar`（sidebar 折叠态）、`pinned-conversations`（置顶）、`home-store`（最近仓库/上次 provider）`[src/stores/sidebar-store.ts:15-30]()`、`[src/stores/pinned-conversations-store.ts:87-93]()`、`[src/stores/home-store.ts:60-63]()`；均用 `createJSONStorage` + `partialize` 只挑要持久化的字段。
+另加 Zustand persist 层：`openhands-sidebar`（sidebar 折叠态）、`pinned-conversations`（置顶）、`home-store`（最近仓库/上次 provider）`[src/stores/sidebar-store.ts:15-30]()`、`[src/stores/pinned-conversations-store.ts:87-93]()`、`[src/stores/home-store.ts:60-63]()`；均用 `createJSONStorage` + `partialize` 只挑要持久化的字段。增量又新增两个 UI 偏好键：`oh:pinned-home-route:<backend>:<org>`（固定首页侧栏页）与 `openhands-last-local-workspace-mode`（上次本地 workspace 选择），见下。
+
+### Pin 首页路由：按后端作用域的"可重入"存储
+
+`usePinnedHomeRoute` 把"用户固定的首页侧栏页"存在 `oh:pinned-home-route:<backendId>:<orgId>` 下——**key 掺入后端身份**，理由在注释里：pin 可能指向只在该后端存在的表面（如 `/automations` 依赖该部署的 interface manifest），共享 key 会让一台后端的 pin 把另一台的 `/` 重定向 `[src/hooks/use-pinned-home-route.ts:19-29]()`。
+
+<!-- anchor:  * The pin is stored per backend + org: it may reference a surface that only …  return `${PINNED_HOME_ROUTE_KEY}:${backendId}:${orgId ?? "-"}`; -->
+
+读取侧两道防御（与"读强"一脉相承）：
+- **pinnable 校验**：只有 `/customize` 与"有 automation interface 时的 automations 列表"可 pin；`/` 本身永不可 pin——否则 pin 自身形成重定向环 `[src/hooks/use-pinned-home-route.ts:39-43]()`
+
+<!-- anchor: export function isPinnableRoute(path: string): boolean { …   return false; -->
+
+- **非法 pin 忽略不清理**：读路径对 `JSON.parse` 失败、非字符串、不可 pin 的旧值一律返回 "no pin"，但**不主动清除**——它可能在切回对应后端后重新变有效（如 automations interface 回归）`[src/hooks/use-pinned-home-route.ts:51-56]()`。
+
+<!-- anchor:  * Synchronous pin read for route loaders (no React context). Reads the key …  * automations interface returning after a backend switch back). -->
+
+### 本地 workspace 模式的记忆
+
+`openhands-last-local-workspace-mode` 记住上次本地 workspace 选择（`local_repo | new_worktree`），下次进入 home 恢复。它是"读强写弱"的微缩样板：读侧逐字段校验 + try/catch + 非法回退 `DEFAULT_WORKSPACE_MODE` `[src/utils/workspace-mode.ts:14-21]()`，写侧同样 `try/catch` 静默吞错——注释直说 "Ignore storage failures; the selector still works for this render"。
+
+<!-- anchor: export function readStoredLocalWorkspaceMode(): WorkspaceMode { …     return isWorkspaceMode(stored) ? stored : DEFAULT_WORKSPACE_MODE; -->
 
 ### Active backend 的 tab 作用域
 

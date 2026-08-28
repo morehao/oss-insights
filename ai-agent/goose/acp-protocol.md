@@ -2,6 +2,8 @@
 
 > 本文是 goose（Linux Foundation AAIF 通用 AI Agent，Rust）「ACP 协议与 SDK」模块的深度技术解读。覆盖 `crates/goose/src/acp/`（服务端 server、客户端 provider、transport、SDK 三件套 goose-acp-macros / goose-sdk-types / goose-sdk）。每条引用统一为 `[路径:start-end]()` 形式，紧随其后的 `<!-- snippet -->` 注释从源码**逐字复制**原始片段，仅作程序重定位指纹、不进入正文展示；正文不含整段代码。
 
+> **演进说明（main@f87c4d7）**：依据代码快照比对。会话能力新增 `delete`、`spawn_acp_process` 注入 PATH、`stream()` 同步 effort、`provider_factory` 支持 use_default_model、`goose-sdk` 更名 GDK 等；详见 [CHANGELOG.md](CHANGELOG.md)。
+
 ---
 
 ## 根因：用同一份开放标准，双向打通 agent 生态
@@ -15,7 +17,7 @@ goose 的 ACP 模块要解决的根本问题是：**如何让 goose 同时既"�
 
 `provider.rs:49` 那行 `ACP_CURRENT_MODEL` 哨兵正是这把双向钥匙——它表示"模型由对方 agent 决定"，让 goose 无需硬编码外部 agent 的模型名。
 
-[crates/goose/src/acp/provider.rs:48-49]()
+[crates/goose/src/acp/provider.rs:51-52]()
 <!-- snippet: /// Sentinel: resolved to the actual model name during connect().
 pub const ACP_CURRENT_MODEL: &str = "current"; -->
 
@@ -64,7 +66,7 @@ ACP 服务端的入口是 `GooseAcpHandler` 对 `HandleDispatchFrom<Client>` tra
 
 - **初始化请求串行化**：`InitializeRequest` 就地执行，因为它会写连接级的 client capabilities（fs/terminal/mcp host 等 `OnceCell` 状态），后续 `NewSession` 等请求要读这些默认值。注释明确说 pipelined NewSession 不能抢跑在其前。
 
-[crates/goose/src/acp/server/dispatch.rs:26-33]()
+[crates/goose/src/acp/server/dispatch.rs:27-34]()
 <!-- snippet: // InitializeRequest runs inline: it sets connection-scoped state
             // (client fs/terminal capabilities) that later handlers read with
             // defaults, so a pipelined NewSessionRequest must not race ahead of it.
@@ -86,7 +88,7 @@ ACP 服务端的入口是 `GooseAcpHandler` 对 `HandleDispatchFrom<Client>` tra
 
 `GooseAcpAgent` 用一个 `sessions` map 加若干 `OnceCell` 管理会话级与连接级状态。连接级能力缓存在 `OnceCell` 里（set-once 语义天然保证"首个连接一次性写入"），后续每个 handler 只读不写：
 
-[crates/goose/src/acp/server.rs:201-216]()
+[crates/goose/src/acp/server.rs:334-349]()
 <!-- snippet: pub struct GooseAcpAgent {
     sessions: Arc<Mutex<HashMap<String, GooseAcpSession>>>,
     active_prompt_runs: Arc<Mutex<HashMap<String, ActivePromptRun>>>,
@@ -104,14 +106,15 @@ ACP 服务端的入口是 `GooseAcpHandler` 对 `HandleDispatchFrom<Client>` tra
     use_login_shell_path: OnceCell<bool>,
     client_cx: OnceCell<ConnectionTo<Client>>, -->
 
-`on_initialize` 做的核心事有两件：(1) 从 `InitializeRequest` 解析客户端能力缓存到这些 `OnceCell`；(2) 声明 goose 自身的 ACP 能力——load/list/close session、prompt 支持 image 与 embedded resource、MCP over HTTP，并把认证指引塞进 `AuthMethod::Agent` 的 `goose configure` 提示。
+`on_initialize` 做的核心事有两件：(1) 从 `InitializeRequest` 解析客户端能力缓存到这些 `OnceCell`；(2) 声明 goose 自身的 ACP 能力——load/list/delete/close session、prompt 支持 image 与 embedded resource、MCP over HTTP，并把认证指引塞进 `AuthMethod::Agent` 的 `goose configure` 提示。
 
-[crates/goose/src/acp/server.rs:1463-1480]()
+[crates/goose/src/acp/server.rs:1807-1825]()
 <!-- snippet: let capabilities = AgentCapabilities::new()
             .load_session(true)
             .session_capabilities(
                 SessionCapabilities::new()
                     .list(SessionListCapabilities::new())
+                    .delete(SessionDeleteCapabilities::new())
                     .close(SessionCloseCapabilities::new()),
             )
             .prompt_capabilities(
@@ -136,7 +139,7 @@ ACP 服务端的入口是 `GooseAcpHandler` 对 `HandleDispatchFrom<Client>` tra
 2. **把 ACP prompt 块转成 goose `Message`**：`convert_acp_prompt_to_message` 逐块处理 text/image/resource/link，保留 annotation audience。
 3. **把 `agent.reply()` 返回的事件流逐条转回 ACP 通知**：`handle_message_content` 把 goose 的 `MessageContent::Text`/`Thinking`/`ToolRequest`/`ToolResponse`/`ActionRequired` 映射成 ACP 的 `UserMessageChunk`/`AgentMessageChunk`/`AgentThoughtChunk`/`ToolCall`/`RequestPermission` 等通知与请求。
 
-[crates/goose/src/acp/server.rs:1795-1803]()
+[crates/goose/src/acp/server.rs:2152-2160]()
 <!-- snippet: while let Some(event) = stream.next().await {
             if cancel_token.is_cancelled() {
                 was_cancelled = true;
@@ -153,7 +156,7 @@ ACP 服务端的入口是 `GooseAcpHandler` 对 `HandleDispatchFrom<Client>` tra
 
 goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`。服务端 handler 把它转成一个 ACP 的 `RequestPermissionRequest`（含 AllowAlways/AllowOnce/RejectOnce/RejectAlways 四个选项），通过 `cx.send_request` 发给宿主，宿主点击后经回调 `handle_confirmation` 回注主循环：
 
-[crates/goose/src/acp/server.rs:1246-1256]()
+[crates/goose/src/acp/server.rs:1572-1582]()
 <!-- snippet: let options = vec![
             option(PermissionOptionKind::AllowAlways),
             option(PermissionOptionKind::AllowOnce),
@@ -168,7 +171,7 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
 
 `outcome_to_confirmation` 把 ACP 选项 id 映射回 goose 的 `PermissionConfirmation`（AllowOnce→AllowOnce、Allow Always→AlwaysAllow、unknown/cancelled→Cancel）。
 
-[crates/goose/src/acp/server.rs:1304-1309]()
+[crates/goose/src/acp/server.rs:1630-1635]()
 <!-- snippet: fn outcome_to_confirmation(outcome: &RequestPermissionOutcome) -> PermissionConfirmation {
     PermissionConfirmation {
         principal_type: PrincipalType::Tool,
@@ -188,7 +191,7 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
 
 `AcpProvider::start` 的核心决策：**tokio I/O 句柄不能跨 runtime 移动**，因此子进程必须在 OS 线程里 spawn。`spawn_client_loop` 为 ACP 客户端单独建一个 current-thread runtime 并 `block_on`，主循环与 ACP 客户端之间只靠 `mpsc` 通道 + `oneshot` 应答通信：
 
-[crates/goose/src/acp/provider.rs:205-213]()
+[crates/goose/src/acp/provider.rs:318-326]()
 <!-- snippet: fn spawn_client_loop(fut: impl Future<Output = ()> + Send + 'static) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -199,9 +202,9 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
     })
 } -->
 
-子进程通过 `spawn_acp_process` 拉起，stdio 用 `ByteStreams` 兼容包装成 ACP 传输，stderr 交给 `forward_child_stderr` 逐行转发并限长（防无换行输出撑爆内存）：
+子进程通过 `spawn_acp_process` 拉起，stdio 用 `ByteStreams` 兼容包装成 ACP 传输，stderr 交给 `forward_child_stderr` 逐行转发并限长（防无换行输出撑爆内存）。启动前还会把 `config.command` 的父目录 prepend 到 `PATH`——npm 适配器常以 `/usr/bin/env node` 拉起，而桌面进程的 PATH 未必包含其 bin 目录。
 
-[crates/goose/src/acp/provider.rs:1071-1089]()
+[crates/goose/src/acp/provider.rs:1480-1500]()
 <!-- snippet: async fn spawn_acp_process(config: &AcpProviderConfig) -> Result<Child> {
     let mut cmd = Command::new(&config.command);
     cmd.args(&config.args)
@@ -210,27 +213,29 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    for key in &config.env_remove {
-        cmd.env_remove(key);
-    }
-
-    for (key, value) in &config.env {
-        cmd.env(key, value);
-    }
-
-    configure_subprocess(&mut cmd);
-    cmd.spawn().context("failed to spawn ACP process")
-} -->
+    if let Some(command_dir) = config.command.parent() {
+        // npm adapters commonly use `/usr/bin/env node`, while desktop PATH may omit their bin dir.
+        let path = std::env::join_paths(
+            std::iter::once(command_dir.to_path_buf()).chain(
+                std::env::var_os("PATH")
+                    .as_ref()
+                    .map(std::env::split_paths)
+                    .into_iter()
+                    .flatten(),
+            ),
+        )?;
+        cmd.env("PATH", path);
+    } -->
 
 ### `Provider::stream()`：把 ACP 的 prompt/会话拉到 goose 的消息流
 
 `stream()` 是 `AcpProvider` 实现 `Provider` 的入口，它把 goose 主循环给的一批 `Message` 编码成 ACP `PromptRequest`，再把返回流里的 `AcpUpdate` 解码成 goose 的 `Message`/usage。关键做法：
 
-- **模型选择**：若外部 agent 用 config option 选模型（如 Claude 的 `model` 选项），`apply_model_if_changed` 先 `send_set_config_option`，且对 `ACP_CURRENT_MODEL` 哨兵为 no-op（模型由对方决定）。
+- **模型/努力度选择**：若外部 agent 用 config option 选模型（如 Claude 的 `model` 选项），`apply_model_if_changed` 先 `send_set_config_option`，且对 `ACP_CURRENT_MODEL` 哨兵为 no-op（模型由对方决定）；`apply_effort_if_changed` 再把 goose 的 thinking-effort 设置同步给对方。
 - **会话上下文交接**：`claim_handoff_context` 只在首个 prompt 且确有前置会话时，把 goose 已发生的对话用 `build_handoff_context_memo` 打成一坨带说明的文本前置到当前 prompt 里，之后不再重复发送。
 - **工具拒绝降级**：`Chat` 模式（`reject_all_tools`）下收到 `ToolCallStart` 会抑制后续文本并记录 rejected id，`ToolCallComplete` 时补一条"Tool call was denied"文本，保证聊天模式语义完整。
 
-[crates/goose/src/acp/provider.rs:507-525]()
+[crates/goose/src/acp/provider.rs:820-844]()
 <!-- snippet: async fn stream(
         &self,
         model_config: &ModelConfig,
@@ -246,7 +251,13 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
                 ProviderError::RequestFailed(format!("Failed to set ACP model option: {e}"))
             })?;
 
-        let current_prompt_blocks = messages_to_prompt(messages, false);
+        self.apply_effort_if_changed(model_config)
+            .await
+            .map_err(|e| {
+                ProviderError::RequestFailed(format!("Failed to set ACP effort option: {e}"))
+            })?;
+
+        let current_prompt_blocks = messages_to_prompt(messages, None);
         if current_prompt_blocks.is_empty() {
             return Ok(Box::pin(futures::stream::empty()));
         }
@@ -258,7 +269,7 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
 
 工具调用是这里最讲究的地方：ACP 传来的 `raw_output`/`content` 是**增量合并**（patch 式），客户端先写进 `pending_tool_updates` 缓冲，直到收到 terminal 状态（`Completed`/`Failed`）才合并成一次完整的 `ToolCallComplete` 发射——避免把中间碎片误当完整工具结果。
 
-[crates/goose/src/acp/provider.rs:935-937]()
+[crates/goose/src/acp/provider.rs:1335-1337]()
 <!-- snippet: SessionUpdate::ToolCallUpdate(update) => {
                                     let id = update.tool_call_id.0.to_string();
                                     // Merge patch-like fields; only emit on terminal status.
@@ -275,7 +286,7 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
 
 并且通过 `tool_call.title`（展示名）+ `goose.acp.kind`（稳定分类）+ `TOOL_META_EXTERNAL_DISPATCH_KEY`（标记"勿再经 loop 重派发"）携带到主循环，让下游 metrics/图标选择拿到稳定类别，同时绕开 goose 自己的鉴权/路由去重复执行已由外部 agent 执行过的工具：
 
-[crates/goose/src/acp/provider.rs:598-611]()
+[crates/goose/src/acp/provider.rs:954-967]()
 <!-- snippet: // external_dispatch tells the agent loop not to redispatch this
                             // call. goose.acp.kind preserves ACP's stable categorization for
                             // downstream consumers (metrics, observability, icon selection)
@@ -295,7 +306,7 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
 
 `providers/claude_acp.rs` 展示如何把一个外部 agent 描述成 goose Provider：把 goose 的 `GooseMode`（Auto→bypassPermissions、Approve→default、SmartApprove→acceptEdits、Chat→plan）映射为外部 agent 的 mode id，并通过 `model_config_option_id: Some("model")` 把模型的 config option 透传给对方的 `set_config_option`：
 
-[crates/goose/src/providers/claude_acp.rs:64-73]()
+[crates/goose/src/providers/claude_acp.rs:72-81]()
 <!-- snippet: let mode_mapping = HashMap::from([
                 // Closest to "autonomous": bypassPermissions skips confirmations.
                 (GooseMode::Auto, vec!["bypassPermissions".to_string()]),
@@ -309,7 +320,7 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
 
 `ENV_REMOVE` 里显式去掉 `CLAUDECODE` 环境变量，防止 `claude-agent-acp`（它包裹 Claude Code）在 goose 内产生嵌套 session 环检测——这是"goose 嵌入 Claude 而 Claude 又可能嵌入 goose"的防环细节，直接呼应双向信任边界。
 
-[crates/goose/src/providers/claude_acp.rs:75-88]()
+[crates/goose/src/providers/claude_acp.rs:83-96]()
 <!-- snippet: let provider_config = AcpProviderConfig {
                 command: resolved_command,
                 args: vec![],
@@ -337,7 +348,7 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
 2. **客户端协商能力**：goose 作为 ACP 客户端在 `handle_requests` 里发 `InitializeRequest`，只在对方声明支持时才用 `session_capabilities.close` 关会话、按对方 `mcp_capabilities.http` 过滤要转发的 MCP server（`provider.rs:1107-1141`）。
 3. **模型名解析**：`ACP_CURRENT_MODEL` 在 `resolve_model_info` 被解析——若对方用 config option 暴露模型，就从 `NewSessionResponse.config_options` 里取 category=Model 的 select，解析出 current + available 模型列表；否则返回错误，明确"agent returned no model config_options"。
 
-[crates/goose/src/acp/provider.rs:1658-1670]()
+[crates/goose/src/acp/provider.rs:2153-2165]()
 <!-- snippet: fn resolve_model_info(
     provider_name: &str,
     response: &NewSessionResponse,
@@ -354,7 +365,7 @@ goose 主循环里工具需要确认时产生 `ActionRequired(ToolConfirmation)`
 
 在服务端 `update_provider` 里，`ACP_CURRENT_MODEL` 作为"使用对方 agent 默认模型"的占位符出现在 `default_model` 计算里，与客户端侧 `current` 哨兵首尾呼应：
 
-[crates/goose/src/acp/server.rs:2150-2164]()
+[crates/goose/src/acp/server.rs:2511-2525]()
 <!-- snippet: let default_model = if let Some(model_name) = model_name {
             model_name.to_string()
         } else if use_default_provider {
@@ -427,7 +438,7 @@ goose 的 ACP 服务端不只实现标准方法，还用 `_goose/unstable/*` 命
 
 `custom_dispatch.rs` 是映射关系最浓缩的一处：`#[custom_methods] impl GooseAcpAgent { ... }` 下挂了约 90 个 `dispatch_*` 处理器。宏把函数名与请求类型绑定，方法名由请求类型上的 `#[request(method = "_goose/unstable/...")]` 属性在编译期给出——消除了"请求结构体"与"处理器"两处维护同一方法名的重复。
 
-[crates/goose/src/acp/server/custom_dispatch.rs:4-33]()
+[crates/goose/src/acp/server/custom_dispatch.rs:4-30]()
 <!-- snippet: #[custom_methods]
 impl GooseAcpAgent {
     pub async fn dispatch_custom_request(
@@ -448,13 +459,13 @@ impl GooseAcpAgent {
             self.handle_custom_request(method, params).await
         }
         .await;
-        ...
-    }
 
-    #[custom_method(AddSessionExtensionRequest)]
-    async fn dispatch_add_session_extension(
-        &self,
-        req: AddSessionExtensionRequest,
+        if let Err(error) = &result {
+            tracing::error!(method, error = ?error, "ACP custom request failed");
+        }
+
+        result
+    } -->
     ) -> Result<EmptyResponse, agent_client_protocol::Error> {
         self.on_add_session_extension(req).await
     } -->
@@ -510,7 +521,7 @@ sequenceDiagram
 
 ACP 服务端并非每次新建独立 agent，而是共享一个 `AgentManager`（execution manager）。`get_or_create_session_agent_with_results` 按 `session_id` 走 `agent_manager.get_or_create_agent_with_runtime_context`，把 ACP 会话的多项连接态（mcp host、login shell、会话命名 notifier）作为 `RuntimeContext` 注入：
 
-[crates/goose/src/acp/server.rs:733-750]()
+[crates/goose/src/acp/server.rs:1046-1063]()
 <!-- snippet: async fn get_or_create_session_agent_with_results(
         &self,
         cx: &ConnectionTo<Client>,
@@ -527,12 +538,12 @@ ACP 服务端并非每次新建独立 agent，而是共享一个 `AgentManager`�
                 },
             )
             .await
-            .internal_err_ctx("Failed to create agent")
+            .map_err(|error| agent_creation_error(error, "Failed to create agent"))
     } -->
 
 这便是"会话隔离"的关键：goose 把「ACP 会话」与「execution manager 的 Session 行」一一对应。`GooseAcpAgent.sessions` 只缓存已激活的 `(session_id → Agent)`，`AgentManager` 负责 disk↔memory 的状态。`on_close_session` 取消 active run、从 map 移除、并 `remove_session_if_loaded` 释放内存里的 agent——因为 SQLite 已持久化，重开时再 lazy 激活：
 
-[crates/goose/src/acp/server.rs:2213-2223]()
+[crates/goose/src/acp/server.rs:2576-2586]()
 <!-- snippet: let mut sessions = self.sessions.lock().await;
         sessions.remove(session_id);
         drop(sessions);
@@ -547,22 +558,27 @@ ACP 服务端并非每次新建独立 agent，而是共享一个 `AgentManager`�
 
 会话状态本身落在 `SessionManager`（SQLite），`session_meta`/`session_response_meta`（`response_builder.rs`）把 goose 的 `Session` 结构合成 ACP 的 meta 字段（messageCount/userSetName/recipe/workingDir 等），供宿主渲染列表。
 
-`server_factory.rs` 的 `AcpServer` 是关键装配厂：`create_agent` 把 `provider_factory`（闭包，按 provider 名 + extensions + working_dir 创建真正 Provider，见 `server_factory.rs:72-87`）与可选 scheduler 注入 `GooseAcpAgentOptions`。scheduler 用 `OnceCell` 惰性初始化，并支持 `start_scheduler` 提前启动，让 headless `goose serve` 能跑定时任务。
+`server_factory.rs` 的 `AcpServer` 是关键装配厂：`create_agent` 把 `provider_factory`（闭包，按 provider 名 + extensions + working_dir 创建真正 Provider；新增 `use_default_model` 标志让宿主请求默认模型，见 `server_factory.rs:72-87`）与可选 scheduler 注入 `GooseAcpAgentOptions`。scheduler 用 `OnceCell` 惰性初始化，并支持 `start_scheduler` 提前启动，让 headless `goose serve` 能跑定时任务。
 
-[crates/goose/src/acp/server_factory.rs:72-87]()
-<!-- snippet: let provider_factory: AcpProviderFactory =
-            Arc::new(move |provider_name, extensions, working_dir| {
+[crates/goose/src/acp/server_factory.rs:93-113]()
+<!-- snippet: let provider_factory: AcpProviderFactory = Arc::new(
+            move |provider_name, extensions, working_dir, use_default_model| {
                 Box::pin(async move {
-                    match working_dir {
-                        Some(working_dir) => {
-                            crate::providers::create_with_working_dir(
-                                &provider_name,
-                                extensions,
-                                working_dir,
-                            )
+                    if use_default_model {
+                        crate::providers::create_with_default_model(&provider_name, extensions)
                             .await
+                    } else {
+                        match working_dir {
+                            Some(working_dir) => {
+                                crate::providers::create_with_working_dir(
+                                    &provider_name,
+                                    extensions,
+                                    working_dir,
+                                )
+                                .await
+                            }
+                            None => crate::providers::create(&provider_name, extensions).await,
                         }
-                        None => crate::providers::create(&provider_name, extensions).await,
                     }
                 })
             }); -->
@@ -624,10 +640,10 @@ TLS（`transport/tls.rs`）为 `goose serve` 的跨机场景提供：无证书�
 
 ## 对外 SDK：uniffi 把 Rust 核心编给 Python / Kotlin
 
-`crates/goose-sdk` 是面向外的 SDK。默认 feature 只 re-export `goose-sdk-types`，让调用方可构建一个 ACP 客户端通过 stdio 对接 `goose acp`；开启 `uniffi` feature 后编译成 `cdylib`/`staticlib`，走 [uniffi-rs](https://mozilla.github.io/uniffi-rs/) 编出 Python / Kotlin 可加载的本机 API：
+`crates/goose-sdk`（即 GDK，Goose Development Kit）是面向外的 SDK。默认 feature 只 re-export `goose-sdk-types`，让调用方可构建一个 ACP 客户端通过 stdio 对接 `goose acp`；开启 `uniffi` feature 后编译成 `cdylib`/`staticlib`，走 [uniffi-rs](https://mozilla.github.io/uniffi-rs/) 编出 Python / Kotlin 可加载的本机 API：
 
 [crates/goose-sdk/src/lib.rs:1-3]()
-<!-- snippet: //! Goose SDK.
+<!-- snippet: //! The goose Development Kit (GDK).
 //!
 //! With default features this crate re-exports the shared SDK wire types from
 -->

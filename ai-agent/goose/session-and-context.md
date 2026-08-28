@@ -2,6 +2,8 @@
 
 > 核心文件：`crates/goose/src/session/session_manager.rs` 与 `context_mgmt/mod.rs`。
 
+> **演进说明（main@f87c4d7）**：依据代码快照比对。工具对先发压缩加入去重（`seen_message_pairs` 合并 sibling ids）与 `protect_last_n`；其余引用为无指纹弱校验（WEAK）存量；详见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 根因
 
 goose 主循环里所有 LLM 交互都受两件事支配：**对话能存到哪、何时被压缩**。一句话根因——**"会话必须跨进程、跨形态（Desktop/CLI/API）可续，且模型上下文窗口有限，对话必须能被安全改写为更短的摘要而不丢用户可见的历史"**。因此 goose 把「持久化」与「上下文压缩」绑进同一个数据模型：`SessionManager` 负责用 SQLite 把每一条 agent 可见的消息落盘，`context_mgmt` 负责在 token 超阈值时调用 LLM 把旧对话总结成一条"系统不可见"的摘要，再通过 `replace_conversation` 把整段历史原子覆写入库。
@@ -212,12 +214,12 @@ sequenceDiagram
 
 ## 工具对（Tool Pair）的先发压缩
 
-`maybe_summarize_tool_pairs` 是压缩的"精细平移"：在整段压缩之前，当单次会话内 `ToolRequest+ToolResponse` 对超过一定阈值时，后台 `tokio::spawn` 异步把最早的一批工具对各自总结成一句 `agent_only` 回复塞回上下文（`[crates/goose/src/context_mgmt/mod.rs:626-663]()`）。触发量由 `compute_tool_call_cutoff` 决定——随上下文窗口 `3 * effective_limit / 20000` 线性放大并 clamp 到 `[10, 500]`，这样大窗口模型可以先压再多工具对，小窗口早早触发。这是对"工具调用通常最占 token"这一经验的针对性优化，且**异步不阻塞主回复流**。
+`maybe_summarize_tool_pairs` 是压缩的"精细平移"：在整段压缩之前，当单次会话内 `ToolRequest+ToolResponse` 对超过一定阈值时，后台 `tokio::spawn` 异步把最早的一批工具对各自总结成一句 `agent_only` 回复塞回上下文（`[crates/goose/src/context_mgmt/mod.rs:493-590]()`）。触发量由 `compute_tool_call_cutoff` 决定——随上下文窗口 `3 * effective_limit / 20000` 线性放大并 clamp 到 `[10, 500]`，这样大窗口模型可以先压再多工具对，小窗口早早触发；还带 `protect_last_n` 保护最近几对。一条消息里常含**多个并行工具调用**（sibling ids），总结按整条消息进行，所以汇总前先用 `seen_message_pairs` 去重合并（`[context_mgmt/mod.rs:510-564]`），避免对同一对消息重复发总结请求；request/response 两侧 id 集合不一致的对直接跳过。这是对"工具调用通常最占 token"这一经验的针对性优化，且**异步不阻塞主回复流**。
 
 ```rust
 Some(tokio::spawn(async move {
     let mut results = Vec::new();
-    for tool_id in tool_ids {
+    for tool_id in grouped_tool_ids {
         match summarize_tool_call(
             provider.as_ref(),
             &model_config,
@@ -236,7 +238,7 @@ Some(tokio::spawn(async move {
     results
 }))
 ```
-<!-- snippet: [crates/goose/src/context_mgmt/mod.rs:643-662] Some(tokio::spawn(async move { let mut results = Vec::new(); for tool_id in tool_ids { match summarize_tool_call( provider.as_ref(), &model_config, &session_id, &conversation, &tool_id, ) .await { Ok(summary) => results.push((summary, tool_id)), Err(e) => { warn!("Failed to summarize tool pair: {}", e); } } } results })) -->
+<!-- snippet: [crates/goose/src/context_mgmt/mod.rs:570-589] Some(tokio::spawn(async move { let mut results = Vec::new(); for tool_id in grouped_tool_ids { match summarize_tool_call( provider.as_ref(), &model_config, &session_id, &conversation, &tool_id, ) .await { Ok(summary) => results.push((summary, tool_id)), Err(e) => { warn!("Failed to summarize tool pair: {}", e); } } } results })) -->
 
 ## 召回：Chat History Search
 

@@ -9,3 +9,4 @@
 | [Promptfoo](promptfoo/) | TypeScript | LLM 评估与红队测试：统一评估管线 + 百种攻击插件 + 风险定级，100+ Provider 抽象，SQLite 持久化 | MIT | [GitHub](https://github.com/promptfoo/promptfoo) |
 | [DeepEval](deepeval/) | Python | LLM 评测框架（类似 pytest）：50+ Metric + LLM-as-Judge 三层 schema 判官协议，GEval/DAG 双判官，Synthesizer 造数据，@observe 非侵入 OTel 追踪，pytest 插件进 CI | Apache-2.0 | [GitHub](https://github.com/confident-ai/deepeval) |
 | [darwin-skill](darwin-skill/) | Markdown(Agent Skill) | Agent Skill 自主优化器：9 维评分 rubric（结构59/效果35/meta6）+ paired 同-judge 多数决棘轮 + human-in-the-loop 三层守关，基于 autoresearch + 微软 SkillLens/SkillOpt | MIT | [GitHub](https://github.com/alchaincyf/darwin-skill) |
+| [Agent Client Protocol](agent-client-protocol/) | Rust | 编辑器⇄编码 Agent 标准化双向 JSON-RPC 协议：Rust 类型单一事实源 → schemars 生成 JSON Schema 四件套（v1/v2 × stable/unstable），三阶段生命周期 + capabilities 双轨演进 + RFD 治理，serde 宽容反序列化矩阵 | Apache-2.0 | [GitHub](https://github.com/agentclientprotocol/agent-client-protocol) |

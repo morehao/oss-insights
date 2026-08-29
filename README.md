@@ -213,6 +213,7 @@ graph TB
 | [New API](ai-infra/new-api/) | Go+React | 统一 AI API 网关与资产管理：四协议互转独立 relaykit 转换层，40+ 供应商适配器 + 渠道分发，预扣/结算/退款计费，SQLite/MySQL/PG 三库 | AGPL-3.0 | [GitHub](https://github.com/QuantumNous/new-api) |
 | [DeepEval](ai-infra/deepeval/) | Python | LLM 评测框架（类似 pytest）：50+ Metric + LLM-as-Judge schema 判官协议，GEval/DAG 双判官，Synthesizer 造数据，@observe 非侵入 OTel 追踪，pytest 插件进 CI | Apache-2.0 | [GitHub](https://github.com/confident-ai/deepeval) |
 | [darwin-skill](ai-infra/darwin-skill/) | Markdown(Agent Skill) | Agent Skill 自主优化器：9 维评分 rubric + paired 同-judge 多数决棘轮 + human-in-the-loop 三层守关，基于 autoresearch + 微软 SkillLens/SkillOpt | MIT | [GitHub](https://github.com/alchaincyf/darwin-skill) |
+| [Agent Client Protocol](ai-infra/agent-client-protocol/) | Rust | 编辑器⇄编码 Agent 标准化双向 JSON-RPC 协议（Zed 发起）：Rust 类型单一事实源 → schemars 生成 JSON Schema 四件套，三阶段生命周期 + capabilities 双轨演进 + RFD 治理，v1 稳定/v2 草稿 feature 共存 | Apache-2.0 | [GitHub](https://github.com/agentclientprotocol/agent-client-protocol) |
 
 ### [AI 生成（AIGC）](aigc/)
 

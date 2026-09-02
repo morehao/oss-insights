@@ -122,7 +122,7 @@
 
 - `resolve(request)`：approved 显式 mode 高于 session 最后 `sandbox/mode` 事件、再高于部署默认；session cwd 是 workspace 边界（`[packages/sandbox/sandbox-policy/src/index.ts:135-142]()`）。
 - `defaultMode` / `workspaceRoot`：配置默认与 agentless 兜底（`:100-103`）。
-- session-mode：override 是**会话 log 里的 `sandbox/mode` 事件**——"日志即状态"，重启靠 replay 重建；`effectiveSandboxMode` 折 fold 出上一个 switch（`[packages/sandbox/sandbox-policy/src/session-mode.ts:1-58]()`）。`setSandboxMode` 是唯一写路径。
+- session-mode：override 是**会话 log 里的 `sandbox/mode` 事件**——"日志即状态"，重启靠 replay 重建；`effective = projection state ?? deployment default`（[packages/sandbox/sandbox-policy/src/session-mode.ts:1-12]()），`setSandboxMode` 是唯一写路径。
 
 ```
 <!-- anchor:   resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy { -->

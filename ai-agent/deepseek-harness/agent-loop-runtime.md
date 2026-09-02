@@ -10,7 +10,7 @@
 
 若把本模块整体去掉，系统会怎样：
 
-1. **模型请求永远不会被驱动。** `ctx.agents.create()` 只能查到注册工厂为空而抛 `no agent factory registered (load an agent-loop plugin)` [packages/core/agent/src/index.ts:216-219]()。没有任何代码在 `llm/stream` 上消费，turn/step 计数器永不前进。
+1. **模型请求永远不会被驱动。** `ctx.agents.create()` 只能查到注册工厂为空而抛 `no agent factory registered (load an agent-loop plugin)` [packages/core/agent/src/index.ts:210-213]()。没有任何代码在 `llm/stream` 上消费，turn/step 计数器永不前进。
 <!-- anchor: const NO_FACTORY_MESSAGE = 'no agent factory registered (load an agent-loop plugin)' -->
 2. **inbox 没有消费者。** 两条 pending 列表（`next-turn` / `next-step`）的 `splice/claim` 投影仍然存在，但没有任何 driver 去 `claim` 它们，输入永远停在队列里。
 3. **任务转向工具。** `tool/*` 事件仍在注册表里，但没有循环驱动它们，工具永远不会被调度执行。
@@ -38,7 +38,7 @@ A `step` = 一次模型请求 + 它所调用的工具；`turn` = 零或多个 st
 | `core/agent`（runtime） | 声明 `Agent` 接口、registry、inbox 投影、`agent/*` 事件词汇、initiator 作用域 | 接口层，可被任何"看似 Agent 的东西"实现 |
 | `core/agent-loop`（loop） | `ReactLoopAgent` 具体驱动：turn/step 推进、请求构建、工具调度 | 具体的默认驱动，可被另一 loop 插件整体替换 |
 
-`agent-loop` 作为唯一 factory 通过 `ctx.agents.setFactory()` 注册 [packages/core/agent-loop/src/index.ts:350-351]()，使消费者只依赖 `ctx.agents` 抽象而不依赖具体 loop 包（`packages/core/agent/src/runtime-types.ts` 无 loop 依赖，`packages/core/agent-loop/src/agent.ts:7-18` 从 `dsh-agent` 导入接口）。这是"无特权内核"的直接体现：连内核自己也是被注册进去的。
+`agent-loop` 作为唯一 factory 通过 `ctx.agents.setFactory()` 注册 [packages/core/agent-loop/src/index.ts:413-414]()，使消费者只依赖 `ctx.agents` 抽象而不依赖具体 loop 包（`packages/core/agent/src/runtime-types.ts` 无 loop 依赖，`packages/core/agent-loop/src/agent.ts:7-18` 从 `dsh-agent` 导入接口）。这是"无特权内核"的直接体现：连内核自己也是被注册进去的。
 <!-- anchor: ctx.effect(() => ctx.agents.setFactory(this), 'agentLoop.setFactory()') -->
 <!-- anchor: ctx.systemPrompt.variable('provider', context => context.agent?.options.provider) -->
 
@@ -247,7 +247,7 @@ sequenceDiagram
 **Why > What**：双层不是给开发者的额外概念负担，而是为了给"交互结束"一个**可判定的、持久化的边界**。单层 step 只能回答"一次请求+工具跑完没有"，无法回答"用户的这一番输入整体有没有跑完"——后者才是 UI、编排器、持久化真正需要的契点。日志也是按此建模：`turn/start` 与 `turn/end` 夹住一个稳定归巢点，`step/start`/`step/end` 只是中间态。`consumed-work.ts` 的存在本身就证明：即便双层，也还需要额外在日志上折叠（[packages/core/agent/src/consumed-work.ts:68-68]()）才能知道一个 turn "真正"消费了什么——说明双层解决的是"何时算完"，而"算不算有效消费"是另一个正交问题。
 <!-- anchor: export function foldConsumedWork(events: readonly SessionEvent[]): ConsumedWork { -->
 
-**权衡**：双层引入的复杂度是状态机必须显式处理 `turn`/`step` 双计数器的初始化、回卷（[packages/core/agent-loop/src/agent.ts:324-328]() 在换 turn 时重置 `step = 0`）。代价用一个简单模型换来了清晰的可观察停止语义，值得。
+**权衡**：双层引入的复杂度是状态机必须显式处理 `turn`/`step` 双计数器的初始化、回卷（[packages/core/agent-loop/src/agent.ts:333-337]() 在换 turn 时重置 `step = 0`）。代价用一个简单模型换来了清晰的可观察停止语义，值得。
 <!-- anchor: if (!this.inbox.hasPending) return false -->
 <!-- anchor: phase.step = 0 -->
 

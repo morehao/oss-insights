@@ -27,11 +27,17 @@ dsh 对这两类各给了一个服务抽象（`SessionPersistence` 与 `Storage`
 
 代价与权衡：没有 seek-by-seq，`readFrom(id, fromSeq)` 在 JSONL 上仍要解析整文件再跳过。这是真相日志甘愿付的代价——回放本来就要从头，按 seq 随机读不是它服务的场景。
 
-### SQLite：一切可交换的投影/查询底座
+### 单一后端：一个真相、一类读法
 
-事件日志的**派生读取**（投影、冷读、watermark 续读）需要真正按 seq 随机访问与按列过滤，这对 JSONL 是一处天然瓶颈。`session-persistence-sqlite` 用 `node:sqlite` 实现，但它早在 rc.8 起就**不再把每个 SessionEvent 映射成一事件一行**——见下节「Schema 17」的打包物理行。它提供 JSONL 给不了的 `readFrom` 尾读：`SELECT ... WHERE session_id = ? AND seq >= ?` 直接寻址，读规模随后缀而非日志总长[[packages/session/session-persistence-sqlite/src/index.ts:117-123]()]()。rc.8 的存储布局在 sqlite 子包内演进（`codec.ts`/`compression.ts`/`store.ts`），参考了 morlay 的 `session-persistence-rdb`，文档明确标注"统一关系库多后端设计 deferred、pre-release 不保证 schema 稳定"[[packages/session/session-persistence-sqlite/README.md:57-57]()]()。
+> **演进说明（0.1.2-alpha.1）**：0.1.2-alpha.1 整体移除 SQLite 会话持久化后端（`refactor(session)!: remove SQLite persistence backend`，`packages/session/session-persistence-sqlite` 目录自此从仓库消失），本节原「SQLite 作为可交换投影底座」的论述被本次移除取代；原 SQLite 会话后端的 Schema 17 打包物理行、`readFrom` 尾读、`SCHEMA_VERSION=17` 相关叙述一并失效（下文的表格与 Schema 演进章节已相应删除）。
 
-所以"为什么 JSONL + SQLite 双形态"的答案不是性能攀比，而是**一个真相、两类读法**：JSONL 忠实、可回放、人可读（真相对外暴露）；SQLite 按 seq 投影、按 watermark 续读（对读侧派生）。二者共用同一套 `SessionPersistence` 抽象和同一套 `runPersistenceContract` 契约，且都通过共享的 `PersistenceCoordinator` 编排写路径，因此"底层怎么存"被完全封装在 seam 之下。
+SQLite 后端移除后，dsh 的事件持久化收敛为**一个真相、一类读法**：JSONL 的 append-only 顺序介质同时承担「忠实回放」与「后缀续读」。当前 shipped provider 只有 JSONL 一个实现，`SessionPersistence` 抽象明确声明 "the abstract `SessionPersistence` service, its provider model and shipped JSONL backend"[[docs/subsystems/persistence.md:5-5]()]()
+<!-- anchor: The **durability seam** for the event log. [session.md](session.md) describes the in-memory `Session` -->。
+
+注意区分：被移除的是**会话日志**的 SQLite 后端（`packages/session/session-persistence-sqlite`）；KV 层 `storage-sqlite`（`packages/storage/storage-sqlite`）依然存在、仍是投影/KV 状态的可用媒介。即「事件日志层收敛到 JSONL 单后端，KV 层保持可交换」——真相层简化，投影层保留选择。
+
+为什么移除可行：会话日志一旦确立「追加写、顺序读、整文件可重放」的真相定位，SQLite 双后端的差异化收益（按 seq 随机寻址）就被 `readFrom` 的**物理后缀语义**消解——该原语只承诺"返回/折叠 `seq>=fromSeq` 段"，不限定每个 backend 的物理读，JSONL 顺序扫描但只返回匹配段即等价满足[[docs/subsystems/persistence.md:404-407]()]()
+<!-- anchor: * A backend whose medium can seek by seq may read only the suffix; -->。保留双后端则需持续维护同一 `runPersistenceContract` 契约在两种媒介上的行为等价，pre-release 阶段判定为「维护成本 > 读侧收益」（此权衡为本解读依据代码变动推断，非官方 changelog 陈述）。
 
 ### 非日志 KV 存储：为何也要可交换
 
@@ -39,7 +45,9 @@ dsh 对这两类各给了一个服务抽象（`SessionPersistence` 与 `Storage`
 
 对应两个实现：
 
-- `storage-json`：**一 unit 一个可读 JSON 文件**，`<root>/<unit>.json`，整个文件原子重写、人可读——"可读性就是它存在的理由"（format.ts 头注）[[packages/storage/storage-json/src/format.ts:1-1]()]()；适合低频改、需要人工审查/版本控制的整份状态（如 `session_projcache.json`、`workspace.json`）。
+- `storage-json`：**人可读 JSON backend，双布局可选**——`single` 布局一 unit 一个可读 JSON 文件 `<root>/<unit>.json`、整文件原子重写（"可读性就是它存在的理由"[[packages/storage/storage-json/src/format.ts:4-4]()]()
+<!-- anchor: * legibility is this backend's reason to exist. `single`-layout units are -->）；`per-record` 布局一 unit 一个目录、每记录一份版本化文档 `<root>/<unit>/<table>/<key>.json` + `global.json`，一次写只原子重写一条记录，坏/旧版本记录读取为缺席、绝不 brick 整个 unit[[packages/storage/storage-json/src/per-record-unit.ts:12-16]()]()
+<!-- anchor: * Per-record contract: a record document that is malformed or stamped with a -->。`single` 适合低频改、需要人工审查的整份状态（如 `workspace.json`）；`per-record` 适合高频单记录写（如逐会话的投影缓存）。
 - `storage-sqlite`：**一库多 unit、每行一文档**（`key`/`value` JSON 文本），适合频繁更新、需要随机访问的数据[[docs/subsystems/storage.md:47-47]()]()。每个 unit 一张 `u_<unit>_<table>` 表 + `units`/`unit_globals` 元数据表[[packages/storage/storage-sqlite/src/unit.ts:1-1]()]()。
 
 两条 backend 共享同一个 `KvFacet`/`KvUnit` 契约，并都通过 domain 表单（`ctx.storageDomain`）暴露给消费方。可交换的意义在这里与"不可变事件日志"哲学呼应：**真相（事件日志）与投影（KV 状态）分层，投影落在哪个媒介可随时换，但真相的语义不会因媒介而改变**。
@@ -53,25 +61,21 @@ graph TB
     SE[SessionEvent 序列]
     SH[SessionHeader]
     COORD[PersistenceCoordinator]
-    JSONL[jsonl 会话后端]
-    SQL[sqlite 会话后端]
+    JSONL[jsonl 会话后端<br>唯一事件后端]
     B1[scanLog 整读回放]
-    B2[readFrom 尾读]
+    B2[readFrom 后缀读]
     REG[ProjectionRegistry]
     CACHE[session_projcache 域]
     SNAPSHOT[ProjectionSnapshot]
     DOMAIN[storage-domain]
-    JSONKV[json backend]
+    JSONKV[json backend<br>single / per-record]
     SQLKV[sqlite backend]
     HUB[Storage hub ctx.storage]
     SE --> JSONL
-    SE --> SQL
     SH --> JSONL
-    SH --> SQL
     COORD --> JSONL
-    COORD --> SQL
     JSONL --> B1
-    SQL --> B2
+    JSONL --> B2
     B1 --> REG
     B2 --> REG
     REG --> CACHE
@@ -84,7 +88,7 @@ graph TB
     classDef pd fill:#2e1e3a,stroke:#ba68c8;
     classDef kv fill:#3a2e1e,stroke:#d4a04d;
     classDef br fill:#202020,stroke:#666;
-    class SE,SH,JSONL,SQL,COORD ev;
+    class SE,SH,JSONL,COORD ev;
     class REG,SNAPSHOT,CACHE pd;
     class DOMAIN,JSONKV,SQLKV,HUB kv;
     class B1,B2 br;
@@ -94,8 +98,8 @@ graph TB
 
 关系要点：
 
-- 事件日志真相层（左）与派生读取层（中）之间靠 `PersistenceBackend.readFrom`（watermark 续读）和 `scanLog`/`load`（整读回放）两种桥接；
-- 投影缓存是存储层（右）的消费方——它打开 `session_projcache` 域，经 domain 表单落到 json 或 sqlite backend；
+- 事件日志真相层（左）与派生读取层（中）之间靠 `PersistenceBackend.readFrom`（watermark 续读）和 `scanLog`/`load`（整读回放）两种桥接——0.1.2-alpha.1 起两种桥接都由 JSONL 一个后端提供（SQLite 会话后端已移除，见「单一后端」）；
+- 投影缓存是存储层（右）的消费方——它打开 `session_projcache` 域，经 domain 表单落到 json 或 sqlite backend（0.1.2-alpha 起默认走 storage-json 的 `per-record` 布局，每会话一个文档）；
 - 图右即"一切非事件"的 KV 底座，domain 表单是唯一消费入口，`domain/changed` 事件在每次 durable 写后发出。
 
 ## 核心表 / 实体设计
@@ -109,7 +113,8 @@ graph TB
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
 | type | SessionEventType | 判别 key | 事件类型，`SessionEventMap` 可被插件合并扩展 |
-| seq | number | 会话内单调连续 | append 的 contiguity 契约锚点 |
+| seq | SessionSeq | branded number | 会话内单调连续；`SessionSeq` 标识**一条已存在事件**，与标识"间隙/前缀长度/读偏移"的 `SessionLogOffset` 分离，编译期禁止互换[[packages/core/session/src/types.ts:29-51]()]()
+<!-- anchor: export type SessionSeq = BrandedNumber<'SessionSeq'> … export function SessionLogOffset(value: number): SessionLogOffset { --> |
 | time | number | Unix epoch ms | 事件时间戳 |
 | data | SessionEventMap[K] | JSON-serializable | 负载，构造期强制 `isJsonValue` |
 | ignorable | true(可选) | 仅日志型 | 未知类型的"可跳过"标记；缺省=必需，遇未知类型须拒绝而非静默丢弃 |
@@ -127,7 +132,10 @@ graph TB
 | createdAt | number | 非负 safe-integer epoch ms | 创建时刻 |
 | cwd | string(可选) | 绝对路径 | 创建时工作目录 |
 | parentSession | SessionId(可选) | | 被 fork 的来源，seed 谱系 |
-| seedLength | number(可选) | | 继承的导引事件数，让 resume/replay 区分父史与子活 |
+| isSeeded | boolean | 无此字段视为 false | fork 谱系标记；替代旧 `seedLength` 的存储坐标语义（见「演进说明」）[[packages/core/session/src/types.ts:111-111]()]()
+<!-- anchor:   readonly isSeeded: boolean --> |
+| inheritedEventCount | SessionLogOffset(可选) | body-bearing 观测携带 | 精确继承前缀长度，随 header 之外显式传递，header-only 读者无需打开日志体即可知谱系[[packages/core/session/src/types.ts:141-144]()]()
+<!-- anchor:   * Exact fork-inherited prefix length when `meta.isSeeded` is true. A …   readonly inheritedEventCount?: SessionLogOffset --> |
 | origin | 'subagent'(可选) | | 由 subagent 子创建的产品粗分类（展示用） |
 | delegationDepth | number(可选) | | 代理深度，持久化使递归预算跨重启存活 |
 | agentPreset | string(可选) | deployment 按会话组合时置 | preset 决定工具的 prompt，持久化避免 resume 换组合重放 |
@@ -142,37 +150,13 @@ graph TB
 | 后续行 | event 逐行 JSON 或 `packChunkRuns` 打包块 | 布局无关读：`scanLog` 恒按记录解码 |
 | 物理编码 | zstd 拼接帧（默认）/ 明文 | 由 `JsonlCompression` 决定，后缀对应 |
 
-### session-persistence-sqlite：`sessions` / `events` 表（rc.8 Schema 17 打包物理行）
+### 会话后端物理布局：JSONL 唯一形态（演进：SQLite 已移除）
 
-**演进说明（rc.8）**：0.1.0-rc.8 把 SQLite 后端从「一事件一行、data 为 JSON 文本」重写为 **Schema 17 打包物理行**——见下。既有本条目的旧描述（events 行与 SessionEvent 1:1）已被本次重构取代。
+> **演进说明（0.1.2-alpha.1）**：0.1.2-alpha.1 移除 SQLite 会话持久化后端。本节原「`session-persistence-sqlite` 的 `sessions` / `events` 表、Schema 17 打包物理行、`incarnation`/`revision`」整节已被删除，此处仅保留演进轨迹摘要：rc.8 曾把 SQLite 后端从「一事件一行」重写为 Schema 17 打包物理行（`packChunkRuns` 把连续同块 `assistant/chunk` 压成一行、varint+ZigZag delta 编码 `source_event_seqs`、大 payload zstd 压缩为 BLOB），并配套 `sessions` 表的 `incarnation`（物化时 randomUUID）与 `revision`（单调变更 token）——这些机制随后端一并移除，不进入 alpha.4 代码。
 
-职责：一个 SQLite 库承载全部会话，`sessions` 行是 out-of-log 元数据（≈SessionHeader）；`events` 行**不再是**与 SessionEvent 一一对应——普通事件仍是标量行，但可打包的连续 `assistant/chunk` 流被压成**打包物理行**。行存在性即物化信号：仅首次 append 写行，创建未 append 的会话无行、`list` 不可见[[packages/session/session-persistence-sqlite/src/schema.ts:26-26]()]()。
-
-`sessions`：
-
-| 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | TEXT | PK | 会话 id |
-| version | integer | NOT NULL | header 版本（事件词汇版本） |
-| created_at / cwd / parent_session / seed_length / origin / delegation_depth / agent_preset | 多 | NULL=缺省可选 | 反映 SessionHeader 各可选字段 |
-| incarnation | TEXT | NOT NULL，物化时 randomUUID | 日志持久化的稳定身份 |
-| revision | INTEGER | NOT NULL，每次变更自增 | 单调日志变更 token，纯等值比较 |
-
-`events`（DDL 列仍是这几列，但**类型与行含义**按 Schema 17 codec 变了）：
-
-| 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| session_id | TEXT | FK→sessions(id) ON DELETE CASCADE | 归属会话 |
-| seq | INTEGER | 与 session_id 组成 PK | 标量行=该事件 seq；打包行=`seq0`（首个代表事件） |
-| type | TEXT | NOT NULL | 标量行=逻辑事件类型；打包行=`text-chunks`/`reasoning-chunks`/`tool-call-chunks`（存储记录，非 `SessionEventMap` 成员） |
-| time | INTEGER | NOT NULL | 标量行=事件时间；打包行=`time0`（首个代表事件） |
-| data | ANY | NOT NULL | 标量行=JSON 文本；打包行=共享的打包 chunk 负载；≥4 KiB 时 zstd 压缩为 BLOB |
-| source_event_seqs / surface_op | ANY/TEXT(可为空) | 条件 surface 元数据 | 打包行为 NULL；标量行 `source_event_seqs` 以 varint+ZigZag delta 编码为 BLOB |
-| ignorable | INTEGER(可为空) | 0/1 | **打包行固定 0 作物理判别标记**；标量行 1 表示逻辑 ignorable 事件，否则 NULL |
-
-关键是：**`type` 的 `*-chunks` 存储标签与"未知逻辑事件拒绝"不冲突**——decoder 先看 `ignorable` 是否 0 判定打包行，未知逻辑 ignorable 事件仍可复用存储标签名（`codec.ts:1-46`）。打包行各字段定义见 [[packages/session/session-persistence-sqlite/src/codec.ts:32-46]()]()。
-
-每个 `packChunkRuns` 把**恰好连续、同块类型**的 delta 展开，未知字段/surface 元数据/seq 缺口/不安全 block 身份/不安全时间戳都保留为标量行；一行最多代表 **1 048 576 字节（`MAX_PACKED_DATA_BYTES`）** payload、**≥3 个成员（`MIN_PACKED_ROW_MEMBERS`）**，超长 run 被切分而不改变逻辑事件[[packages/session/session-persistence-sqlite/src/codec.ts:42-46]()]()。`appendBatch` 一次 `BEGIN IMMEDIATE` 事务里 `packChunkRuns(events)` 后逐记录 `bindRecord` 写入并只 increment revision 一次，旧逻辑事件行绝不重写[[packages/session/session-persistence-sqlite/src/store.ts:173-199]()]()。
+打包的职责已全部收敛进 JSONL 后端：`packChunkRuns` 打包块仍是 JSONL 会话文件的物理形态之一（见上表「后续行」），`decodeStorageRecord` 无损展开，存储编码词汇（`text-chunks`/`reasoning-chunks`/`tool-call-chunks`）不打进 `SessionEventMap`、编码器白名单精确形状、不认识即逐条存（丢压缩不丢数据）[[packages/core/session/src/chunk-rows.ts:9-16]()]()
+<!-- anchor: * Packed rows are an encoding vocabulary, NOT session events: they never enter … * before expanding and fails loud on a malformed row-tagged value instead of -->。zstd 物理编码在 alpha 期间拆分出「核心扫描 + 双解码器」：`zstd.ts` 负责拼接帧的字节范围扫描与 torn 尾识别，解码交给 Node 私有 API 的流式解码器与公共 API 的单发解码回退（`zstd-private-decoder` / `zstd-public-decoder`），使同一压缩容器在受限环境下也有可用的回退实现[[packages/session/session-persistence-jsonl/src/zstd.ts:4-12]()]()
+<!-- anchor: * without exposing compression mechanics through the persistence seam. … import { NodePrivateZstdFrameDecoder } from './zstd-private-decoder.ts' -->。
 
 ### storage-sqlite：`units` / `unit_globals` / `u_<unit>_<table>`
 
@@ -184,9 +168,11 @@ graph TB
 | unit_globals | unit/value | PK→units, value TEXT | unit 全局单例槽 |
 | u_<unit>_<table> | key/value | key PK, value TEXT NOT NULL | 每 unit 每 table 泛化记录表，value 为 JSON 文本 |
 
-### storage-json：一 unit 单个文档
+### storage-json：single（一 unit 单文档）与 per-record（一记录一文档）
 
-职责：整文件即 unit 的"当前净状态"，人读优先（pretty-print + 插入序稳定 key order），全局为 `null` 直到首写[[packages/storage/storage-json/src/format.ts:11-11]()]()。
+> **演进说明（0.1.2-alpha）**：storage-json 从单一「整文件」布局演进为 **single / per-record 双布局**，本小节反映当前形态；原「一 unit 一个可读 JSON 文件」的单一布局论述已成为 `single` 分支。
+
+`single` 布局：整文件即 unit 的"当前净状态"，人读优先（pretty-print + 插入序稳定 key order），全局为 `null` 直到首写[[packages/storage/storage-json/src/format.ts:11-11]()]()。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -196,19 +182,32 @@ graph TB
 
 写入为原子整文件替换（temp+fsync+rename+目录 fsync）[[packages/storage/storage-json/src/atomic.ts:24-24]()]()。
 
-### session-projection-cache：`session_projcache` 域
+`per-record` 布局：unit 是一个目录，`<dir>/<table>/<key>.json` 每记录一个版本化文档 + `global.json` 承载全局槽。该 unit 设计为**无内存状态**——`loadAll` 重读目录树、每次写就是一次 durable 文件操作，写失败文件与域内存双双不变、无需回滚[[packages/storage/storage-json/src/per-record-unit.ts:3-10]()]()
+<!-- anchor: /**
+ * One opened JSON unit in `per-record` layout: the unit is a directory at -->。键会成为路径段，必须 path-safe（`[a-zA-Z0-9_-]+`），不安全键在写时拒绝[[packages/storage/storage-json/src/per-record-unit.ts:270-271]()]()
+<!-- anchor: /** Reject a record key that would be unsafe as a path segment. */ … function assertSafeKey(unit: string, key: string): void { -->。既有 `single` 布局的整文件在首次打开时被自动 bootstrap 进 per-record 树（legacy 文件保留不改动），任何新文档路径存在即抑制整 unit 的 bootstrap[[packages/storage/storage-json/src/per-record-unit.ts:18-22]()]()
+<!-- anchor: * Legacy bootstrap: when the new tree has no document path, a legacy -->。
 
-职责：投影检查点持久化，`(sessionId, key, ver, seq, val)` 的 RFC 形态；`row 从不错误，只可能过期`——ver 不匹配即丢弃（从非迁移）[[packages/session/session-projection-cache/src/spec.ts:24-24]()]()。日志身份绑定（createdAt/cwd）防止"同 id 不同生命周期"的旧行通过水位检查[[packages/session/session-projection-cache/src/spec.ts:39-39]()]()。
+### session-projection-cache：`session_projcache` 域（per-record 落盘 + 身份含谱系）
+
+> **演进说明（0.1.2-alpha）**：投影缓存 alpha 期间随 storage-json per-record 布局落盘——每会话一个文档 `<root>/session_projcache/sessions/<sessionId>.json`，一次 checkpoint 写只重写该会话的文档而非整 unit[[packages/session/session-projection-cache/src/spec.ts:3-9]()]()
+<!-- anchor: /**
+ * The projection-cache domain declaration: one `sessions` table keyed by -->；同时 `checkpointIdentity` 扩展进 seq/offset 分离后的谱系字段。
+
+职责：投影检查点持久化，`(sessionId, key, ver, seq, val)` 的 RFC 形态；`row 从不错误，只可能过期`——ver 不匹配即丢弃（从非迁移）[[packages/session/session-projection-cache/src/spec.ts:24-24]()]()。日志身份绑定（createdAt/cwd）防止"同 id 不同生命周期"的旧行通过水位检查[[packages/session/session-projection-cache/src/spec.ts:42-42]()]()。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
 | createdAt / cwd | z.number/z.string.optional | checkpointIdentity | 日志身份（列表/冷读时对 live header 校验） |
+| isSeeded / inheritedEventCount | z.boolean / SessionLogOffset | checkpointIdentity | 0.1.2-alpha 起加入的谱系位：同 id 不同谱系的旧记录读时即弃[[packages/session/session-projection-cache/src/spec.ts:45-46]()]()
+<!-- anchor:   isSeeded: z.boolean(), …   inheritedEventCount: z.number().int().nonnegative().transform(SessionLogOffset), --> |
 | rows | Record<key, row> | rows 键为投影 key | 每 key 一个 checkpoint |
 | row.ver | int≥0 | | 该 unit 的 stateVersion，不匹配即弃 |
-| row.seq | int≥-1 | | 投影最后一次折叠的 seq（如何 stale） |
+| row.seq | SessionSeqCursor | int≥-1 转 SessionSeq | 投影最后一次折叠的 seq；`-1` 表示首事件前的 watermark[[packages/session/session-projection-cache/src/spec.ts:26-28]()]()
+<!-- anchor: export const checkpointRow = z.object({ … seq: z.number().int().gte(-1).transform((value): SessionSeqCursor => --> |
 | row.val | z.json() | | 该投影 unit 的内部状态，纯 JSON |
 
-写为整记录替换（whole-value 纪律）；域 spec `version:3` 升级即报废整个媒介[[packages/session/session-projection-cache/src/spec.ts:66-66]()]()。
+写为整记录替换（whole-value 纪律）；域 spec `version:3` 升级即报废整个媒介[[packages/session/session-projection-cache/src/spec.ts:66-66]()]()。alpha 期间新增**冷读播种**：冷会话从缓存种子直接折 fold 而非全量重放，写回在持久化后异步进行——缓存从「只读捷径」升级为「可播种的折叠捷径」（`session-projection-cache` 的 `loadAndFold` 路径）。
 
 ### 附件对象库：`DSH_HOME/attachments/v1`（内容寻址二进制存储）
 
@@ -237,8 +236,8 @@ dsh 的 schema 演进哲学与多数系统相反——**pre-release，无兼容�
 
 - `SESSION_FORMAT_VERSION = 0`：单一单调整数，无 major/minor 拆分[[packages/core/session/src/types.ts:56-56]()]()。决定是否 bump 看 **writer 发什么**，而非新 reader 能否接受——只有结构性变化才 bump（header 形态、Event 信封、core 事件语义、surface 机制/SurfaceEventType 集）；普通加事件类型不 bump，用 `ignorable` 防词汇增长[[packages/core/session/src/types.ts:40-40]()]()。
   - bump 的代价权衡见 constant 注释："near-identity 升级几乎免费，漏 bump 会让旧 runtime 静默读错新日志"——宁可过度拒绝也不静默重演被掏空的会话。
-- 会话级版本：JSONL 后端从**首行 header** 就拒绝外来格式版本，`refuseForeignFormatVersion` 先于校验今日 header 形态与解码任何事件行，所以未来结构性格式仍报"升级方向"而非"corrupt"[[packages/session/session-persistence-jsonl/src/format.ts:240-240]()]()。SQLite 则先把整文件结构用自己 `SCHEMA_VERSION` pragma 挡住[[packages/session/session-persistence-sqlite/src/schema.ts:18-18]()]()。
-- `SCHEMA_VERSION = 17`（SQLite 会话后端，**rc.8 自 15 bump 到 17**）：单调递增，只在前述会话持久化 DDL/codec 有破坏性变更时 bump 一档[[packages/session/session-persistence-sqlite/src/schema.ts:18-18]()]()。openDatabase 用 write-lock 持有下的 `PRAGMA user_version` 校验：缓存 `0`（全新）盖章为当前；非当前一律拒绝[[packages/session/session-persistence-sqlite/src/schema.ts:117-117]()]()。
+- 会话级版本：JSONL 后端从**首行 header** 就拒绝外来格式版本，`refuseForeignFormatVersion` 先于校验今日 header 形态与解码任何事件行，所以未来结构性格式仍报"升级方向"而非"corrupt"[[packages/session/session-persistence-jsonl/src/format.ts:240-240]()]()（原 SQLite 的 `SCHEMA_VERSION` pragma 拒绝逻辑已随后端一并移除，见上条）。
+- ~~`SCHEMA_VERSION = 17`（SQLite 会话后端）~~ **0.1.2-alpha.1 随 SQLite 后端一并移除**（原 rc.8 自 15 bump 到 17 的 `PRAGMA user_version` 校验、openDatabase 盖章/拒绝逻辑不再存在于仓库）；会话日志的格式拒绝现收敛为 `SESSION_FORMAT_VERSION` 单一版本号。
 - `STORAGE_SQLITE_SCHEMA_VERSION = 1`（KV sqlite）：`PRAGMA user_version`，与每 unit 版本正交；非当前拒绝，不迁移[[packages/storage/storage-sqlite/src/schema.ts:20-20]()]()。
 - 域级版本：DomainSpec.version 被拒即拒绝打开[[packages/storage/storage-domain/src/spec.ts:35-35]()]()；投影 projcache 域 version 被拒即报废——cache 语义是"stale/不可读 cache 只花一次长尾重放，绝不产出错值"[[packages/session/session-projection-cache/src/spec.ts:62-62]()]()。
 
@@ -246,7 +245,7 @@ dsh 的 schema 演进哲学与多数系统相反——**pre-release，无兼容�
 
 ## 读写路径
 
-写路径有两条汇聚线，都以 `PersistenceCoordinator` 为编排中枢。下面以 JSONL 后端为例给出时序（SQLite 后端经由同一 coordinator，但把"文件 append"换成"一次事务内 `packChunkRuns` 后逐记录 insert"，见上文「Schema 17」）。
+写路径有两条汇聚线，都以 `PersistenceCoordinator` 为编排中枢。下面给出 JSONL 后端（0.1.2-alpha.1 起的唯一 shipped 事件后端）的写路径时序；投影缓存侧另有独立的 write-behind（见「session-projection-cache」）。
 
 ### 活会话写路径：session/event → write-behind 批量落地
 
@@ -275,27 +274,32 @@ seq contiguity 契约在 `appendCore` 强制：每个事件 seq 必须接续 `st
 
 ### 冷会话 / 冷读路径：load / inspect / readFrom
 
-命中派生读取（投影缓存）时，从 SQLite 走 `loadStoredFrom` 尾读；JSONL 走 `loadStored`/`scanLog` 整读回放。恢复打断的 turn：backend 发现 `turn/start` 无 `turn/end`，**不截断**（单 turn 可能巨大），而是以合成 `turn/end { reason:{kind:'interrupted'} }` 收尾，不改变其前后任何独立事件[[docs/subsystems/persistence.md:15-15]()]()。仅当最后一条物理记录是残缺 fragment 时才丢弃 torn tail。
+命中派生读取（投影缓存）时，从缓存行 seed 折叠（见下方「冷读播种」图）；无缓存或身份不符则走 JSONL 的 `loadStored`/`scanLog` 整读回放。恢复打断的 turn：backend 发现 `turn/start` 无 `turn/end`，**不截断**（单 turn 可能巨大），而是以合成 `turn/end { reason:{kind:'interrupted'} }` 收尾，不改变其前后任何独立事件[[docs/subsystems/persistence.md:15-15]()]()。仅当最后一条物理记录是残缺 fragment 时才丢弃 torn tail。
 
-SQLite `loadStoredFrom`：
+冷读 + 投影缓存播种（0.1.2-alpha 新增，`session-projection-cache` 的 `coldSnapshot`）：
 
 ```mermaid
 sequenceDiagram
     participant R as ReadModel
-    participant P as SessionPersistence
-    participant SQ as SQLite backend
-    participant SC as scanRows
+    participant C as ProjectionCache
+    participant REG as sessionProjections.restore
+    participant P as JSONL backend
 
-    R->>P: readFrom(id, fromSeq=floor)
-    P->>SQ: loadStoredFrom(id, fromSeq)
-    SQ->>SQ: SELECT… WHERE id=? AND seq>=?
-    SQ->>SC: scanRows(rows, fromSeq)
-    SC-->>SQ: preserved 前缀 + tornFrom
-    SQ-->>P: {meta, events: preserved}
-    P-->>R: 只回放 watermark 之后一段
+    R->>P: loadStored(id) 整读回放
+    P-->>R: {meta, events: 完整日志}
+    R->>C: coldSnapshot(meta, inheritedEventCount, events)
+    C->>C: identityOf + identity 校验（isSeeded/cut 匹配）
+    C->>REG: restore(cachedRows, events, offset 0, meta, inheritedEventCount)
+    Note over REG: registry 跳过 seq ≤ 缓存行的已折叠前缀<br>identity 不符则整行丢弃、从 0 重折
+    REG-->>C: restored.checkpoint + snapshot
+    C-->>R: snapshot（该 seq 水位）
+    C->>C: put 刷新行（fail-soft, fire-and-forget）
+    Note over C: 首次冷读建行；后续冷读从行 seed
 ```
 
-关键语义：`readFrom` 返回的是**物理后缀**，`fromSeq >= 存储前缀` 时返回空事件而非报错；JSONL（顺序媒介）即使它仍解析整文件也保证只**返回/折叠** `seq>=fromSeq` 段——该原语限定"返回什么、折叠什么"，不限定每个 backend 的物理读[[docs/subsystems/persistence.md:344-344]()]()。
+关键语义：`readFrom` 返回的是**物理后缀**，`fromSeq >= 存储前缀` 时返回空事件而非报错；JSONL（顺序媒介）即使它仍解析整文件也保证只**返回/折叠** `seq>=fromSeq` 段——该原语限定"返回什么、折叠什么"，不限定每个 backend 的物理读[[docs/subsystems/persistence.md:404-407]()]()
+<!-- anchor:  * A backend whose medium can seek by seq may read only the suffix; …  * backend's physical read. -->。冷读播种让 `row 从不错误，只可能过期`的哲学延伸到读侧：缓存在行身份（含谱系位）匹配时折叠到 row.seq、剩余尾部补重放，绝不产出越过日志的幻影值[[packages/session/session-projection-cache/src/index.ts:224-254]()]()
+<!-- anchor:    * Cold-read one session's projections from its complete log. Each unit is …     return restored.snapshot -->。
 
 ### 非日志 KV 写路径：domain 写 → backend 持久化 → domain/changed
 
@@ -319,4 +323,4 @@ sequenceDiagram
 
 ## 全局关联：数据模型是「不可变日志 + 可交换 seam」的物理载体
 
-dsh 把「什么需要落地」拆成两类：事件日志（真相，需顺序 append + 崩溃回放）与投影/KV 状态（派生值，需随机读）。两层各配可交换 backend（JSONL 忠实回放 + SQLite 按 seq 投影；storage-json 人读 + storage-sqlite 频繁读写），由 `PersistenceCoordinator` 编排写路径。schema 演进「不迁移、只拒绝」——`SESSION_FORMAT_VERSION`/`SCHEMA_VERSION`/域级 version 一律单调盖章、非当前即拒，宁可过度拒绝也不静默重演被掏空的会话——这与其说是保守，不如说是「不可变事实源」哲学的自然后果：既然历史不可改，那演进就只能靠版本拒绝而非就地迁移。它把 [session.md](session.md) 的「Model-visible means logged」从内存典故落到磁盘形态，是 [architecture.md](architecture.md) 可交换后端哲学的又一实例。
+dsh 把「什么需要落地」拆成两类：事件日志（真相，需顺序 append + 崩溃回放）与投影/KV 状态（派生值，需随机读）。事件日志层在 0.1.2-alpha.1 收敛为 **JSONL 单一后端**（SQLite 会话后端移除），投影/KV 层仍保持可交换（storage-json 人读、single/per-record 双布局 + storage-sqlite 频繁读写），由 `PersistenceCoordinator` 编排写路径。schema 演进「不迁移、只拒绝」——`SESSION_FORMAT_VERSION`/`STORAGE_SQLITE_SCHEMA_VERSION`/域级 version 一律单调盖章、非当前即拒，宁可过度拒绝也不静默重演被掏空的会话——这与其说是保守，不如说是「不可变事实源」哲学的自然后果：既然历史不可改，那演进就只能靠版本拒绝而非就地迁移。而 seq/offset 分离（`SessionSeq` vs `SessionLogOffset`）是这一哲学在类型层的又一次硬化：**「标识一条事件」与「标识日志中的位置」从此不可互换**。它把 [session.md](session.md) 的「Model-visible means logged」从内存典故落到磁盘形态，是 [architecture.md](architecture.md) 可交换后端哲学的又一实例。

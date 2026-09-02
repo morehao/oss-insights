@@ -16,7 +16,7 @@ rc.1 的升级方向是把凭据从"环境变量引用"抬升为一个**正式�
 
 ## 双键空间：为什么 `CredentialRef` 和 `CredentialKey` 必须分开
 
-`credentials/src/types.ts` 同时定义了两种"凭据的地址"（[packages/credentials/credentials/src/types.ts:12-28]()）：
+`credentials/src/types.ts` 同时定义了两种"凭据的地址"（[packages/credentials/credentials/src/types.ts:13-29]()）：
 <!-- anchor: /** Nominal reference to one credential: a POSIX-style environment-variable name. */ … export type CredentialKey = Branded<'CredentialKey'> -->
 
 - **`CredentialRef`**：就是一个环境变量名，继承旧的"读环境"语义，保持向后兼容。
@@ -27,12 +27,12 @@ rc.1 的升级方向是把凭据从"环境变量引用"抬升为一个**正式�
 
 > 记录 payload 用 owner 的格式书写：两个服务同一 provider 名的插件会读到彼此的 payload；一个被卸载插件留下的记录也无法和在线的一眼区分。以 owner 命名，天然保证"只有写它的人能懂它"。
 
-这带来一个事件层的推论：由于两个键空间语法不相交，commit 事件也必须分开——`credentials/reference-updated`（ref 变了）与 `credentials/record-updated`（key 变了）是两条独立事件，因为"收到同一个事件的监听者无法分辨主体属于哪个空间"（[packages/credentials/credentials/src/types.ts:75-87]()）。
+这带来一个事件层的推论：由于两个键空间语法不相交，commit 事件也必须分开——`credentials/reference-updated`（ref 变了）与 `credentials/record-updated`（key 变了）是两条独立事件，因为"收到同一个事件的监听者无法分辨主体属于哪个空间"（[packages/credentials/credentials/src/types.ts:90-102]()）。
 <!-- anchor:     'credentials/reference-updated'(ref: CredentialRef): void …     'credentials/record-updated'(key: CredentialKey): void -->
 
 ## 记录二态：`ApiKeyRecord` 与 opaque 的 `GrantRecord`
 
-持久化记录只有两种（`CredentialRecord`），靠 `kind` 判别（[packages/credentials/credentials/src/types.ts:36-59]()）：
+持久化记录只有两种（`CredentialRecord`），靠 `kind` 判别（[packages/credentials/credentials/src/types.ts:37-60]()）：
 <!-- anchor: export interface ApiKeyRecord { … export type CredentialRecord = ApiKeyRecord | GrantRecord -->
 
 - **`ApiKeyRecord`**：`kind: 'api-key'`，含 `key`（非空密钥）与 `env`（如 `AWS_PROFILE` 这类 provider 环境采样）。两者都可缺省——一条二者皆无的记录表达的是"owner 确认这条 route 用自身环境发现即可认证"，这和有记录是**两个不同的事实**。

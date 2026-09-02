@@ -27,7 +27,7 @@
 
 作用域合并 + 变更广播（`system-prompt/change`）由 `ScopedLayers` 编排：
 
-[packages/core/system-prompt/src/index.ts:347-351]()
+[packages/core/system-prompt/src/index.ts:398-402]()
 <!-- anchor:  private readonly layers = new ScopedLayers(
     scope => new PromptLayer(scope),
     () => { this.ctx.emit('system-prompt/change') },
@@ -35,7 +35,7 @@
 
 作用域同名遮蔽（scoped section shadows global）在 `section()` 注册时通过 `layers.effect` 落到对应 scope 层，重复注册在该层内抛错：
 
-[packages/core/system-prompt/src/index.ts:381-398]()
+[packages/core/system-prompt/src/index.ts:432-449]()
 <!-- anchor:  section(section: PromptSection): () => void {
     if (!Number.isFinite(section.order)) {
       throw new TypeError(`prompt section "${section.name}" order must be a finite number`)
@@ -71,14 +71,14 @@ export interface PromptSection {
 
 `PERSONA_SECTION = 'deployment:persona'` 与 `PERSONA_ORDER = 0` 是导出常量，供 composition 替换这一个槽位。agent preset 用自己的 persona 注册同名 section，靠「同名遮蔽」实现替换而非追加重复：
 
-[packages/core/system-prompt/src/index.ts:128-137]()
+[packages/core/system-prompt/src/index.ts:172-181]()
 <!-- anchor:  export const PERSONA_SECTION = 'deployment:persona'
 /** Prompt order of the persona slot; the first section a model reads. -->
   export const PERSONA_ORDER = 0 -->
 
 `preset/persona` 插件直接 import 这两个常量来注册自己的 persona，保证「名同」才屏蔽「槽同」：
 
-[packages/preset/persona/src/index.ts:60-67]()
+[packages/preset/persona/src/index.ts:56-63]()
 <!-- anchor: export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.systemPrompt.section({
     name: PERSONA_SECTION,
@@ -106,7 +106,7 @@ export interface PromptSection {
 
 多个 complete 时报错、以及事后恢复唯一 section 的决策：
 
-[packages/core/system-prompt/src/index.ts:504-517]()
+[packages/core/system-prompt/src/index.ts:574-587]()
 <!-- anchor:    const completeSections = sectionDefinitions.filter(section => section.complete === true)
     if (completeSections.length > 1) {
       throw new Error(`multiple complete prompt sections are active: ${completeSections.map(section => JSON.stringify(section.name)).join(', ')}`)
@@ -124,7 +124,7 @@ export interface PromptSection {
 
 工具不全走 section，走独立的 `tools(provider)` 通道，provider 每次 assembly 都会求值。返回值是 `ToolProviderResult`：`schemas`（本 assembly 对模型可见的 schema）+ `knownNames`（限制前的名字全集，用于区分「配置名字笔误」和「该 scope 中故意隐藏的已知工具」）。这样做是因为工具 schema 是强结构（JSON Schema 参数），不宜作为纯文本 section 拼接，也不需要每次渲染重拼文本，只须收集并排序。
 
-[packages/core/system-prompt/src/index.ts:103-109]()
+[packages/core/system-prompt/src/index.ts:102-108]()
 <!-- anchor: /** Tool schemas visible in one assembly and their pre-restriction name set. */
 export interface ToolProviderResult {
   /** The schemas this provider contributes to THIS assembly. */
@@ -132,7 +132,7 @@ export interface ToolProviderResult {
 
 工具最终顺序由 `toolOrder` 配置显式控制：配置按序列出模型可见的工具名，未穷举的工具在 `<unlisted-tools>` 占位符处按字典序插入；`toolOrder` 必须恰好含一次 rest 占位符，未注册的名字在 assembly 时失败：
 
-[packages/core/system-prompt/src/index.ts:139-156]()
+[packages/core/system-prompt/src/index.ts:180-197]()
 <!-- anchor: /** Reserved {@link Config.toolOrder} marker for unlisted tools. -->
 export const TOOL_ORDER_REST = '<unlisted-tools>'
 /**
@@ -154,7 +154,7 @@ function validateToolOrder(toolOrder: string[] | undefined): string[] | undefine
 
 工具 schema 在收集时用 `structuredClone(parameters)` 深拷贝——把 parameters 从 provider 生命周期里 detach 出来，避免 assembly 结果持有 provider 内部的可变引用。排序发生在 detach 之后：
 
-[packages/core/system-prompt/src/index.ts:491-503]()
+[packages/core/system-prompt/src/index.ts:562-574]()
 <!-- anchor:    for (const provider of providers) {
       const result = provider(context)
       const schemas = result.schemas.map(({ name, description, parameters }): ToolSchema => ({
@@ -169,7 +169,7 @@ function validateToolOrder(toolOrder: string[] | undefined): string[] | undefine
 
 orderTools 执行配置序、未知名失败、rest 处字典序补尾：
 
-[packages/core/system-prompt/src/index.ts:164-178]()
+[packages/core/system-prompt/src/index.ts:205-219]()
 <!-- anchor: function orderTools(tools: ToolSchema[], toolOrder: string[] | undefined, knownNames: ReadonlySet<string>): ToolSchema[] {
   const reserved = tools.find(tool => tool.name === TOOL_ORDER_REST)
   if (reserved !== undefined) {
@@ -188,7 +188,7 @@ orderTools 执行配置序、未知名失败、rest 处字典序补尾：
 
 工具提供者由谁注册：`dsh-tools` 服务构造函数里注册 `tools` 与配套 section，让 tools 包的接入方通过 system-prompt 模块统一对模型可见：
 
-[packages/core/tools/src/index.ts:832-836]()
+[packages/core/tools/src/index.ts:825-829]()
 <!-- anchor:    ctx.systemPrompt.tools(context => this.wireSchemas(context.scope))
     if (this.defaultMode !== 'native') {
       ctx.systemPrompt.section(this.collapseSection())
@@ -261,7 +261,7 @@ sequenceDiagram
 
 - agent-loop 在提出 step 前立即调用 `assemble()`，并把动态上下文投影为同一步的保留用户消息：
 
-[packages/core/agent-loop/src/agent.ts:229-233]()
+[packages/core/agent-loop/src/agent.ts:239-243]()
 <!-- anchor:    const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
     signal.throwIfAborted()
     const sections = renderContextSections(assembly)
@@ -269,7 +269,7 @@ sequenceDiagram
 
 - 渲染 system 文本进请求，并带上有序工具：
 
-[packages/core/agent-loop/src/agent.ts:336-341]()
+[packages/core/agent-loop/src/agent.ts:346-351]()
 <!-- anchor:    const system = renderPrompt(assembly)
 
     while (true) {
@@ -279,7 +279,7 @@ sequenceDiagram
 
 - system + tools 落 session header，供下次派生消息/重放：
 
-[packages/core/agent-loop/src/agent.ts:458-470]()
+[packages/core/agent-loop/src/agent.ts:498-510]()
 <!-- anchor:    const header = canonicalHeader({
       config,
       ...preparedCall === undefined ? {} : { adapterDefaults: preparedCall.adapterDefaults },

@@ -94,7 +94,11 @@ session projection 提供两种纯函数视图（`[packages/subagent/subagent/sr
 
 `[packages/subagent/subagent/src/index.ts:311-360]()` `listChildren/listDescendants` 不加载/不恢复 Agent，直接合并 live session store 与可选持久化，经三级阶梯（watermark snapshot / projection-cache own-suffix seq gate / persistence inspect）服务每个子 agent 的 mode/label，从 `subagent` 投影单位读取。
 
-**结果投影回父会话**：one-shot 结果经 `[packages/subagent/tool-subagent/src/index.ts:167-197]()` `settleForegroundRun` 收集 `run.result.output` 返回父模型。continuable 子 agent 主动用 child-scoped 的 `report` 工具向父投递（`[packages/subagent/tool-subagent-report/src/index.ts:94-103]()`），并由 `[packages/subagent/subagent/src/continuation.ts:583-653]()` `reportFrom` 框架该内容为 `subagent-report` user message，按 quiet/wakeup 调度。Activation 结算还会发一条 `subagent-settled` notice 给父（`[docs/subsystems/subagent.md:212]()` 声明）。生命周期对：`subagent/start` / `subagent/end` 按委派父做 scoped dispatch（`[packages/subagent/subagent/src/lifecycle.ts:133-162]()`）。
+**结果投影回父会话**：one-shot 结果经 `[packages/subagent/tool-subagent/src/index.ts:167-197]()` `settleForegroundRun` 收集 `run.result.output` 返回父模型。
+
+> **演进说明（0.1.2-alpha）**：child-scoped `report` 工具（`packages/subagent/tool-subagent-report`）已在 alpha 期间移除，改为**统一相邻 Agent 消息**：continuable 子 agent 的初始任务被注入"用 `send_message({ agent_id: <parent>, message: "<self-contained result>" })` 向父投递"的指导（`continuableInitialPrompt`，[packages/subagent/subagent/src/continuation.ts:296-308]()
+<!-- anchor: function continuableInitialPrompt(parentId: SessionId, prompt: ContentBlock[]): ContentBlock[] { …         + 'does not end your turn.', -->），子用全局 `send_message` 工具向父投递，父侧以 `source.kind: 'agent-message'`（`form: 'relay'`）的 durable user message 呈现（[packages/subagent/subagent/src/continuation.ts:276-293]()
+<!-- anchor: function agentMessageSource(sender: Agent): AgentMessageSource { …     source: agentMessageSource(sender), -->）。Activation 结算还会发一条 `subagent-settled` notice 给父（`[docs/subsystems/subagent.md:212]()` 声明）。生命周期对：`subagent/start` / `subagent/end` 按委派父做 scoped dispatch（`[packages/subagent/subagent/src/lifecycle.ts:133-162]()`）。
 
 ### depth/loop 防护
 
@@ -161,15 +165,15 @@ flowchart TD
 - spawn/fork 具体 seed 差异：`[packages/subagent/subagent-fork-in-process/src/index.ts:48-75]()`
 - acp：`[packages/subagent/subagent-acp/src/run.ts:199-318]()`
 - claude-code：`[packages/subagent/subagent-claude-code/src/run.ts:203-289]()`
-- continuable：`[packages/subagent/subagent/src/continuation.ts:403-457]()`（startContinuable）、`[packages/subagent/subagent/src/continuation.ts:986-1023]()`（materializeTracked，内含 child resume/create）、`[packages/subagent/subagent/src/continuation.ts:883-932]()`（coldResume）
-- report 工具：`[packages/subagent/tool-subagent-report/src/index.ts:94-103]()`
+- continuable：`[packages/subagent/subagent/src/continuation.ts:429-504]()`（startContinuable）、`[packages/subagent/subagent/src/continuation.ts:1119-1216]()`（materializeTracked，内含 child resume/create）、`[packages/subagent/subagent/src/continuation.ts:974-1037]()`（coldResume）
+- report 工具：**0.1.2-alpha 移除**（`tool-subagent-report`），由 `send_message` 相邻 Agent 消息承载（[packages/subagent/tool-subagent-control/src/index.ts:29-29]()）
 - list_agents：`[packages/subagent/tool-subagent-control/src/list-agents.ts:164-190]()`
 
 `materializeTracked`（`[packages/subagent/subagent/src/continuation.ts:986-1023]()`）在子创建窗内调用 `applyChildComposition` + `setupRegistry.apply`（`:996-1004`）、`ctx.agents.resume`/`create`（fresh 创建、cold 恢复，`:1009-1023`），随后 `submitMaterialized`（`[packages/subagent/subagent/src/continuation.ts:943-958]()`）把初始/继续 prompt 送入 inbox——即"child 状态投影成父可追踪的执行起点"。cold resume 路径（`:883-932`）先 `persistence.inspect` 读持久 Session，再 `foldSubagentDescriptor(own-suffix)`（`:905`）、`authorizeLineage`（`:901`），再 materialize + submit——故冷恢复能精确重建 child 状态且不把 fork seed 的祖先 descriptor 当子身份。
 
 ## 与其他模块协同
 
-- **tools 的 delegation Consumer**：`tool-subagent` 是委派 Consumer，按 provider lifecycle 挂/卸 tool（`[packages/subagent/tool-subagent/src/index.ts:267-466]()`）；`tool-subagent-control` 提供全局 `send_message`/`interrupt_agent`/`list_agents`（`[packages/subagent/tool-subagent-control/src/index.ts:25-120]()`、`[packages/subagent/tool-subagent-control/src/list-agents.ts:91-191]()`）；`tool-subagent-report` 给每个 in-process continuable 子装 child-scoped `report`（`[packages/subagent/tool-subagent-report/src/index.ts:136-142]()`）。
+- **tools 的 delegation Consumer**：`tool-subagent` 是委派 Consumer，按 provider lifecycle 挂/卸 tool（`[packages/subagent/tool-subagent/src/index.ts:267-466]()`）；`tool-subagent-control` 提供全局 `send_message`/`interrupt_agent`/`list_agents`（`[packages/subagent/tool-subagent-control/src/index.ts:27-117]()`、`[packages/subagent/tool-subagent-control/src/list-agents.ts:91-191]()`）；`tool-subagent-report`（child-scoped `report`）已在 0.1.2-alpha 移除，continuable 子改由 `send_message` 相邻 Agent 消息向父投递（`[packages/subagent/tool-subagent-control/src/index.ts:29-29]()`）。
 - **sandbox 同级隔离**：`[packages/subagent/subagent/src/child-agent.ts:199-225]()` `captureDelegatedPolicyOverrides`/`appendDelegatedPolicyOverrides` 把父 sandbox 覆盖继承、approval 钉死 `'never'`；`applyChildComposition` 里组装 `delegation:persona`、`tools.restrict`。身份即权限边界 —— 子只在委派时固定范围内行动。（跨模块：与 sandbox 模块的深层互操作细节（sandbox 策略覆盖、工具 restrict 的精细语义））
 - **session 派生子状态**：子 Session 经 `ctx.agents.create`/`resume`、`[packages/subagent/subagent/src/child-agent.ts:102-120]()` `childSessionMeta` 落 `parentSession/delegationDepth/seedLength/origin`；投影从 `[packages/subagent/subagent/src/index.ts:197-200]()` `sessionProjections` 注册的 `subagent`/`subagentTiming` 单位服务查询。（跨模块：session 模块 `Session.create`/`prepare({seed})` 的 seed 契约，见 docs `core.md#creation-and-ownership`，需引 session 源码）
 - **acp 外部协议**：`[packages/subagent/subagent-acp/src/run.ts:199-318]()` `startAcpRun` 用 `ClientSideConnection`+`ndJsonStream` 驱动独立子进程，经 `[packages/subagent/subagent-acp/src/run.ts:209-215]()` `ctx.subprocess.spawn` 共享 scrub / 树级 teardown。（跨模块：`dsh-subprocess` 的 spawn/scrub/teardown 契约）

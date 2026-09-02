@@ -1,6 +1,6 @@
 # 会话系统：事件溯源日志作为唯一事实源
 
-> 子文档之一，聚焦 dsh 的数据面——append-only 的 `SessionEvent` 事件日志。覆盖：`packages/core/session`（核心事件模型）+ 持久化 seam（`session-persistence` 抽象 + coordinator + JSONL/SQLite 后端）+ `session-projection` + `session-telemetry`。整体哲学见 [README](README.md)；本文上承 [architecture.md](architecture.md)（插件树为运行时地基），下启 [agent-loop-runtime.md](agent-loop-runtime.md)（循环从中 derive 模型历史）。
+> 子文档之一，聚焦 dsh 的数据面——append-only 的 `SessionEvent` 事件日志。覆盖：`packages/core/session`（核心事件模型）+ 持久化 seam（`session-persistence` 抽象 + coordinator + JSONL 后端，0.1.2-alpha.1 起唯一事件后端）+ `session-projection` + `session-telemetry`。整体哲学见 [README](README.md)；本文上承 [architecture.md](architecture.md)（插件树为运行时地基），下启 [agent-loop-runtime.md](agent-loop-runtime.md)（循环从中 derive 模型历史）。
 
 ## 在项目中的角色
 
@@ -37,7 +37,9 @@
 
 选了前者，三个支撑：
 
-- **`seq = log.length` 连续性契约**：`seq` 单调、连续、等于日志长度；`get seq()` 即 `log.length`（`[packages/core/session/src/index.ts:564-567]()`）。这让持久化以「下一个 seq 应等于已存长度」做简单校验（`[packages/session/session-persistence/src/coordinator.ts:698-702]()`），也让 surface/header fold 记住「已消费到哪」做增量投影（`[packages/core/session/src/index.ts:670-680]()`）。
+- **`seq` 是事件身份，`log offset` 是位置（0.1.2-alpha 起的 branded 分离）**：`SessionSeq` 标识**一条已存在事件**（`SessionEvent.seq`、surface replace 端点、`sourceEventSeqs`、owner 载荷），`SessionLogOffset` 标识**间隙/前缀长度/读偏移**（`Session.seq`、`firstLiveSeq`、`inheritedEventCount`、body 读偏移、继承 cut）——`get seq()` 返回 `SessionLogOffset`（`[packages/core/session/src/index.ts:629-629]()`
+<!-- anchor:   get seq(): SessionLogOffset { -->）。这消除了旧 `number` 单一类型下"offset 被当作事件身份"的迁移风险：编译器在把前缀长度或读切点塞进事件引用时直接报错（`[packages/core/session/src/types.ts:29-62]()`
+<!-- anchor: export type SessionSeq = BrandedNumber<'SessionSeq'> … export type OptionalSessionSeq = SessionSeq | null -->）。配套 `SessionHeader` 从存储坐标 `seedLength` 改为 `isSeeded: boolean` + body 侧独立 `inheritedEventCount`，header-only 读者不再需要打开日志体即可知谱系。这让持久化以「下一个 seq 应等于已存长度」做简单校验，也让 surface/header fold 记住「已消费到哪」做增量投影。
 - **deep-freeze 使历史不可改写**：append 时 `snapshotJsonValue`（lossless 校验 + 一次性拷贝）再 `deepFreeze`；「一个 stateful getter 不能给校验一个值、给存储另一个值」（`[packages/core/session/src/index.ts:596-603]()`）。
 - **构造期 seed 也过同一校验**：replay/fork 的 seed 在构造时逐条 `snapshotJsonValue` + `validateNext` + `deepFreeze`（`[packages/core/session/src/index.ts:508-537]()`），保证「后端能存的东西」与「live log」永不背离。
 
@@ -117,21 +119,20 @@ type SurfaceOp = 'append' | { op: 'replace'; start: number; end: number }
 
 ### 4. 持久化后端 schema
 
-**SQLite**（`packages/session/session-persistence-sqlite/src/schema.ts`）——一行一个 `SessionEvent`，无平行持久化 schema：
-- `sessions` 行：out-of-log 元数据 + `incarnation`（物化时分配）+ `revision`（每变更事务自增）（`schema.ts:32-46`）。
-- `events` 行：rc.8 起为 Schema 17 **打包物理行**（见 [data-model.md](data-model.md)）——标量事件仍 `(session_id, seq, type, time, data, source_event_seqs, surface_op, ignorable)`，但连续同块 `assistant/chunk` 会被 `packChunkRuns` 压成 `*-chunks` 一行、`source_event_seqs` 以 varint/ZigZag delta 编码为 BLOB、大 payload 以 zstd 压成 BLOB（`…/sqlite/src/codec.ts:32-46`、`…/sqlite/src/compression.ts:31-36`）。
-- `persistence_state`：单例行保存随机 `store_id`，作 source-qualified revision 抗碰撞部分（`schema.ts:116-120`；`…/src/index.ts:47-51`）。
+> **演进说明（0.1.2-alpha.1）**：SQLite 会话持久化后端（`packages/session/session-persistence-sqlite`）已在 0.1.2-alpha.1 整体移除，本节原「SQLite 的 `sessions`/`events` 表、Schema 17 打包物理行、`incarnation`/`revision`、`persistence_state`」全部失效，不再列出。打包物理行（`packChunkRuns`/`decodeStorageRecord`）的职责已收敛进 JSONL 后端。详细演进见 [data-model.md](data-model.md)「会话后端物理布局」。
 
-**JSONL**（`packages/session/session-persistence-jsonl/src/format.ts`）——每会话一个 append-only 文件：
-- 首行是 `type:'session'` 标记的 header line（`format.ts:33-44`）；事件行默认打包成 `text-chunks`/`reasoning-chunks`/`tool-call-chunks` 存储行，或不打包逐条（`format.ts:221-224`）。
+**JSONL**（`packages/session/session-persistence-jsonl/src/format.ts`）——0.1.2-alpha.1 起唯一 shipped 事件后端，每会话一个 append-only 文件：
+- 首行是 `type:'session'` 标记的 header line（`format.ts:33-44`）；事件行默认打包成 `text-chunks`/`reasoning-chunks`/`tool-call-chunks` 存储行，或不打包逐条（`format.ts:221-224`）。v0 header 保持字节兼容：缺席 `seedLength` 解码为 `isSeeded:false`，present 零/非零值解码为 `isSeeded:true` + 精确 cut（见 [data-model.md](data-model.md)）。
 - 目录布局 `root/--project-key--/<encodeSegment(id)>/session.jsonl(.zstd)`；SessionId 是未校验 branded string，必须 `encodeSegment` 转义后才可入路径（防穿越/碰撞）（`format.ts:121-136`）。
+- zstd 物理编码拆分「核心扫描 + 双解码器」（`zstd.ts` 扫描拼接帧与 torn 尾，解码经 Node 私有 API 流式解码器或公共 API 单发回退），同一压缩容器在受限环境也有可用回退（`[packages/session/session-persistence-jsonl/src/zstd.ts:4-12]()`
+<!-- anchor:  * without exposing compression mechanics through the persistence seam. … import { NodePrivateZstdFrameDecoder } from './zstd-private-decoder.ts' -->）。
 
 ### 5. 投影 / 遥测表
 
 - `SessionProjectionMap`——全链投影类型表，声明合并扩展（`[packages/session/session-projection/src/types.ts:17-17]()`）；`ProjectionCheckpointRow = (ver, seq, val)` 是持久化投影缓存的折叠捷径（`[packages/session/session-projection/src/index.ts:108-115]()`）。
 - `SessionTelemetryRecord`——ledger/ops 双通道：ledger 逐条镜像 session 事件，ops 承载无日志归属信号（`agent-error`/`shutdown`）（`[packages/session/session-telemetry/src/index.ts:64-87]()`）。ledger 镜像 `event.data` 深拷贝（`coordinator.ts:191-202`）。
 
-> **演进说明（0.1.1-rc.1）**：session 投影数据通路在 rc.1 重写为「状态 / 客户端视图」两段式，并引入统一的跨 boot 快照——`ProjectionDefinition` 改为声明式纯 fold：`stateSchema` 校验 persisted 状态、可选的 `wire` 只负责"state → 客户端视图"（view/read-side 投影），`apply` 仍是"前态 + 一条已提交事件 → 后态"的纯迁移（[packages/session/session-projection/src/index.ts:42-82]()）。
+> **演进说明（0.1.1-rc.1）**：session 投影数据通路在 rc.1 重写为「状态 / 客户端视图」两段式，并引入统一的跨 boot 快照——`ProjectionDefinition` 改为声明式纯 fold：`stateSchema` 校验 persisted 状态、可选的 `wire` 只负责"state → 客户端视图"（view/read-side 投影），`apply` 仍是"前态 + 一条已提交事件 → 后态"的纯迁移（[packages/session/session-projection/src/index.ts:48-146]()）。
 <!-- anchor: export interface ProjectionDefinition< …   stateVersion: number -->
 >
 > 三个关键语义：
@@ -155,7 +156,7 @@ sequenceDiagram
     participant Store as SessionStore <br>.../index.ts:792
     participant Persist as PersistenceCoordinator <br>packages/session/session-persistence/src/coordinator.ts
     participant WB as SessionWriteBehind <br>.../write-behind.ts
-    participant Backend as JSONL/SQLite 后端
+    participant Backend as JSONL 后端（唯一事件后端）
 
     Drv->>S: append type data surfaceOp <br>index.ts:604
     S->>S: snapshotJsonValue data lossless 校验+拷贝 <br>index.ts:614
@@ -167,7 +168,7 @@ sequenceDiagram
     Persist->>WB: writes.enqueue：拷贝+arm 固定批量窗口 <br>write-behind.ts:45-56
     WB->>Persist: 定时到期或 flush → drainBarrier <br>write-behind.ts:93-136
     Persist->>Backend: appendBatch meta events materialized <br>coordinator.ts:704
-    Note over Backend: SQLite: 单事务 packChunkRuns+insert+revision+1 <br>.../sqlite/src/store.ts:173-199 <br>JSONL: materialize temp+link 原子发布 <br>或 appendLines+fsync+rollback <br>.../jsonl/src/index.ts:514-689
+    Note over Backend: JSONL: materialize temp+link 原子发布 <br>或 appendLines+fsync+rollback <br>.../jsonl/src/index.ts:514-689
     Backend-->>WB: 已持久化 → resolve
     Drv->>S: deriveMessages（每步） <br>index.ts:726
     S->>Surf: surface.nodes 读 surfaceOp 定的模型可见序列 <br>surface.ts:438-441
@@ -184,13 +185,13 @@ sequenceDiagram
     participant Caller as resume/inspect/list 消费者
     participant C as PersistenceCoordinator <br>.../coordinator.ts
     participant Prep as SessionPreparations <br>.../preparations.ts
-    participant Backend as JSONL/SQLite 后端
+    participant Backend as JSONL 后端（唯一事件后端）
 
     Caller->>C: prepare(id) / load(id) <br>coordinator.ts:712 / 756
     C->>Prep: reserve(id)（共享在途读，排他预订） <br>coordinator.ts:720-731 / preparations.ts:75
     Prep->>C: prepareCore(id) 读冷源 <br>coordinator.ts:892
     C->>Backend: loadStored(id) 读物理前缀 <br>coordinator.ts:893
-    Note over Backend: JSONL: scanLog/readZstdPrefix 保完整前缀+记录 torn 标记 <br>jsonl/index.ts:209-216,310-419 <br>SQLite: scanRows 保完整前缀+返回 tornFrom <br>sqlite/schema.ts:232-269
+    Note over Backend: JSONL: scanLog/readZstdPrefix 保完整前缀+记录 torn 标记 <br>jsonl/index.ts:209-216,310-419
     C->>C: interruptedTurnClosers 合成中断闭合事件 <br>coordinator.ts:903 / repair.ts:27
     C->>C: ctx.sessions.prepare(id,{seed,seedSource:'persistence'}) <br>coordinator.ts:905-909
     C->>C: commitPrepared → commitRepair(torn,closers) 落盘 <br>coordinator.ts:934-963,945
@@ -215,8 +216,8 @@ sequenceDiagram
 
 - **agent-loop 消费**：loop 通过 `SessionStore` 创建会话，把 `user/message`、`assistant/chunk`、`assistant/message`、`tool/call`、`tool/result`、`turn/*`、`step/*` 事件 append 进日志；每步用 `deriveMessages()` 得模型史。loop 每请求前 append `request/header`，用 `headerEquals` 避免记录未变的头（`[packages/core/session/src/request-header.ts:44-54]()`）。（跨模块：loop 调用点文件与行号，本切片未引入 agent-loop 源码。）
 - **system-prompt 从日志渲染**：`EpochHeader.system` 是已渲染系统提示整体，作为 `request/header` 事件持久化（`[packages/core/session/src/types.ts:207-207](),304`），即「模型每次请求时的系统提示」可重建。（跨模块：system-prompt 渲染发生在 agent-loop/system-prompt 包，本切片只见落日志一侧。）
-- **持久化后端可交换（capability seam）**：`ctx.sessionPersistence` 是抽象 seam（`[packages/session/session-persistence/src/index.ts:84-84]()`），JSONL 与 SQLite 实现同一契约并共用 `runPersistenceContract` 测试套（`[docs/subsystems/persistence.md:233-236]()`）。两者都通过 `PersistenceCoordinator` 组合（`[packages/session/session-persistence/src/coordinator.ts:588-625]()`），它定义最小存储原语集（`loadStored/readStoredRevision/appendBatch/commitRepair/list`，`coordinator.ts:127-215`），把缓冲、串行化、adopt、崩溃修复编排、dispose quiescence 集中一处；第三方可绕过 coordinator 直接实现 seam（`coordinator.ts:3-4`）。
-- **invariant companion**：`core/session` 的 `invariant.ts` 是唯一有行为的——增量校验 turn/step 编号、执行事件 enclosure、同 step 工具调用/结果配对（`[packages/core/session/src/invariant.ts:55-166]()`）。各持久化/投影/遥测包的 invariant companion 都是空安装（`[packages/session/session-persistence-jsonl/src/invariant.ts:21-21]()` 等）。
+- **持久化后端可交换（capability seam）**：`ctx.sessionPersistence` 是抽象 seam（`[packages/session/session-persistence/src/index.ts:84-84]()`），0.1.2-alpha.1 起 shipped 后端为 JSONL 单一实现、以 `runPersistenceContract` 契约套验证（`[docs/subsystems/persistence.md:233-236]()`）。后端都通过 `PersistenceCoordinator` 组合（`[packages/session/session-persistence/src/coordinator.ts:588-625]()`），它定义最小存储原语集（`loadStored/readStoredRevision/appendBatch/commitRepair/list`，`coordinator.ts:127-215`），把缓冲、串行化、adopt、崩溃修复编排、dispose quiescence 集中一处；第三方可绕过 coordinator 直接实现 seam（`coordinator.ts:3-4`）。
+- **invariant companion**：`core/session` 的 `invariant.ts` 是唯一有行为的——增量校验 turn/step 编号、执行事件 enclosure、同 step 工具调用/结果配对（`[packages/core/session/src/invariant.ts:55-166]()`）。各持久化/投影/遥测包的 invariant companion 曾在 alpha 期间被清理（`cleanup: omit unneeded invariant companions`），不再保留空安装。
 - **telemetry 与主循环分离**：capture 侧 ledger 记录是后端流水线的输入，`emit` 必须是非阻塞队列推送（`[packages/session/session-telemetry/src/index.ts:96-104]()`）。
 
 ---
@@ -236,12 +237,13 @@ sequenceDiagram
 - **收益**：(a) 编译期保证「新模型可见输入 ⇒ 新事件」（Model-visible means logged 在类型层强制）；(b) invariant companion 按类型精确增量校验；(c) 持久化 read path 以 `KNOWN_SESSION_EVENT_TYPES` 拒绝未知必需事件（`[packages/core/session/src/known-event-types.ts:19-63]()`，配合 `ignorable` 逃生阀，`[packages/session/session-persistence/src/coordinator.ts:1061-1066]()`）。
 - **替代方案代价**：自由字符串事件无编译期保证，未知类型只能运行时猜测，invariant 无从按类型校验，插件事件关系（是否 turn-enclosed）无法以类型表达。
 
-### 决策 3：持久化可插拔 / JSONL vs SQLite
+### 决策 3：持久化可插拔 / 为何收敛到 JSONL 单一后端
 
-- **选**：capability seam（抽象 `SessionPersistence` + 两后端）。
-- **JSONL 之选**：可读（plaintext 或 zstd 帧）、append-only 文件适配顺序介质、逐字节还原（`readRaw`，`[docs/subsystems/persistence.md:128-129]()`；`[packages/session/session-persistence-jsonl/src/index.ts:252-282]()`）、崩溃修复只需「截断 torn 尾 + append closers」（`index.ts:436-444`），不需要数据库事务。
-- **SQLite 之选**：事务原子性天然（materialize+打包 append 单事务，`[packages/session/session-persistence-sqlite/src/store.ts:173-199]()`）、seq 可寻址（`loadStoredFrom` 只读后缀，`index.ts:225-238`）、单文件单库（locate 返回 undefined，`index.ts:173-175`）。rc.8 起在事务内做 `packChunkRuns` 打包（见 [data-model.md](data-model.md)「Schema 17」）。
-- **代价**：JSONL 的 append 断点需显式 rollback/truncate（`jsonl/index.ts:651-689`），且 `commitRepair` 不要求跨行原子；SQLite 对「未 flush 尾部」的容忍靠 `scanRows` 的 torn 语义（`sqlite/schema.ts:232-269`）。
+> **演进说明（0.1.2-alpha.1）**：SQLite 会话后端已移除，本节原「SQLite 之选（事务原子性 / seq 可寻址 / 单文件单库）」失效；决策收敛为「抽象 seam + JSONL 单一 shipped 后端」，下述 JSONL 理由即当前完整依据。
+
+- **选**：capability seam（抽象 `SessionPersistence`）+ 单一 shipped 后端 JSONL。
+- **JSONL 之选**：可读（plaintext 或 zstd 帧）、append-only 文件适配顺序介质、逐字节还原（`readRaw`，`[docs/subsystems/persistence.md:128-129]()`；`[packages/session/session-persistence-jsonl/src/index.ts:252-282]()`）、崩溃修复只需「截断 torn 尾 + append closers」（`index.ts:436-444`），不需要数据库事务。而 `readFrom` 的「物理后缀语义」让 JSONL 顺序扫描但只返回匹配段即可满足尾读——SQLite 按 seq 寻址的差异化收益被该抽象消解（见 [data-model.md](data-model.md)「单一后端」）。
+- **代价**：JSONL 的 append 断点需显式 rollback/truncate（`jsonl/index.ts:651-689`），且 `commitRepair` 不要求跨行原子。
 - **chunk 打包解码**：`packChunkRuns` 把连续同类 delta chunk 打包成一行，`decodeStorageRecord` 无损展开（`[packages/core/session/src/chunk-rows.ts:192-221](),339-346`）。这是**存储编码词汇而非 session 事件**——不打进 `SessionEventMap`，用无斜杠 tag 防与事件分类混淆；编码器白名单精确形状，不认识即逐条存（丢压缩不丢数据）；解码器先验证再展开、损坏 loud fail（`chunk-rows.ts:9-16,339-345`）。
 
 ---
@@ -258,11 +260,11 @@ sequenceDiagram
 
 ### 问题 / 权衡点（供主 agent 留意）
 
-1. **空 invariant companion 泛滥**：持久化/投影/遥测各包 `invariant.ts` 都空安装——正确性押在 spec/round-trip 测试而非运行时 invariant（`[packages/session/session-persistence-jsonl/src/invariant.ts:21-21]()`）。系统有意为之（关系不在 cordis event 上可观测），但对「无特权内核」叙事是软肋：越中心的数据层，运行时自证越少。
+1. **运行时自证集中在 core/session**：正确性更多押在 spec/round-trip 测试而非运行时 invariant；alpha 期间曾清理各包的"空 invariant companion"安装（`cleanup: omit unneeded invariant companions`），仅 `core/session` 保留有行为的 invariant——对「无特权内核」叙事而言，越中心的数据层运行时自证仍偏少。
 2. **`handoffCursor` 模块级 ambient 状态**是「注册即 effect」纪律的明确例外，靠注释文档化（`[packages/session/session-telemetry/src/coordinator.ts:34-43]()`），HMR/重复采纳的 at-most-once 语义因此是隐式约定。
 3. **JSONL 非原子 append**：`commitRepair` 显式两步骤、appendLines 失败才回滚到 change 前 size（`[packages/session/session-persistence-jsonl/src/index.ts:651-689]()`）；多进程写同一 id 依赖 `link()` 而非 `rename()` 的 EEXIST 防呆（`index.ts:544-556`），正确但依赖 OS 语义。
 4. **legacy 迁移逻辑积聚**：coordinator 有大量 v0→current 迁移（steering/message、turn/start trigger、turn/end reason 扁平化、message identity 化，`[packages/session/session-persistence/src/coordinator.ts:344-573]()`），严谨（malformed 报 corrupt 而非伪装 legacy），但增加未来升级复杂度——与 `SESSION_FORMAT_VERSION=0`「无兼容承诺」并存是合理的紧急出口（`[packages/core/session/src/types.ts:36-56]()`）。
 
 ## 全局关联：日志即「无特权内核」在数据面的投影
 
-会话层的每个设计都回扣整体哲学：「没有特权内核」不意味着没有唯一事实源——正相反，因为内核里没有 `session.history` 这类特权可变对象，才需要一根 append-only 日志承载模型可见与审计所需的一切，让每个消费者（agent-loop 的 `deriveMessages`、标题、telemetry、fork/resume）各自投影。`Model-visible means logged` 再把「模型看到的一切都必须能从日志重建」变成编译期强制与运行时 invariant，这既是 dsh 可审计、可回放、可崩溃恢复的根基，也是它区别于「可变会话对象」类 agent 框架的本质分水岭。持久化做成 JSONL/SQLite 双后端可交换，正是第 3 根支柱「Capability Seam」在数据面的又一次落地。
+会话层的每个设计都回扣整体哲学：「没有特权内核」不意味着没有唯一事实源——正相反，因为内核里没有 `session.history` 这类特权可变对象，才需要一根 append-only 日志承载模型可见与审计所需的一切，让每个消费者（agent-loop 的 `deriveMessages`、标题、telemetry、fork/resume）各自投影。`Model-visible means logged` 再把「模型看到的一切都必须能从日志重建」变成编译期强制与运行时 invariant，这既是 dsh 可审计、可回放、可崩溃恢复的根基，也是它区别于「可变会话对象」类 agent 框架的本质分水岭。持久化做成可交换 seam（JSONL 单一 shipped 事件后端 + storage 层 single/per-record/sqlite 多后端），正是第 3 根支柱「Capability Seam」在数据面的又一次落地；而 `SessionSeq`/`SessionLogOffset` 的品牌化分离让「日志的位置」与「事件的身份」从类型层就不容混淆。

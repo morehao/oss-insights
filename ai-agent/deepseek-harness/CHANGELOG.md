@@ -2,6 +2,42 @@
 
 > 本解读对 DeepSeek Harness（`dsh`）的跨版本变更汇总；按版本倒序。项目无官方 changelog，故基于上游 git 代码变动（tag 间 diff / release commit / commit message 聚合）生成。各版本条目的"相比上一版"描述即对应某次增量解读落盘时更新的内容。
 
+## [0.1.2-alpha.4]（2026-09-01 落盘）
+
+> 依据上游 `dsh-v0.1.1-rc.2 → dsh-v0.1.2-alpha.4` git diff（跨 4 个 alpha 版本、含 4 个 release commit）比对生成。
+
+相比 **0.1.1-rc.2** 的主要变更：
+
+**破坏性变更**
+- **SQLite 会话持久化后端整体移除**（`refactor(session)!: remove SQLite persistence backend`）：`packages/session/session-persistence-sqlite` 目录删除，事件日志收敛为 JSONL 单一 shipped 后端；Schema 17 打包物理行、`SCHEMA_VERSION` pragma 拒绝随之失效。KV 层 `storage-sqlite` 保留。see [data-model.md](data-model.md)。
+- **session 事件 seq 与 log offset 品牌分离**（`refactor(session)!`）：`SessionSeq`（事件身份）/ `SessionLogOffset`（间隙/前缀/读偏移）两个 branded number；`SessionHeader.seedLength` 存储坐标改 `isSeeded: boolean` + body 侧 `inheritedEventCount`；v0 JSONL header 字节兼容（缺席/零/非零 seedLength 解码规则保持）。see [session.md](session.md)。
+- **apiproxy RPC 移除**（`refactor(apiproxy)!` ×2）：settings/credentials RPC 与 directory-picker RPC 整体删除（约 −839 行），由 Typert Remote 控制器取代。see [remote-controllers.md](remote-controllers.md)。
+
+**新增能力 / 行为**
+- **Typert Remote 控制器体系**：`@Remote`/`@RemoteScope` 声明式暴露 + 构建期 `typert-generator` 生成 Host/Client 双契约；`api-remotes` 挂载、`api-gateway` 经 Connection `/api` 路由分发；`session`/`workspace`/`settings`/`credentials` 四控制器落地；事件经 `API_REMOTE_FORWARDED_EVENTS` 白名单转发。see [remote-controllers.md](remote-controllers.md)。
+- **Webhook 子系统**：`ctx.webhookRuntime` 无状态 fire-and-forget 规则运行时 + `webhook-github` 签名 HTTP 适配器；外部投递经规则变成普通 root Session（`source.kind: 'webhook'` 溯源）。see [webhook.md](webhook.md)。
+- **Inspector（experimental，private）**：CDP 跨 Host/浏览器双域检视，CDP 状态隔离在 Worker + 收集器快照投影。see [inspector.md](inspector.md)。
+- **WebWorker（experimental，private）**：浏览器 Worker 跑整棵插件树（packer 打 VFS 镜像、运行时零编译器、嵌套 Worker 子进程）。see [webworker.md](webworker.md)。
+- **storage-json per-record 布局**：`single`（整文件）与 `per-record`（`<root>/<unit>/<table>/<key>.json` + global.json）双布局，legacy 整文件首开自动 bootstrap；投影缓存域随之每会话一文档。
+- **projection-cache 冷读播种**：`coldSnapshot` 从身份校验的缓存行 seed fold、尾重放补足、写回刷新（fail-soft）；`checkpointIdentity` 加入 `isSeeded`/`inheritedEventCount` 谱系位，`row.seq` 用 `SessionSeqCursor`。
+- **sdk-minimal profile 与 SDK/ACP application bundle**：独立双工具 SDK profile（显式排除 base/Web/settings/凭据/telemetry 等）+ Python/TS SDK 与 ACP 的预置组合分发。
+- **web fetch 默认暴露**：base/headless/sdk 三面默认暴露 web fetch，web 形态要求一次性 fetch 审批（one-shot approval）。
+- **subagent 模型路由**：`tool-subagent` 新增 model-selection 状态与设置面，可为 Codex/Claude Code provider 配置模型，模型路由可经 DSH SDK 透传。
+- **session 持久化模型选择**：`session` 持久化并共享模型选择目录；session-query 新增 shared projected observations。
+- **DeepSeek 适配层**：增量 session 日志上传、插件包元数据上传、会话上传评审反馈（session-log-deepseek / deepseek-llm-api-extensions）。
+
+**Web 前端 UX**
+- **全会话 turn rail**：session-turn-outline 整日志 turn 大纲投影 + ui-chat 侧栏 load-and-jump 深度分页 + settled-response 预算预览。
+- **lexical composer**：ui-conversation 用词法编辑器取代 textarea 栈；连接恢复指示器；usage/time 双 pill；大滚动性能优化（流式几何采样节流、帧节流发布等）。
+
+**接口 / API 变更**
+- `api-gateway`（旧 apiproxy）的 `ctx.remote.<namespace>` 调用面取代手工 RPC；`ctx.webhookRuntime` 为新增 capability；`ctx.inspector` 为 experimental 注册面。
+- session 构造器对 seed 显式要求（含空 seed + cut 0），`ownEvents()`/`isOwnSeq()` 隐藏继承 cut 比较。
+
+**移除 / 回滚**
+- **format migration decoder pipeline 引入后回滚**：`feat(session): add format migration decoder pipeline`（cc9ab200c7）在 alpha 周期内被 `Revert`（211e6939e3），不进入 alpha.4。
+- `session-persistence-sqlite`、`tool-subagent-report`、旧 apiproxy 的 credentials/settings/rpc 实现被移除。
+
 ## [0.1.1-rc.2]（2026-08-23 落盘）
 
 > 依据上游 `dsh-v0.1.1-rc.1 → HEAD(0.1.1-rc.2)` git diff（含 release commit `aa6c361a97`）比对生成。

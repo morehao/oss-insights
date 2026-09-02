@@ -7,7 +7,7 @@ tags: [codeg, work-task, git, worktree, automation]
 
 # 异步任务引擎：让 agent 在隔离沙地里干活，落地前过审查
 
-> 本解读按 **ai-agent ⊗ framework** 类规格产出。延续前三篇的会话与协作，本篇是 README「To-dos / Automations / Git & Worktrees」卖点——**异步任务怎么安全地落到真实代码库**，也是「异步安全」哲学的核心实现。
+> 本解读按 **ai-agent ⊗ framework** 类规格产出。延续前三篇的会话与协作，本篇是 README「To-dos / Automations / Git & Worktrees」卖点——**异步任务怎么安全地落到真实代码库**，也是「异步安全」哲学的核心实现。**本版增量（v0.28.2 → v0.30.0）补三块**：resume 会话的上下文预压缩（auto-compact）、abandon 保留 worktree 的新语义、worktree 删除前的未提交工作保护（[`CHANGELOG.md`](CHANGELOG.md)）。
 
 ## 根因：不是每件事都值得你盯着
 
@@ -100,7 +100,7 @@ README「Codeg checks git rather than taking the agent's word for it」。`Scrat
 
 ## 阻塞透传：委托子 agent 卡住也算 `awaiting_input`
 
-`TaskEngine.awaiting` 集合用命名空间区分三类阻塞请求：`"q:<id>"`（提问）、`"p:<id>"`（权限）、`"a:<id>"`（计划审批）；非空 ⇔ `awaiting_input`。委托子 agent 的阻塞请求额外带子连接前缀（`"<child_conn>#p:<id>"`），让子连接消失时能整组清除[src-tauri/src/work_task/engine.rs:95-101]()。`delegation_parents` 映射把子连接的反向映射回来——否则子 agent 的阻塞事件落在子连接上，`index` 里没有它，看板会一直显示「运行中」实际却卡住（#447）。
+`TaskEngine.awaiting` 集合用命名空间区分三类阻塞请求：`"q:<id>"`（提问）、`"p:<id>"`（权限）、`"a:<id>"`（计划审批）；非空 ⇔ `awaiting_input`。委托子 agent 的阻塞请求额外带子连接前缀（`"<child_conn>#p:<id>"`），让子连接消失时能整组清除[src-tauri/src/work_task/engine.rs:165-171]()。`delegation_parents` 映射把子连接的反向映射回来——否则子 agent 的阻塞事件落在子连接上，`index` 里没有它，看板会一直显示「运行中」实际却卡住（#447）。
 
 <!-- anchor: awaiting: Arc<Mutex<HashMap<i32, HashSet<String>>>>, -->
 
@@ -108,6 +108,40 @@ README「Codeg checks git rather than taking the agent's word for it」。`Scrat
 
 - **boot reconcile**：重启时在持 `_engine_lock` 的前提下做破坏性恢复——任务卡在 `preparing`/`merging` 的按各自语义回滚或继续；
 - **automation**：`automation/engine.rs` 与任务引擎共用同一套 `LaunchMode` 语义（`Fresh` / 后继轮次 / 合并代次），把「已配好的 composer」变成可 cron 调度的无头运行——本质上就是定时把任务推进 `todo` 队列。
+
+## 上下文预压缩：resume 的会话只会变长，不会变慢
+
+多轮任务（retry / follow-up / merge）**每次都 resume 同一个 agent 会话**，上下文窗口只涨不缩——过一定占用率后，下一轮要么静默截断、要么直接失败。v0.30.0 在 `work_task/compact.rs` 加了决策半段 [src-tauri/src/work_task/compact.rs:1-12]()：
+
+<!-- anchor: //! Pre-prompt context compaction for task runs. … //! the bar. The turn itself is driven by `engine::TaskEngine::compact_context`. -->
+
+folder 任务设置里可命名阈值 `auto_compact_percent`（默认 0 = 整个检查关闭）[src-tauri/src/models/work_task.rs:234-243]()；达到阈值时，resume 的 launch **先发 agent 的 compact 命令、等那一轮落地、再发本轮自己的消息**。
+
+<!-- anchor: /// Context-window occupancy (percent, 0–100) at or above which a launch … pub auto_compact_percent: i32, -->
+
+命令按三级优先级解析 [src-tauri/src/work_task/compact.rs:38-52]()：
+
+<!-- anchor: /// Resolve the command that compacts this session, in precedence order: … /// skips compaction and says so on the timeline. -->
+
+① 设置里的显式 `compact_command`（**原样用**，不补斜杠不重写——用户比我们懂）；② 会话自己广告的匹配名（`compact`/`compress`/`summarize`/`summarise`，对未知拼写的 agent 也不猜）；③ `builtin_default`（Claude/Codex/Grok→`/compact`、Gemini→`/compress`，其余 `None`）——广告目录只列项目命令、内置命令不列表的情形，不把「广告里没有」当成「否认」，仍回退内置默认。解析函数本体在 `compact.rs:53` 起 `pub fn resolve_compact_command`。
+
+决策之外的实际发送在 `TaskEngine::compact_before_prompt` [src-tauri/src/work_task/engine.rs:1956-1969]()：先读实时上下文占用（agent 没报占用率就记 `usage_unknown` 跳过、而不是静默），超过阈值且解析出命令才继续；随后是**取消门 → kill 槽 → 再取消门**的三步与 init 命令同款——取消落在槽存在前被复查拦住，落在后则命中槽中止本轮。
+
+<!-- anchor: async fn compact_before_prompt(&self, req: CompactRequest<'_>) { … let threshold = settings.auto_compact_percent; -->
+
+**Why 等 compact 落地而不是 fire-and-forget？** 压缩是一个完整的 turn：发了 slash 命令若不等它结束，下一个 prompt 会与服务该压缩的 turn 竞争、或被会话状态机判定为 out-of-order。把「预压缩」当成一次有始有终的轮次，是「状态权威」哲学的延伸——每轮操作都有明确边界。
+
+## abandon 与 worktree 的生命周期
+
+v0.30.0 之前 abandon（放弃任务）几乎等价于删除任务；v0.30.0 让 **abandon 可以选择带走 worktree**，事后看板仍给删除入口（`feat(tasks): let an abandon take its worktree, and offer the removal afterwards`）——用户在 worktree 里可能留了想抢救的东西，放弃任务不等于放弃它的成果。
+
+同时给 worktree 删除上了保护：删除一个**仍持有未提交工作**的 worktree 会被拒绝——`CleanupBlocked` 区分两种不可互换的失败 [src-tauri/src/work_task/engine.rs:115-129]()：**尝试失败**（`holds_work=false`，bookkeeping 可能过时，tombstone 可继续删）vs **保护拒绝**（`holds_work=true`，删除必须停止，否则「用户被告知会被删掉的目录」没了任何说明它的地方）。
+
+<!-- anchor: /// Why [`TaskEngine::cleanup_task`] did not remove a worktree. … pub holds_work: bool, -->
+
+探测函数 **FAILS CLOSED** [src-tauri/src/work_task/engine.rs:108-112]()：唯一能安全读成「干净」的 git 失败是「目录已不在盘上」（删除路径自己会处理缺失目录）；其他任何失败（损坏的 index、权限错误、瞬态 git 故障）都意味着**无法证明安全删除**，等待答案的是 `git worktree remove --force`——在「可恢复的卡顿」和「不可恢复的文件」之间，它永远选择后者。
+
+<!-- anchor: async fn path_holds_uncommitted(path: &str) -> bool { … Ok(dirty) => dirty, -->
 
 ## 全局关联
 

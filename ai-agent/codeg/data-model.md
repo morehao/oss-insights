@@ -1,13 +1,13 @@
 ---
 type: 项目解读 · 关注面深读
 title: Codeg 数据模型深度解读
-description: Codeg 的 SQLite/SeaORM 存储底座：42 个迁移的演进轨迹、folder 树与会话父子、work_task 状态机持久化、token 用量两表设计、读写路径
+description: Codeg 的 SQLite/SeaORM 存储底座：45 个迁移的演进轨迹、folder 树与会话父子、work_task 状态机持久化、canvas 节点表、token 用量两表设计、读写路径
 tags: [codeg, data-model, sqlite, seaorm, migration]
 ---
 
 # 数据模型：本地优先的 SQLite 底座如何支撑全部业务
 
-> 本解读按 **ai-agent ⊗ framework** 类规格产出。前四篇把 Codeg 的托管、编排、聚合、任务讲了遍，本篇俯视它们共同的存储底座——**42 个 SeaORM 迁移、20 个 service**，从一张 `folder` 表演进成完整的应用 schema。
+> 本解读按 **ai-agent ⊗ framework** 类规格产出。前四篇把 Codeg 的托管、编排、聚合、任务讲了遍，本篇俯视它们共同的存储底座——**45 个 SeaORM 迁移、22 个 service**（含 mod.rs 计数口径），从一张 `folder` 表演进成完整的应用 schema。**本版增量（v0.28.2 → v0.30.0）**：迁移 42→45、service 20→22（新增 `folder_group`、`canvas_node`、`canvas_node_group_grid` 三迁移与 `canvas_service`、`folder_group_service` 两 service），[`CHANGELOG.md`](CHANGELOG.md) 有归档。
 
 ## 存储选型：为什么是 SQLite + SeaORM
 
@@ -36,8 +36,40 @@ erDiagram
     conversation ||--o{ work_task : "work_task.conversation_id"
     folder ||--o{ work_task_settings : "per-folder 配置"
     folder ||--o{ folder_opened_conversation : "打开状态"
+    folder_group ||--o{ folder : "group_id（分组归属）"
+    canvas_node ||--o{ folder : "folder_id 软引用（区域）"
+    canvas_node ||--o{ conversation : "conversation_id 软引用（钉/区域）"
+    canvas_node ||--o{ folder_group : "folder_group_id（group 区域）"
 
 ```
+
+**`folder_group` 与 `canvas_node`** —— v0.30.0 的两个新表。`folder_group` 是侧栏文件夹的**用户命名分组**：只装 `regular` folder（worktree 子仓库跟随其父 repo、不入组），组不嵌套，`sort_order` 与散 folder **共享同一数字空间**实现交错排列 [src-tauri/src/db/entities/folder_group.rs:4-9]()。`canvas_node` 是会话画布的**几何索引**：`kind`（folder/group/agent/conversation/custom/note）+ 软引用列 + `x/y/width/height` 几何，写面收敛在 `canvas_service` [src-tauri/src/db/entities/canvas_node.rs:4-9]()。
+
+<!-- anchor: /// A user-named container for workspace folders, used only to organise the … /// its members and drops the row. See `m20260829_000001_folder_group`. -->
+
+<!-- anchor: /// What a canvas node is bound to. The four binding kinds mirror the product … /// `canvas://changed` side-channel. -->
+
+**`folder_group`** —— 用户命名分组：
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | integer | PK | |
+| name | string | | 分组名 |
+| color | string | | 主题色或 `inherit`，只染组标题行 |
+| sort_order | integer | | 与散 folder 共享的数字空间，交错排列 |
+
+**`canvas_node`** —— 会话画布节点（几何 + 软引用）：
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | integer | PK | |
+| kind | enum | | folder/group/agent/conversation/custom/note |
+| folder_id / folder_group_id / agent_type / conversation_id | | 软引用（无 FK） | 按 kind 绑定（custom 存 `member_ids` JSON、note 存 `content`） |
+| color / collapsed | | | 展示 |
+| grid_columns / grid_rows | integer | | 区域网格形状，0 = auto；>0 钉住该轴使 resize 整卡步进 |
+| x / y / width / height | double | | 几何（node 私有坐标系） |
+
+写面收敛在 `canvas_service`（`kind` 专属不变量不落 schema），详见 [canvas.md](canvas.md)。
 
 ## 核心表设计
 
@@ -65,7 +97,10 @@ erDiagram
 | parent_tool_use_id | string | null | 父侧 tool call 锚点 |
 | delegation_call_id | string | null | 委托任务 id |
 
-**`work_task`** —— 异步任务状态机持久化（一列一状态字段）。`m20260801_000001_work_task.rs` 一次性建齐：`status`（十一态枚举）、`run_seq`（任务代次）、`worktree_folder_id`/`base_branch`/`base_sha`/`work_branch`（worktree 隔离的全部元数据）、`merge_state`/`cleanup_state`/`verdict`（合并与验收）、`files_changed`/`additions`/`deletions`（审查用的 diff 统计）、`merge_commit`。同迁移建了 `work_task_event`（`kind/actor/payload` 事件日志——任务动作全程留痕）与 `work_task_settings`（per-folder 配置）。后续 6 个迁移继续演进：`work_task_p2`（加列）、`work_task_template`（新表）、`scheduled_at`、`conversation_title`、`source`、`completion_kind`。
+**`work_task`** —— 异步任务状态机持久化（一列一状态字段）。`m20260801_000001_work_task.rs` 一次性建齐：`status`（十一态枚举）、`run_seq`（任务代次）、`worktree_folder_id`/`base_branch`/`base_sha`/`work_branch`（worktree 隔离的全部元数据）、`merge_state`/`cleanup_state`/`verdict`（合并与验收）、`files_changed`/`additions`/`deletions`（审查用的 diff 统计）、`merge_commit`。同迁移建了 `work_task_event`（`kind/actor/payload` 事件日志——任务动作全程留痕）与 `work_task_settings`（per-folder 配置）。后续 6 个迁移继续演进：`work_task_p2`（加列）、`work_task_template`（新表）、`scheduled_at`、`conversation_title`、`source`、`completion_kind`。v0.30.0 在设置模型 `WorkTaskFolderSettings` 上又加 `auto_compact_percent`（默认 0 = 关闭）与 `compact_command` 两个字段，不落新迁移（设置走实体模型层演进）——配合 [work-tasks.md](work-tasks.md) 讲的上下文预压缩 [src-tauri/src/models/work_task.rs:234-248]()。
+
+<!-- anchor: /// Context-window occupancy (percent, 0–100) at or above which a launch … /// — which is why this is an override rather than a required setting. -->
+
 
 **`token_usage`** —— Token 用量报表用**两表**而非单表 [src-tauri/src/db/migration/m20260803_000001_token_usage.rs]()：
 
@@ -76,11 +111,11 @@ erDiagram
 
 ## Schema 演进策略
 
-42 个迁移的演进轨迹呈现三种模式：
+45 个迁移的演进轨迹呈现三种模式：
 
 1. **基础表先行**：`init` 一次建 4 张核心表（`app_metadata` KV、`folder`、`conversation`、`folder_opened_conversation`）；
 2. **渐进加列为主**：folder 树化、delegation、标题锁定、置顶、来源……都是 `Table::alter` 加一列，保持旧行兼容；
-3. **新表承载新能力**：work_task 系列（7 个迁移）、token_usage（2 表）、custom_agent 系列（4 个迁移）、chat_channel 系列（3 个迁移）、automation、remote_workspace_connection 等。
+3. **新表承载新能力**：work_task 系列（7 个迁移）、token_usage（2 表）、custom_agent 系列（4 个迁移）、chat_channel 系列（3 个迁移）、automation、remote_workspace_connection、**folder_group 与 canvas_node 系列（v0.30.0，3 个迁移：分组归属 + 画布节点 + 画布网格）** 等。
 
 还存在**回滚型迁移**（`drop_folder_parent_branch`、`model_provider_single_type_and_model`）——设计走错时显式迁移掉，而不是留脏数据。演进整体遵循「可加不可删、删必走迁移」的渐进式加字段哲学，配合 SeaORM `MigratorTrait` 的版本表保证可重放。
 

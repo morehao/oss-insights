@@ -69,7 +69,7 @@ README 承诺「failed turn 会命名错误种类、并给出 Retry/Sign in 等�
 
 ## 事件分发：`emit_with_state` 的原子发布
 
-事件不是「广播一下就完」，而是与应用状态强一致地发布。`emit_with_state` [src-tauri/src/web/event_bridge.rs:410-415]() 在持 `SessionState` **写锁**的临界区内完成五步：apply 事件 → 自增 `seq` → 构造 `EventEnvelope` → 推入 ring buffer → 记淘汰数，然后释放锁，广播到三条路径（per-connection `ConnectionEventStream`、进程内 `InternalEventBus`、Tauri `app.emit`）。`emit_with_state_gated` 还支持在**同一写锁内**先跑 `gate` 谓词——反馈提交就用它保证「校验 `turn_in_flight` + 追加」原子，杜绝 `TurnComplete` 夹在中间。
+事件不是「广播一下就完」，而是与应用状态强一致地发布。`emit_with_state` [src-tauri/src/web/event_bridge.rs:438-459]() 在持 `SessionState` **写锁**的临界区内完成五步：apply 事件 → 自增 `seq` → 构造 `EventEnvelope` → 推入 ring buffer → 记淘汰数，然后释放锁，广播到三条路径（per-connection `ConnectionEventStream`、进程内 `InternalEventBus`、Tauri `app.emit`）。`emit_with_state_gated` 还支持在**同一写锁内**先跑 `gate` 谓词——反馈提交就用它保证「校验 `turn_in_flight` + 追加」原子，杜绝 `TurnComplete` 夹在中间。
 
 <!-- anchor: pub async fn emit_with_state( … payload: AcpEvent, -->
 
@@ -98,9 +98,13 @@ Web/多窗口场景下，客户端随时可能断线重连。`event_stream.rs` �
 
 <!-- anchor: pub struct ActiveDelegationState { … pub task_id: String, -->
 
+v0.30.0 又在状态上加了 backend-only 的 `delegation_enabled` 字段——记录「这个 agent 在 launch 时是否真暴露了 `delegate_to_agent`」，是注入 `@agent` 路由帧的**唯一 gate**（见 [multi-agent-orchestration.md](multi-agent-orchestration.md)）；它固定于连接生命周期、不进快照的语义是「agent 没这个工具，给它加路由指令也是白说」 [src-tauri/src/acp/session_state.rs:391-396]()。
+
+<!-- anchor: /// Whether `delegate_to_agent` was exposed to THIS agent at launch (the … pub delegation_enabled: bool, -->
+
 ## 权限排队：一屏一卡，杜绝「盲签」
 
-agent 连续发起多个权限请求时，不能把卡片全部堆上屏——用户在审批第一张时，后面几张的信息已过期。`PermissionQueue` [src-tauri/src/acp/connection.rs:2295-2300]() 用 `showing`（当前在屏卡片）+ `waiting: VecDeque`（等待队列）+ `responders`（阻塞的 responder）三件套实现：`admit` 在屏空时立刻发布，否则入队；`resolve` 应答后从队首提升下一张并返回它，未知/已答 id 幂等 no-op（两客户端竞答同一卡不能双发）；`drain` 取消全部阻塞 responder 并返回在屏卡 id，调用方必须补发 `PermissionResolved` 否则该卡在所有客户端上空挂。
+agent 连续发起多个权限请求时，不能把卡片全部堆上屏——用户在审批第一张时，后面几张的信息已过期。`PermissionQueue` [src-tauri/src/acp/connection.rs:2315-2320]() 用 `showing`（当前在屏卡片）+ `waiting: VecDeque`（等待队列）+ `responders`（阻塞的 responder）三件套实现：`admit` 在屏空时立刻发布，否则入队；`resolve` 应答后从队首提升下一张并返回它，未知/已答 id 幂等 no-op（两客户端竞答同一卡不能双发）；`drain` 取消全部阻塞 responder 并返回在屏卡 id，调用方必须补发 `PermissionResolved` 否则该卡在所有客户端上空挂。
 
 <!-- anchor: fn admit(&mut self, responder: R, card: QueuedPermission) -> Option<QueuedPermission> { -->
 
@@ -159,7 +163,7 @@ sequenceDiagram
 
 ## 空 turn 诊断：不采信 agent 的「成功」
 
-一个与「git 双检」同源的设计哲学：**agent 报成功不等于真的成功**。`connection.rs` 维护 `TurnOutputProbe` 与 `EmptyTurnCause` [src-tauri/src/acp/connection.rs:7695-7706]()——当 turn 结束时 wire 上没有携带任何内容，诊断器依据 probe 的丢包统计把失败归因到 `turn_failed_empty*` 家族，并把 stderr tail 与解析失败摘要作为 `Error.details` 随事件发出。前端因此能区分「agent 真没输出」与「事件在途丢失」。
+一个与「git 双检」同源的设计哲学：**agent 报成功不等于真的成功**。`connection.rs` 维护 `TurnOutputProbe` 与 `EmptyTurnCause` [src-tauri/src/acp/connection.rs:7859-7870]()——当 turn 结束时 wire 上没有携带任何内容，诊断器依据 probe 的丢包统计把失败归因到 `turn_failed_empty*` 家族，并把 stderr tail 与解析失败摘要作为 `Error.details` 随事件发出。前端因此能区分「agent 真没输出」与「事件在途丢失」。
 
 <!-- anchor: fn diagnose_empty_turn(probe: &TurnOutputProbe) -> EmptyTurnCause { -->
 

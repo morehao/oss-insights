@@ -1,13 +1,13 @@
 ---
 type: 项目解读 · 关注面深读
 title: Codeg 会话聚合与解析器深度解读
-description: Codeg 如何把 15+ agent 的异构磁盘会话统一成可搜索工作区：AgentParser 统一接口、ACP-native transcript 双轨设计、会话持久化与跨会话引用
+description: Codeg 如何把 15+ agent 的异构磁盘会话统一成可搜索工作区：AgentParser 统一接口、ACP-native transcript 双轨设计、会话持久化与跨会话引用、Codeg 路由帧剥离
 tags: [codeg, conversation, parser, transcript, aggregation]
 ---
 
 # 会话聚合：把异构 session 商店统一进一个工作区
 
-> 本解读按 **ai-agent ⊗ framework** 类规格产出。延续前两篇：知道了 agent 如何被托管（[acp-runtime.md](acp-runtime.md)）、如何被编排（[multi-agent-orchestration.md](multi-agent-orchestration.md)），本篇回答 README 头号卖点 **Conversation Aggregation**——把每个 agent 私有的会话历史拉进同一个可搜索、可续接、可跨 agent 引用的工作区。
+> 本解读按 **ai-agent ⊗ framework** 类规格产出。延续前两篇：知道了 agent 如何被托管（[acp-runtime.md](acp-runtime.md)）、如何被编排（[multi-agent-orchestration.md](multi-agent-orchestration.md)），本篇回答 README 头号卖点 **Conversation Aggregation**——把每个 agent 私有的会话历史拉进同一个可搜索、可续接、可跨 agent 引用的工作区。**本版增量（v0.28.2 → v0.30.0）**：解析器规模数字刷新（codex.rs 9.7K→10.5K、claude.rs 5K→5.4K），并补 Codeg 路由帧由 parser 剥离的机制（[`CHANGELOG.md`](CHANGELOG.md)）。
 
 ## 根因：每个 agent 都有自己私有的「会话商店」
 
@@ -17,7 +17,7 @@ Claude Code 把历史写在自己的 `projects/` 目录，Codex 写在 `~/.codex
 
 聚合有两条路，按「agent 是内置还是自定义」分流：
 
-- **内置 agent** → 每个一个专用 parser（`src-tauri/src/parsers/`），逆向该 agent 的私有存储来重建历史：`codex.rs`（9.7K 行）、`claude.rs`（5K 行）、`cursor.rs`、`grok.rs`、`codex_code_mode.rs`、`antigravity.rs`、`deepseek.rs`、`codebuddy.rs`、`openclaw.rs`、`gemini.rs` 等 17 个解析器；
+- **内置 agent** → 每个一个专用 parser（`src-tauri/src/parsers/`），逆向该 agent 的私有存储来重建历史：`codex.rs`（10.5K 行）、`claude.rs`（5.4K 行）、`cursor.rs`、`grok.rs`、`codex_code_mode.rs`、`antigravity.rs`、`deepseek.rs`、`codebuddy.rs`、`openclaw.rs`、`gemini.rs` 等 17 个解析器；
 - **自定义 agent** → 无 parser 可写，走 `acp_transcript.rs` 的 **ACP-native transcript**：不解析任何私有格式，直接记录 ACP 线上会话本身。
 
 统一接口就是 `AgentParser` trait，只有两个方法 [src-tauri/src/parsers/mod.rs:254-257]()：`list_conversations()` 返回摘要列表、`get_conversation(id)` 返回完整详情。所有前端聚合视图都只依赖这两个方法，与具体 agent 格式解耦。
@@ -35,6 +35,12 @@ Claude Code 把历史写在自己的 `projects/` 目录，Codex 写在 `~/.codex
 <!-- anchor: //! codeg's own **ACP-native transcript** for custom agents. -->
 
 **取舍**：内置 agent 的专用 parser 精准但脆弱（逆向私有格式，agent 升级可能破坏）；ACP-native 稳但只能覆盖「通过 codeg 的会话」。两条路共享同一个 `MessageTurn`/`ContentBlock` 产物模型，所以对上层完全透明。
+
+### Codeg 路由帧：历史里不该有内部指令
+
+v0.30.0 起，Codeg 会在 prompt 入口注入 `@agent` 路由帧（见 [multi-agent-orchestration.md](multi-agent-orchestration.md)）。这段内部指令若原样留在 agent 的转录里，会被用户误读成 agent 自己说过的话。剥离机制由 parser 承担：codex/claude parser 把帧当 Codeg 署名内容整段移除——解析回调 `strip_internal_agent_routes` 在重建可见文本时先把帧剥掉 [src-tauri/src/parsers/codex.rs:211]()。关键约束是「只删帧、不删长得像帧的用户散文」：parser 只接受能**逐字节重渲染**的候选，版本不符或字节不一致的文本原样保留。
+
+<!-- anchor: let visible_text = strip_internal_agent_routes(raw_text); -->
 
 ## 统一产物：摘要 + 详情 + 跨会话引用
 

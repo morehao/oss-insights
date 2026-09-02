@@ -2,6 +2,8 @@
 
 > 本解读按 **ai-agent ⊗ framework** 类规格产出（ai-agent 主类型 + framework 副类型叠加，因 dsh 向插件作者开放 SDK/扩展接口）。判定依据：README 自述「agent harness / everything is a plugin」+ 顶层 `packages/*/` 插件式扩展接口 + vendored Cordis 插件运行时。由 DeepSeek AI 开源。
 >
+> **本版增量更新（0.1.1-rc.2 → 0.1.2-alpha.4 / 2026-09-01）**：依上游 4 个 alpha 版本 git diff 比对更新。本次增量 (1) **SQLite 会话持久化后端整体移除**，事件日志收敛为 JSONL 单一后端（[data-model.md](data-model.md)）；(2) **session 事件 seq/log offset 分离**——`SessionSeq`（事件身份）与 `SessionLogOffset`（位置）品牌化、`seedLength`→`isSeeded`+`inheritedEventCount`（[session.md](session.md)）；(3) **Typert Remote 控制器体系取代 apiproxy RPC**——`@Remote`/`@RemoteScope` 声明式暴露 + 构建期生成双契约，session/workspace/settings/credentials 四控制器落地（[remote-controllers.md](remote-controllers.md)）；(4) **新增 webhook 子系统**——无状态 fire-and-forget 规则运行时 + GitHub 适配器（[webhook.md](webhook.md)）；(5) 新增 experimental inspector（CDP 跨域检视，[inspector.md](inspector.md)）与 webworker（浏览器 worker 跑整棵插件树，[webworker.md](webworker.md)）；(6) storage-json per-record 布局 + projection-cache 冷读播种 + sdk-minimal profile。各版本变更一览见 [CHANGELOG.md](CHANGELOG.md)。
+>
 > **本版增量更新（0.1.1-rc.2 / 2026-08-23）**：项目无官方 changelog，依上游 0.1.0-rc.7 → 0.1.1-rc.2 git diff 比对更新。本次增量跨 rc.1、rc.2 两版，主要变更 (1) **新增凭据能力面**——`ctx.credentials`（双键空间 + 持久化记录的 Capability Seam）+ `ctx.authorization`（可交互授权：OAuth/device-code 登录），见 [credentials.md](credentials.md)；(2) **图片/附件管线统一**——canonical admission 归一化 + `readImageRequest` 对象投影 + DeepSeek Files API file-id 首选/base64 兜底，见 [attachments.md](attachments.md)、[llm.md](llm.md)；(3) **LLM 适配器两阶段 `prepareCall`** 与 Files/stream 超时解耦（[llm.md](llm.md)）；(4) **Session 投影状态/视图分离 + 跨 boot checkpoint**（[session.md](session.md)）；(5) 沙箱 bwrap 加 PID 命名空间隔离（[sandbox-capability-seams.md](sandbox-capability-seams.md)）。rc.1 曾短暂引入 `reuseWorkspaceBlank` 空白会话继承默认权限、在 rc.2 整体回滚。各版本变更一览见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 根因：没有特权内核的 agent harness
@@ -17,6 +19,7 @@ DeepSeek Harness（`dsh`）是一个 TypeScript 编写的 agent harness（智能
 - **是什么**：DeepSeek 官方开源的 agent harness，`npx @deepseek-ai/dsh web` 即可启动 Web UI（默认 `http://127.0.0.1:3080`），另有 `headless` 无服务器一次性 runner。目前处于 developer preview，仍在快速迭代、未来有破坏性变更。
 - **痛点**：传统 agent 框架「内核不可扩展、状态不可审计、工具无边界」。
 - **适用场景**：需要深度定制 agent 行为的团队；想用插件化方式扩展工具/记忆/模型接入；对可审计、可回放、可崩溃恢复有强要求的多 agent 产品。
+- [`CHANGELOG.md`](CHANGELOG.md) — 各版本变更汇总
 
 ### 核心能力清单表
 
@@ -34,9 +37,13 @@ DeepSeek Harness（`dsh`）是一个 TypeScript 编写的 agent harness（智能
 | LLM 适配器 seam | 消息/流式词汇 + 多 provider 路由注册表 | [llm.md](llm.md) |
 | 凭据系统 | 双键空间（CredentialRef/CredentialKey）+ 持久化记录 + 可交互授权 | [credentials.md](credentials.md) |
 | 上下文管理与压缩 | compaction capability seam + token 预算 | [memory-compaction.md](memory-compaction.md) |
-| 持久化数据模型 | JSONL/SQLite 双后端（rc.8 SQLite Schema 17 打包物理行）、schema「不迁移只拒绝」 | [data-model.md](data-model.md) |
-| 部署形态 | profile/bundle/patch 分层、web/headless 双形态 | [deployment.md](deployment.md) |
+| 持久化数据模型 | 事件日志 JSONL 单一后端（zstd 帧 + chunk 打包）、schema「不迁移只拒绝」、storage-json single/per-record + projection-cache 冷读播种 | [data-model.md](data-model.md) |
+| 部署形态 | profile/bundle/patch 分层、web/headless 双形态、sdk-minimal/ACP/SDK app bundle | [deployment.md](deployment.md) |
 | 持久化附件 | 不可变内容寻址对象库 + `ImageAttachmentRef`、全量先验后写 | [attachments.md](attachments.md) |
+| Remote 控制器体系 | Typert `@Remote`/`@RemoteScope` 声明式 API + 构建期生成双契约，session/workspace/settings/credentials 四控制器取代 apiproxy RPC | [remote-controllers.md](remote-controllers.md) |
+| Webhook 子系统 | 无状态 fire-and-forget 规则运行时 + GitHub 适配器，外部投递→普通 root Session | [webhook.md](webhook.md) |
+| Inspector（experimental） | CDP 跨 Host/浏览器双域检视，Worker 隔离 + 快照投影 | [inspector.md](inspector.md) |
+| WebWorker（experimental） | 浏览器 worker 跑整棵插件树 + VFS 镜像打包 | [webworker.md](webworker.md) |
 
 ### 技术栈一览表
 
@@ -44,7 +51,7 @@ DeepSeek Harness（`dsh`）是一个 TypeScript 编写的 agent harness（智能
 |------|------|
 | 语言 | TypeScript（主）、C11（Landlock 沙箱 addon `landlock-run`） |
 | 插件运行时 | vendored [Cordis](https://github.com/cordiverse/cordis)（DI / fiber 生命周期 / 可逆 effect / 事件 dispatch） |
-| 持久化 | SQLite（`node:sqlite`） + JSONL（zstd 压缩帧）；JSON/存储 KV |
+| 持久化 | 会话日志 JSONL（zstd 压缩帧，0.1.2-alpha 起唯一事件后端）；KV 层 storage（json single/per-record + sqlite 双后端） |
 | 沙箱 | Landlock / bwrap / Seatbelt / Windows ACL / E2B（POC） |
 | 外部协议 | MCP（stdio / streamable-http）、ACP（Agent Client Protocol） |
 | 凭据 | `$DSH_HOME/.credentials.yaml`（版本化文档 + 0600 + 跨进程写锁）、OAuth/device-code 授权（rc.1） |
@@ -80,7 +87,7 @@ graph TB
         MEM["compaction + context/*<br>token 预算管理"]
     end
     subgraph 地面[data-model + deployment]
-        PERSIST["JSONL/SQLite<br>session 持久化"]
+        PERSIST["JSONL<br>session 持久化"]
         PROFILE["profile/bundle/patch<br>web/headless"]
     end
 
@@ -116,9 +123,13 @@ graph TB
 | LLM 能力层 | 词汇 + 适配器 seam | [`llm.md`](llm.md) |
 | 凭据与授权 | 双键空间 + 持久化记录 + 交互授权 (rc.1) | [`credentials.md`](credentials.md) |
 | 上下文与压缩 | compaction + token 预算 | [`memory-compaction.md`](memory-compaction.md) |
-| 数据模型 | 持久化布局与演进 | [`data-model.md`](data-model.md) |
-| 部署形态 | profile/bundle/patch 与双形态 | [`deployment.md`](deployment.md) |
+| 数据模型 | 持久化布局与演进（JSONL 单一事件后端） | [`data-model.md`](data-model.md) |
+| 部署形态 | profile/bundle/patch 与双形态 + SDK 分发 | [`deployment.md`](deployment.md) |
 | 持久化附件 | 不可变内容寻址对象库 + Ref 引用 | [`attachments.md`](attachments.md) |
+| Remote 控制器 | Typert 生成式 API + session/workspace/settings/credentials 控制器 | [`remote-controllers.md`](remote-controllers.md) |
+| Webhook 子系统 | fire-and-forget 规则运行时 + GitHub 适配器 | [`webhook.md`](webhook.md) |
+| Inspector（experimental） | CDP 跨 Host/浏览器双域检视 | [`inspector.md`](inspector.md) |
+| WebWorker（experimental） | 浏览器 worker 跑整棵插件树 + VFS 镜像 | [`webworker.md`](webworker.md) |
 
 ## 启动 / 请求链路
 
@@ -138,9 +149,13 @@ graph TB
 - [`llm.md`](llm.md) — LLM 消息/流式词汇与适配器 seam
 - [`credentials.md`](credentials.md) — 凭据系统：双键空间、持久化记录与交互授权（rc.1 新增）
 - [`memory-compaction.md`](memory-compaction.md) — 上下文管理与自动压缩
-- [`data-model.md`](data-model.md) — 持久化数据模型（事件日志地面实现）
-- [`deployment.md`](deployment.md) — 部署形态（web/headless、profile/bundle/patch）
+- [`data-model.md`](data-model.md) — 持久化数据模型（事件日志地面实现，JSONL 单一后端 + per-record 存储）
+- [`deployment.md`](deployment.md) — 部署形态（web/headless、profile/bundle/patch、SDK 分发）
 - [`attachments.md`](attachments.md) — 持久化附件能力面（不可变内容寻址对象库 `ctx.attachments`）
+- [`remote-controllers.md`](remote-controllers.md) — Typert Remote 控制器体系（`@Remote` 生成式 API 取代 apiproxy RPC，alpha.1 新增）
+- [`webhook.md`](webhook.md) — Webhook 子系统（无状态 fire-and-forget 规则运行时 + GitHub 适配器，alpha.1 新增）
+- [`inspector.md`](inspector.md) — Inspector 跨域检视（experimental CDP，Worker 隔离 + 快照投影，alpha 新增）
+- [`webworker.md`](webworker.md) — WebWorker 浏览器运行时（experimental VFS 镜像 + 嵌套 Worker 子进程，alpha 新增）
 
 ## 可借鉴的设计
 
@@ -150,7 +165,13 @@ graph TB
 - **零特权拦截**：所有关键决策点（pre-step/request/request-error/turn-stopping、tools/*）都以 waterfall 事件开放，让插件在洋葱式 `next()` 委派下无优先级地参与——连主循环本身都可替换。
 - **坚持「可回放」优先于「方便」**：二进制图像也没能绕开唯一事实源——用不可变内容寻址对象库 + `ImageAttachmentRef` 引用而非 base64/URL，让 `Model-visible means logged` 从文本扩展到媒体（[attachments.md](attachments.md)）。
 - **把「协作」也变成可回放事件（rc.8）**：Agent Teams 把队形、邮件队列、任务板全部写成 Lead 日志里的 `team/*` log-only 事件，`foldTeam` 折叠重建——连"多 agent 一起干活"都不引入旁路可变状态（[agent-teams.md](agent-teams.md)）。
-- **存储效率与真相不可变不冲突（rc.8）**：SQLite 后端用打包物理行 + zstd + varint 压缩存储，仍严格还原逻辑 `SessionEvent[]`、seq 连续、`readFrom` 尾读语义不变——压缩的是物理布局，未放宽"日志即真相"（[data-model.md](data-model.md)）。
+- **存储效率与真相不可变不冲突**：JSONL 后端用 chunk 打包物理行 + zstd 压缩存储，仍严格还原逻辑 `SessionEvent[]`、seq 连续、`readFrom` 尾读语义不变——压缩的是物理布局，未放宽"日志即真相"（[data-model.md](data-model.md)）。**（rc.8 的 SQLite Schema 17 打包行已随 0.1.2-alpha.1 移除，此原则收敛进 JSONL 单一后端）**
+- **"一个真相、一类读法"（alpha.1）**：移除 SQLite 会话后端、把事件日志收敛为 JSONL 单一后端——不是性能退让，而是用 `readFrom` 的物理后缀语义消解双后端的差异化收益，维护成本降到"单一契约、单一媒介"（[data-model.md](data-model.md)）。
+- **位置与身份从类型层分离（alpha.1）**：`SessionSeq` vs `SessionLogOffset` 让"标识一条事件"与"标识日志中的位置"编译期不可互换——事件溯源系统里最贵的 bug 之一（offset 当身份用）被品牌化直接堵死（[session.md](session.md)）。
+- **API 面变成业务源码声明（alpha.1）**：`@Remote`/`@RemoteScope` + 构建期生成双契约，让"host 能力暴露给浏览器"从手写的 apiproxy RPC 层变成挂在业务包自己身上的装饰器声明，契约一致性交给编译器（[remote-controllers.md](remote-controllers.md)）。
+- **外部事件入口不引入旁路状态（alpha.1）**：webhook 用无状态 fire-and-forget——无队列/重试/去重/完成回调，投递一旦变 Session 就归日志管；交付语义外包给上游（GitHub 重试）、去重决策推给规则（[webhook.md](webhook.md)）。
+- **调试器也走"投影快照"而非 live 引用（alpha）**：Inspector 把 CDP 状态隔离在 Worker、收集器投影验证快照再传输——连调试都不破坏业务运行时的对象流动纪律（[inspector.md](inspector.md)）。
+- **"不打编译的浏览器运行"（alpha）**：WebWorker packer 直接打包真实构建产物 + 运行时零编译器，worker 只是"怎么挂载镜像、怎么补 node 语义"的执行者——预览调试的就是线上要发的字节（[webworker.md](webworker.md)）。
 - **凭据也是"记录即事实"的可交换 seam（rc.1）**：授权产出一条 owner 自解释的持久记录而非内存令牌，`GrantRecord` 的 payload 对 harness 完全不透明——授权一次 = 落一条可回放、可审计、可随会话共享的记录（[credentials.md](credentials.md)）。
 - **"确定性归一化 + 对象投影"换取松耦合（rc.2）**：图片落库前先归一化成 provider 无关版本，再由存储侧按模型字节预算投影出可寻址变体（file-id 首选、base64 兜底）——把"图片怎么变"收敛进存储层，消费方只吃确定性制品（[attachments.md](attachments.md)）。
 
@@ -162,7 +183,10 @@ graph TB
 - **示例/工具集合覆盖**：本解读聚焦架构主干，`extensions/tool-*` 的每把工具 schema 未逐一展开。
 - **附件对象 GC deferred**：附件对象库尚无可达性 GC，恢复/分叉共享不可变对象会留下不可达对象占磁盘；v1 仅收四种栅格格式（见 [attachments.md](attachments.md)「演进与未完成」）。
 - **Agent Teams 尚属实验面（rc.8）**：包名带 `experimental-` 前缀、服务键 `agentTeams`，协调吞吐受日志写速限制，且不保证跨进程 exactly-once 邮件投递（见 [agent-teams.md](agent-teams.md)）。
-- **SQLite 打包是 timing 依赖 + 仅本地 codec（rc.8）**：打包率依赖 write-behind 窗口边界，统一关系库多后端设计仍 deferred，pre-release 不保证 schema/codec 稳定（见 [data-model.md](data-model.md)）。
+- **SQLite 会话后端移除后的取舍（alpha.1）**：事件日志失去"按 seq 随机寻址"媒介，长会话冷读全靠 JSONL 整读 + 投影缓存播种；统一关系库多后端设计仍 deferred，pre-release 不保证 schema/codec 稳定（见 [data-model.md](data-model.md)）。
+- **webhook 无去重/无完成语义（alpha.1）**：上游重试与并发投递可产生重复 Session，且发起方无法得知投递最终是否执行——"确定性地交付给日志"与"完成回调"之间选择了前者（见 [webhook.md](webhook.md)）。
+- **Remote 控制器严格性有学习成本（alpha.1）**：方法参数形状约束严（禁默认值/rest/可选）、复杂对象必须建 `TypertLookupMap`，且生成管线要求 Host 阶段先于 Client 阶段（见 [remote-controllers.md](remote-controllers.md)）。
+- **experimental 工具不进发行版**：Inspector / WebWorker 均 `private: true`，接口随 pre-release 演进；WebWorker 打包是构建时间依赖（stale build 打包 stale bytes）、Inspector 无自动 Worker 重启（见 [inspector.md](inspector.md)、[webworker.md](webworker.md)）。
 - **凭据记录无 owner 卸载即清理策略（rc.1）**：卸载插件的 record 会滞留（靠 owner scope 命名区分而非自动回收），与附件对象 GC deferred 同类（见 [credentials.md](credentials.md)）。
 - **图片归一化是额外渲染开销（rc.2）**：删除元数据/降采样/重编码增加一次 CPU 代价与 Variant 缓存管理，换取长会话与跨 provider 的可重复性（见 [attachments.md](attachments.md)）。
 

@@ -83,12 +83,12 @@ DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个�
   export class BlockAssembler {
     private partials = new Map<number, PartialBlock>()
   -->
-  `[packages/core/agent-loop/src/agent.ts:343-351]()` loop 边入日志边装配
+  `[packages/core/agent-loop/src/agent.ts:361-369]()` loop 边入日志边装配
   <!-- anchor:
   const assembler = new BlockAssembler()
   const chunkSeqs: number[] = []
   -->
-  `[packages/core/agent-loop/src/agent.ts:392-399]()` 组装经 source 回原始 provider
+  `[packages/core/agent-loop/src/agent.ts:410-417]()` 组装经 source 回原始 provider
   <!-- anchor:
   const message = createAssistantMessage({
     content: assembler.blocks(),
@@ -100,7 +100,7 @@ DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个�
 
 - `LlmRuntime` 的三个表：route 注册、可配置目录、模型探测。
 
-  `[packages/llm/llm/src/index.ts:312-317]()` 注册表三件
+  `[packages/llm/llm/src/index.ts:327-332]()` 注册表三件
   <!-- anchor:
   private adapters = new Map<string, AdapterRegistration>()
   private directory = new Map<string, LlmConfigurableProvider>()
@@ -108,12 +108,12 @@ DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个�
 
 - 注册 `registerAdapter` 返回一个 **handle**（disposer + 原子 `replace`）。disposer 随 fiber/plugin 卸载；`replace` 支持"同一 adapter 实例切换路由集"且不产生空窗口——这对 user-configurable 路由（pi-ai 的动态 provider 列表）是必要的，因为 route 集是运行时可变的。
 
-  `[packages/llm/llm/src/index.ts:358-395]()` registerAdapter + handle
+  `[packages/llm/llm/src/index.ts:373-410]()` registerAdapter + handle
   <!-- anchor:
    * Register an adapter for the given provider routes. Throws `LlmError` with code
    * `DUPLICATE_ADAPTER` if any provider already has an adapter (all-or-nothing).
   -->
-  `[packages/llm/llm/src/index.ts:432-440]()` 单同步段交换并广播
+  `[packages/llm/llm/src/index.ts:447-455]()` 单同步段交换并广播
   <!-- anchor:
   private commitRoutes(owned: Set<string>, registrations: readonly AdapterRegistration[]): void {
     for (const provider of owned) this.adapters.delete(provider)
@@ -121,7 +121,7 @@ DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个�
 
 - 每一条 route 在注册时**捕获一份不可变 retry policy**（`providerRetryPolicy()` 或默认），并随配置快照 stored。这是"路由注册即上下文快照"：在途失败的 recovery 策略不会因后续路由变更而漂移（agent.ts 用 `preparedCall.retryPolicy` 携带）。
 
-  `[packages/llm/llm/src/index.ts:414-421]()` 按路由捕获策略
+  `[packages/llm/llm/src/index.ts:429-436]()` 按路由捕获策略
   <!-- anchor:
   const retryPolicy = adapter.providerRetryPolicy(provider)
         ?? resolveRetryPolicy(undefined, `llm: provider "${provider}" retryPolicy`)
@@ -134,7 +134,7 @@ DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个�
   declare module '@deepseek-ai/cordis' {
     interface Events {
   -->
-  `[packages/llm/llm/src/index.ts:62-63]()` llm/stream waterfall 事件
+  `[packages/llm/llm/src/index.ts:65-66]()` llm/stream waterfall 事件
   <!-- anchor:
    * @mode waterfall
    */
@@ -165,7 +165,7 @@ DeepSeek Harness 的核心主张是"一切皆插件、无特权内核"。这个�
   -->
   `[docs/cookbook/adding-an-llm-adapter.md:32-32]()` 不能 honor 的字段显式拒绝
   <!-- anchor:
-  - A `GenerateOptions` field your provider cannot honor (e.g. a `stop` list on a provider without stop sequences): throw `LlmError(..., 'UNSUPPORTED')` rather than silently dropping it.
+  - A `GenerateOptions` field your provider cannot honor (e.g. a `stop` list on a provider without stop sequences): throw `LlmError(..., 'UNSUPPORTED_OPTION')` rather than silently dropping it.
   -->
 
 ---
@@ -200,7 +200,7 @@ flowchart TD
 
 - 注册写入：`registerAdapter` → `commitRoutes` 把 `registration.provider.id -> registration` 设入 `this.adapters`。
 
-  `[packages/llm/llm/src/index.ts:435-443]()` 写 Map 并广播
+  `[packages/llm/llm/src/index.ts:450-458]()` 写 Map 并广播
   <!-- anchor:
   for (const registration of registrations) {
     this.adapters.set(registration.provider.id, registration)
@@ -208,11 +208,11 @@ flowchart TD
 
 - 选中读取：`adapterStream` 用 `options.provider` 从 Map 取注册（prepared 时用已绑注册，否则现场查）。
 
-  `[packages/llm/llm/src/index.ts:904-904]()` adapter 选择
+  `[packages/llm/llm/src/index.ts:970-970]()` adapter 选择
   <!-- anchor:
   const registration = prepared?.registration ?? this.registration(options.provider)
   -->
-  `[packages/llm/llm/src/index.ts:871-875]()` 查不到抛 NO_ADAPTER
+  `[packages/llm/llm/src/index.ts:937-941]()` 查不到抛 NO_ADAPTER
   <!-- anchor:
   private registration(provider: string): AdapterRegistration {
     const registration = this.adapters.get(provider)
@@ -220,7 +220,7 @@ flowchart TD
 
 - waterfall 装配：`streamWithRegistration` 把 adapterStream 作为 `next()` 传给 `llm/stream` waterfall——middleware（retry/replay/routing）在适配器被选中前生效。
 
-  `[packages/llm/llm/src/index.ts:993-1003]()` waterfall 包裹
+  `[packages/llm/llm/src/index.ts:1059-1069]()` waterfall 包裹
   <!-- anchor:
   return this.ctx.waterfall(
     this,
@@ -229,13 +229,13 @@ flowchart TD
 
 - consumer 侧把 waterfall 返回的 stream 遍历：逐 chunk 入 session log + 喂 assembler；失败 `finish` 触发 `agent/request-error` 可重试。
 
-  `[packages/llm/llm/src/index.ts:898-926]()` adapter 边界转为 finish chunk
+  `[packages/llm/llm/src/index.ts:964-992]()` adapter 边界转为 finish chunk
   <!-- anchor:
   private async * adapterStream(
     options: GenerateOptions,
     prepared?: { registration: AdapterRegistration; config: LlmCallConfig },
   -->
-  `[packages/llm/llm/src/index.ts:1002-1003]()` 抛错归一化为终态 chunk
+  `[packages/llm/llm/src/index.ts:1068-1069]()` 抛错归一化为终态 chunk
   <!-- anchor: /** Convert one adapter throw into the stream protocol's terminal outcome. */ … function adapterFailureChunk(error: unknown, signal?: AbortSignal): StreamChunk { -->
 
 ---
@@ -251,12 +251,12 @@ flowchart TD
 - **closed union + 位置不变式**：`order/push` 后 `assertNever`；usage 必须在 finish 前且只出现一次、finish 后不能再有 chunk、除非 error/aborted 否则 finish 时不能还有 open block——这些由 invariant 插件在 `llm/stream` 外面（prepend）逐 chunk 校验。它把协议文法变成运行时可验证的强约束，而不是只靠类型。
 - 好处：任一 provider 的"流式差异"（提前 flush 的 usage-only、[DONE] 前的空 reasoning 首帧）都在 adapter 内磨平，内核词汇保持稳定。
 
-  `[packages/llm/llm/src/types.ts:305-325]()` StreamChunk 联合
+  `[packages/llm/llm/src/types.ts:357-377]()` StreamChunk 联合
   <!-- anchor:
    * Raw streaming protocol emitted by adapters.
    * Block indexes correlate interleaved deltas, and `block-end` carries the
   -->
-  `[packages/llm/llm-deepseek/src/translate.ts:127-149]()` 首见分配 index 并产出 delta
+  `[packages/llm/llm-deepseek/src/translate.ts:137-159]()` 首见分配 index 并产出 delta
   <!-- anchor:
   for (const choice of chunk.choices ?? []) {
     const delta = choice.delta
@@ -283,23 +283,23 @@ flowchart TD
 - **pi-ai 的多 provider**：用"一个瞬时快照"统一持有 profiles + 由 profiles 构建的 `Models` 集合；一次操作在任何 `await` 前捕获整个快照，配置变更只产生新快照，在途流始终用旧快照——这就是 `prepareCall` 冻结能一路保持到底的原因所在：切换发生在下一步，绝不发生在在途响应中间。
 - **listModels/resolveModel 是 advisory**：路由仍按键查 adapter，adapter 可接受 catalog 外的 model id（catalog 不进请求校验、不挡路由）。
 
-  `[packages/llm/llm/src/index.ts:401-423]()` 全量校验 + 全有全无
+  `[packages/llm/llm/src/index.ts:416-438]()` 全量校验 + 全有全无
   <!-- anchor:
   private prepareRoutes(providers: string[], adapter: LlmAdapter, owned: ReadonlySet<string>): AdapterRegistration[] {
     const unique = new Set<string>()
   -->
-  `[packages/llm/llm-pi-ai/src/index.ts:268-278]()` 动态路由集原子替换（或不注册）
+  `[packages/llm/llm-pi-ai/src/index.ts:280-290]()` 动态路由集原子替换（或不注册）
   <!-- anchor:
   const routes = [...profiles().keys()]
     if (registration === undefined) {
   -->
-  `[packages/llm/llm-pi-ai/src/adapter.ts:229-236]()` 按 profiles 身份 memoize 快照
+  `[packages/llm/llm-pi-ai/src/adapter.ts:232-239]()` 按 profiles 身份 memoize 快照
   <!-- anchor:
   private current(): PiAiSnapshot {
     const profiles = this.config.profiles()
     if (this.snapshot?.profiles === profiles) return this.snapshot
   -->
-  `[packages/llm/llm/src/types.ts:143-148]()` provider 元信息
+  `[packages/llm/llm/src/types.ts:181-186]()` provider 元信息
   <!-- anchor:
   /** Display metadata for one registered provider route. */
   export interface LlmProviderInfo {
@@ -326,21 +326,21 @@ flowchart TD
   export class HarnessError extends Error {
     /** Stable machine-routable failure class (e.g. `RATE_LIMIT`); route on this, never by parsing `message`. */
   -->
-  `[packages/llm/llm-deepseek/src/adapter.ts:466-466]()` 每次改流的 idle 看门狗
+  `[packages/llm/llm-deepseek/src/adapter.ts:477-477]()` 每次改流的 idle 看门狗
   <!-- anchor:
   using watchdog = idleWatchdog(upstream, connection.streamIdleTimeoutMs, STREAM_IDLE_TIMEOUT_CODE)
   -->
-  `[packages/llm/llm-retry/src/index.ts:156-208]()` agent/request-error 上的重试调度
+  `[packages/llm/llm-retry/src/index.ts:194-246]()` agent/request-error 上的重试调度
   <!-- anchor:
   async function recover(
     { agent, turn, step, provider, failure, retryPolicy: policy, signal }: Parameters<Events['agent/request-error']>[0],
   -->
-  `[packages/llm/llm-retry/src/index.ts:150-153]()` 先落 durable 事件再等
+  `[packages/llm/llm-retry/src/index.ts:188-191]()` 先落 durable 事件再等
   <!-- anchor:
       agent.session.append('llm/retry', eventData)
     if (!await cancellableDelay(delayMs, fusedSignal)) return
   -->
-  `[packages/core/agent-loop/src/agent.ts:373-390]()` consumer 驱动恢复
+  `[packages/core/agent-loop/src/agent.ts:391-408]()` consumer 驱动恢复
   <!-- anchor:
   if (finish.kind === 'error' || finish.kind === 'aborted') {
     const action = await this.dispatch.waterfall(
@@ -350,7 +350,7 @@ flowchart TD
 
 **Why**：rc.2 把 adapter 的职责从"单一 `stream`"细化为**两阶段**——`prepareCall(provider, model)` 产出"一份冻结的模型能力信息 + 一个锁定连接快照的 stream 函数"。这样做的好处是幂等可重放：模型信息、API key、端点、超时全部在该次解析时冻结并随 `PreparedAdapterCall` 携带，独立调用方（重试、replay、后台续流）可在不重新绑定配置换代的前提下重复使用。
 
-LLM 层为此增加 `PreparedAdapterCall` 契约（`{ model, stream }`）（[packages/llm/llm/src/index.ts:178-184]()），`LlmRuntime.prepareCall` 把 adapter 的 override 包进既有注册绑定流程（[packages/llm/llm/src/index.ts:824-826]()）。DeepSeek 侧的实现把"连接快照"闭包进 stream（[packages/llm/llm-deepseek/src/adapter.ts:421-427]()）：
+LLM 层为此增加 `PreparedAdapterCall` 契约（`{ model, stream }`）（[packages/llm/llm/src/index.ts:178-184]()），`LlmRuntime.prepareCall` 把 adapter 的 override 包进既有注册绑定流程（[packages/llm/llm/src/index.ts:890-892]()）。DeepSeek 侧的实现把"连接快照"闭包进 stream（[packages/llm/llm-deepseek/src/adapter.ts:421-427]()）：
 <!-- anchor: export interface PreparedAdapterCall { …   stream(options: GenerateOptions): AsyncIterable<StreamChunk> -->
 <!-- anchor:   async prepareCall(config: LlmCallConfig, signal?: AbortSignal): Promise<PreparedLlmCall> { …     const adapterCall = await registration.adapter.prepareCall(config.provider, config.model, signal) -->
 <!-- anchor:   override prepareCall(provider: string, model: string, _signal?: AbortSignal): Promise<PreparedAdapterCall> { …   } -->
@@ -362,11 +362,12 @@ return Promise.resolve({
 })
 ```
 
-- **超时解耦**：`streamIdleTimeoutMs`（默认 300s，武装"iterator 未返回"的空窗，映射 `TIMEOUT`）与 `filesApiTimeoutMs`（默认 60s，武装一次文件解析的 `deadline`）是两个独立配置（[packages/llm/llm-deepseek/src/index.ts:167-174]()）；文件解析在 `deadline` 内未完成会以 `FILES_API_TIMEOUT_CODE` 触发，不再被 stream 空闲超时误伤（[packages/llm/llm-deepseek/src/adapter.ts:571]()）。一处连接快照、两个看门狗，各自对"挂死"的成因负责。
+- **超时解耦**：`streamIdleTimeoutMs`（默认 300s，武装"iterator 未返回"的空窗，映射 `TIMEOUT`）与 `filesApiTimeoutMs`（默认 60s，武装一次文件解析的 `deadline`）是两个独立配置（[packages/llm/llm-deepseek/src/index.ts:185-192]()）；文件解析在 `deadline` 内未完成会以 `FILES_API_TIMEOUT_CODE` 触发，不再被 stream 空闲超时误伤（[packages/llm/llm-deepseek/src/adapter.ts:571]()）。一处连接快照、两个看门狗，各自对"挂死"的成因负责。
 <!-- anchor:   streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS), …   filesApiTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_FILES_API_TIMEOUT_MS), -->
 <!-- anchor:                 using filesDeadline = deadline(signal, connection.filesApiTimeoutMs, FILES_API_TIMEOUT_CODE) …                 using filesDeadline = deadline(signal, connection.filesApiTimeoutMs, FILES_API_TIMEOUT_CODE) -->
-- **file-id 首选、base64 兜底**：请求含图时优先 `representation: 'file'`（DeepSeek Files API 上传复用），`ensureUploaded` 解析出 file id（[packages/llm/llm-deepseek/src/adapter.ts:549-574]()）；仅当 `FileResolutionFailure`（Files 解析失败/预算超限/文件失效）才 `representation = 'base64'` 重试（[packages/llm/llm-deepseek/src/adapter.ts:595-599]()）。上传走带过期与并发去重的 `DeepSeekFileStore.ensureUploaded`，并对 `dsh-` 前缀自有文件按 `reclaimOldestOwned` 回收以应对配额（见 [attachments.md](attachments.md) 的 Files 接线）。
-<!-- anchor:     let representation: 'file' | 'base64' = 'file' …     let representation: 'file' | 'base64' = 'file' -->
+- **file-id 首选、base64 兜底**：请求含图时优先 `representation: 'file'`（DeepSeek Files API 上传复用），`ensureUploaded` 解析出 file id（[packages/llm/llm-deepseek/src/adapter.ts:565-591]()）；仅当 `FileResolutionFailure`（Files 解析失败/预算超限/文件失效）才 `representation = 'base64'` 重试（[packages/llm/llm-deepseek/src/adapter.ts:599-615]()）。上传走带过期与并发去重的 `DeepSeekFileStore.ensureUploaded`，并对 `dsh-` 前缀自有文件按 `reclaimOldestOwned` 回收以应对配额（见 [attachments.md](attachments.md) 的 Files 接线）。
+<!-- anchor: let representation: 'file' | 'base64' = 'file' … resolved = await this.files.ensureUploaded( -->
+<!-- anchor: throw new FileResolutionFailure(error) … representation = 'base64' -->
 <!-- anchor:         } catch (error: unknown) { …           continue -->
 
 这一演进把「连接快照」与「请求管线」进一步冻结成可重复的制品，是上文 `prepareCall` 冻结语义的合理化延伸——不再只是"绑定某次注册"，而是"绑定一份可独立重放的调用请求"。

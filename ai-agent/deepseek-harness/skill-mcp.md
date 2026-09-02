@@ -89,7 +89,7 @@ MCP 子模块是「外部工具注入」的通道：把任意符合 Model Contex
 
 根因：MCP 是社区的生态标准，外部工具以同一协议暴露。接入层要做的是「协议桥」——把 MCP 的 server 工具清单同步成 harness 的 tool 定义、把一次 `tools/call` 映射成一次原生 tool 执行——同时承担连接的生命周期（spawn/connect/断线重连）与网络信任边界的错误治理（超时、非法输出、isError、崩溃恢复）。这正符合无特权内核哲学：MCP server 不过是 `ctx.tools` 的另一个 provider，注册表不看工具「来源是否内置」，只看统一身份契约；而每个 mcp-client 实例连接一个 server、多实例多 server 是 Cordis 组合的自然结果。
 
-注意一个关键取舍：MCP 三元协议（tools/resources/prompts）里本模块**只桥接 tools**。Resources 与 Prompts 没有 harness 消费方，被明确延后——这使命名空间 `packages/mcp/mcp-client/*` 只做工具桥，不做全量 MCP 代理。[packages/mcp/mcp-client/README.md:111-111]()
+注意一个关键取舍：MCP 三元协议（tools/resources/prompts）里本模块**只桥接 tools**。Resources 与 Prompts 没有 harness 消费方，被明确延后——这使命名空间 `packages/mcp/mcp-client/*` 只做工具桥，不做全量 MCP 代理。[packages/mcp/mcp-client/README.md:191-191]()
 
 <!-- anchor: - **Tools are the only bridged MCP capability** — Resources a -->
 
@@ -104,7 +104,7 @@ MCP 子模块是「外部工具注入」的通道：把任意符合 Model Contex
 **ConnectionHandle**：暴露 `ready`（首连 outcome）与 `dispose`（停重连+关当前 client+settle in-flight+注销工具），供 plugin 激活等待与 HMR 拆卸。[packages/mcp/mcp-client/src/connection.ts:98-112]()
 
 <!-- anchor: /** Handle for one plugin instance's supervised connection. * -->
-**ToolDisposers**：`Map<publicName, dispose>`，记录本 server 每次 sync 世代当前注册的工具集合，swap/回滚/quiesce 都靠它。[packages/mcp/mcp-client/src/tools.ts:32-33]()
+**ToolDisposers**：`Map<publicName, dispose>`，记录本 server 每次 sync 世代当前注册的工具集合，swap/回滚/quiesce 都靠它。[packages/mcp/mcp-client/src/tools.ts:37-38]()
 
 <!-- anchor: /** State for one sync generation: the current set of dispose -->
 
@@ -135,15 +135,15 @@ flowchart TD
 ```
 
 关键坐标：
-- plugin 激活阻塞在首连+首次同步；`failOnStartupError` 决定失败是致命（Cordis 回滚）还是进重连循环。[packages/mcp/mcp-client/src/index.ts:166-180]()
+- plugin 激活阻塞在首连+首次同步；`failOnStartupError` 决定失败是致命（Cordis 回滚）还是进重连循环。[packages/mcp/mcp-client/src/index.ts:173-187]()
 <!-- anchor: const connection = startConnection(ctx, config, reconnect) -->
-- 命名空间保留在 `ctx.root` 级（多 app 同进程测试互不可见），重复 serverName 在加载期即报错而非静默遮蔽。[packages/mcp/mcp-client/src/index.ts:145-161]()
+- 命名空间保留在 `ctx.root` 级（多 app 同进程测试互不可见），重复 serverName 在加载期即报错而非静默遮蔽。[packages/mcp/mcp-client/src/index.ts:152-168]()
 <!-- anchor: // Reserve the namespace next: a duplicate -->
-- sync 分 fetch/swap 两阶段：fetch 失败保留前世代注册，swap 冲突则整代回滚（零工具，绝不半套），起始严格同步可 `throw`。[packages/mcp/mcp-client/src/tools.ts:134-180]()
+- sync 分 fetch/swap 两阶段：fetch 失败保留前世代注册，swap 冲突则整代回滚（零工具，绝不半套），起始严格同步可 `throw`。[packages/mcp/mcp-client/src/tools.ts:150-196]()
 <!-- anchor: // Phase 1: fetch and build the next generation without touch -->
-- 命名纯函数：`publicToolName` 由 `(serverName, rawName)` 确定，异常字符串替换非法字符并追加 12-hex SHA 避免不同身份坍缩成同名。[packages/mcp/mcp-client/src/tools.ts:96-102]()
+- 命名纯函数：`publicToolName` 由 `(serverName, rawName)` 确定，异常字符串替换非法字符并追加 12-hex SHA 避免不同身份坍缩成同名。[packages/mcp/mcp-client/src/tools.ts:112-118]()
 <!-- anchor: export function publicToolName(serverName: string, rawName: s -->
-- 工具执行：发送原始 rawName（公名绝不发到线上），abort+timeout 透传进 SDK request；MCP 的 `isError` 会 throw 让 ToolRuntime 走 isError 路径。[packages/mcp/mcp-client/src/tools.ts:234-284]()
+- 工具执行：发送原始 rawName（公名绝不发到线上），abort+timeout 透传进 SDK request；MCP 的 `isError` 会 throw 让 ToolRuntime 走 isError 路径。[packages/mcp/mcp-client/src/tools.ts:312-362]()
 <!-- anchor: return async (args: unknown, exec: ToolExecution) => { -->
 - 重连预算按 outage 算：`maxAttempts` 连续失败后注销并停，`connectedAt` 存活超 `maxDelayMs`（=最大退避间隔）则重置预算，区分「偶发崩溃」与「crash-loop」。[packages/mcp/mcp-client/src/connection.ts:192-225]()
 <!-- anchor: function scheduleReconnect(): void { -->
@@ -152,13 +152,13 @@ flowchart TD
 
 1. **transport 权衡**：stdio 适合本地子进程 server（command/args/env，env 经 `scrubbedParentEnv` 脱敏身份状与过期 `DSH_*`），streamable-http 适合远程/SSE。重连只在 transport onclose 触发——stdio 崩溃能触发，HTTP 不可达是每请求重试而非 supervisor 重建。[packages/mcp/mcp-client/src/transport.ts:31-50]()
 <!-- anchor: export function createTransport(config: Config): Transport { -->
-2. **工具映射到内部 tool**：以 server 提供的 description+inputSchema 直接构造 ToolDefinition 的 parameters；output 统一为 `{ content: JsonValue[], structuredContent? }`，支持的广告 outputSchema 校验 structuredContent，不支持的词汇回落到无约束 JsonValue。[packages/mcp/mcp-client/src/tools.ts:199-227]()
+2. **工具映射到内部 tool**：以 server 提供的 description+inputSchema 直接构造 ToolDefinition 的 parameters；output 统一为 `{ content: JsonValue[], structuredContent? }`，支持的广告 outputSchema 校验 structuredContent，不支持的词汇回落到无约束 JsonValue。[packages/mcp/mcp-client/src/tools.ts:275-303]()
 <!-- anchor: /** Build the canonical result schema and existing Native tex -->
 3. **超时/abort**：默认 60s/tool call，exec.signal 竞速；SDK 的初始化/分页仍用其自身 60s 默认（未另暴露连接超时）——已知局限。[packages/mcp/mcp-client/src/index.ts:33-34]()
 <!-- anchor: /** Default timeout for individual MCP tool calls (ms). */ -->
 4. **系统性生成切换安全**：`enqueueSync` 串行化所有 sync（首发+通知重同步+跨世代），`isCurrent(generation)` 守卫保证只有当前世代能行动，`dispose` 需 quiesce (await settling+syncChain) 再注销，避免双 dispose/泄漏。[packages/mcp/mcp-client/src/connection.ts:156-172]()
 <!-- anchor:   * Serializes every syncTools call — initial syncs and notification re-syncs -->
-5. 网络信任边界：读取每个 content block 用的是比 SDK 更松的类型，服务器缺失必填字段（text/mimeType）有回退，而非 panic。[packages/mcp/mcp-client/src/tools.ts:177-197]()
+5. 网络信任边界：读取每个 content block 用的是比 SDK 更松的类型，服务器缺失必填字段（text/mimeType）有回退，而非 panic。[packages/mcp/mcp-client/src/tools.ts:197-217]()
 <!-- anchor:  * The shape we read from each MCP content block. Intentionally looser than the -->
 
 ---
@@ -177,4 +177,4 @@ Skill 与 MCP 是同一个关注面（把外部能力变成 agent 可用的东�
 
 ## 全局关联：两条外部能力通道共享同一套哲学
 
-Skill 与 MCP 是「外部能力注入」这个关注面的两条互补通道：Skill 管「哪些指令可用」（发现/仲裁/分层的指令寻址 + host+scope 层叠 + invocation 策略），MCP 管「哪些远端工具能稳定地存续并被执行」（spawn/connect/退避重连/信任边界）。它们共享同一组设计哲学——无特权内核（两者都只是注册表/桥的普通 consumer）、Capability Seam 三件套、上下文成本管理（Skill 摘要目录+按名加载、MCP 目录只含名+description）、事件驱动增量刷新（`skills/change` 与 MCP `tools/list_changed` 反向但同构）。需要说明的一点边界：MCP 三元协议中本文只桥接 tools（`[packages/mcp/mcp-client/README.md:111-111]()`），resources/prompts 在本仓库无消费方而刻意延后——这正是「按需取交集」而非全量代理的表征。
+Skill 与 MCP 是「外部能力注入」这个关注面的两条互补通道：Skill 管「哪些指令可用」（发现/仲裁/分层的指令寻址 + host+scope 层叠 + invocation 策略），MCP 管「哪些远端工具能稳定地存续并被执行」（spawn/connect/退避重连/信任边界）。它们共享同一组设计哲学——无特权内核（两者都只是注册表/桥的普通 consumer）、Capability Seam 三件套、上下文成本管理（Skill 摘要目录+按名加载、MCP 目录只含名+description）、事件驱动增量刷新（`skills/change` 与 MCP `tools/list_changed` 反向但同构）。需要说明的一点边界：MCP 三元协议中本文只桥接 tools（`[packages/mcp/mcp-client/README.md:191-191]()`），resources/prompts 在本仓库无消费方而刻意延后——这正是「按需取交集」而非全量代理的表征。

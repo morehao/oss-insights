@@ -33,7 +33,7 @@ RAGFlow 的回应是 README 点明的“**Quality in, quality out**”——先�
 
 | 栈 | 技术 |
 |----|------|
-| Go（新生代主服务） | Gin(HTTP) + eino(字节 Agent 框架) + GORM + viper |
+| Go（新生代主服务） | Gin(HTTP) + eino(字节 Agent 框架) + GORM + viper + in-process ONNX Runtime(native DeepDoc) |
 | Python（传统引擎层） | Flask/blueprint API、DeepDoc 解析、RAG 检索核心 |
 | 存储 | MySQL(GORM)、Elasticsearch↔Infinity(全文+向量)、MinIO、Redis、NATS |
 | 前端 | React（`web/`） |
@@ -41,7 +41,7 @@ RAGFlow 的回应是 README 点明的“**Quality in, quality out**”——先�
 
 ## 架构总览：双栈并存的演进史
 
-RAGFlow 最鲜明的架构事实是 **Go 与 Python 双栈并存**，且由**运行时环境变量**决定哪套在跑，而非编译期写死。核心证据在 docker `.env` 的 `API_PROXY_SCHEME`，当前默认取 `python`，且 `go` / `hybrid` 两种部署模式被显式注释出来（[docker/.env:240-241]()）：
+RAGFlow 最鲜明的架构事实是 **Go 与 Python 双栈并存**，且由**运行时环境变量**决定哪套在跑，而非编译期写死。核心证据在 docker `.env` 的 `API_PROXY_SCHEME`，当前默认取 `python`，且 `go` / `hybrid` 两种部署模式被显式注释出来（[docker/.env:250-251]()）：
 
 <!-- anchor: # API_PROXY_SCHEME=go # use go server deployment … API_PROXY_SCHEME=python # use pure python server deployment -->
 
@@ -51,6 +51,8 @@ entrypoint 按此开关选择 nginx 后端 `ragflow.conf.*` 与启动进程（`r
 - **Go 栈**（`cmd/ragflow_server.go` + `internal/`）是**迁移目标**，已具完整骨架：四种 mode、Gin + eino、Agent canvas 运行时、MCP。
 
 两种栈共享同一套外部依赖（MySQL/ES/Infinity/MinIO/Redis/NATS），由 docker-compose 按 profile 编排。Go 栈不能脱离 Python 独立提供全能力（如 DeepDoc 解析仍依赖 Python `deepdoc/server`），因此迁移是逐步的、混合的（`API_PROXY_SCHEME=hybrid` 双起）。
+
+> **演进说明（dev-20260902）**：上述对 Python 的依赖已破开一环。Go 主服务在 `c28edde` 起内建 **in-process native DeepDoc 后端**：`cmd/ragflow_server.go` 的 `registerNativeDeepDoc` 把 `internal/deepdoc/parser/pdf/inference/native_analyzer` 注册为本机推理后端（`-tags cgo` 静态链接 ONNX Runtime，经 `dlopen(NULL)` 加载，无需外部 DeepDoc HTTP 服务、无动态 `.so` 部署）；`api`/`ingestor` 两个 mode 启动时按 `NeedsDeepDoc` 强制实例化并 fail-fast——本机 ORT + 模型缺失直接 `common.Fatal`，不做静默降级（[cmd/ragflow_server.go:1091-1119]()<!-- anchor: // registerNativeDeepDoc wires the in-process (Go) DeepDoc backend as the local … common.Info("in-process DeepDoc backend registered (production backend)", -->）。模型目录由 `DEEPDOC_MODEL_DIR` 指定、默认落到 `rag/res/deepdoc`，drop-score 语义对齐 Python `Recognizer.drop_score`（[cmd/ragflow_server.go:1123-1157]()<!-- anchor: // resolveDeepDocModelDir picks the model directory: the explicit DEEPDOC_MODEL_DIR … return infnative.DefaultDropScore -->）。docker-compose 随之移除了独立的 `deepdoc` profile 容器（见 [deployment-admin.md](deployment-admin.md)）。**默认交付仍是 Python 栈**，但 Go 栈已具备「不依赖 Python 解析服务」的自足能力，双栈边界从「解析必须 Python」推进到「Python 负责默认运行、Go 可独立完整解析」。
 
 ```mermaid
 flowchart LR
@@ -104,7 +106,7 @@ flowchart LR
 | `internal/router` `internal/handler` `internal/service` | 三层业务：路由 → 请求处理 → 领域服务 | Go |
 | `internal/agent/` | Canvas DSL、eino 运行时、组件/工具注册，Agent 工作流核心 | Go |
 | `internal/agent/harness/`, `internal/agent/retrievalbridge` | Agentic RAG 检索状态机与检索增强/融合 | Go |
-| `internal/ingestion/`、`internal/deepdoc/` | 摄取服务编排与文档解析封装 | Go |
+| `internal/ingestion/`、`internal/deepdoc/` | 摄取服务编排与文档解析封装（含 in-process native DeepDoc：`internal/deepdoc/parser/pdf/inference/native_analyzer/`） | Go |
 | `internal/entity/` `internal/dao/` | GORM 实体与数据访问（schema 真源） | Go |
 | `internal/admin/` `internal/server/` | Admin 控制面/许可 + 服务配置/生命周期 | Go |
 | `api/` | Python REST API（Flask/blueprint），默认入口 | Python |
@@ -114,9 +116,7 @@ flowchart LR
 
 ## 启动流程
 
-docker compose 启动后，entrypoint 按 `API_PROXY_SCHEME` 选择后端，Go 栈四种 mode 从同一个 `main` 出发走公共初始化（配置 → DB → 文档引擎 → Redis → 存储 → 消息队列），再进各 mode 分支（[cmd/ragflow_server.go:281-420]()）：
-
-<!-- anchor: 	switch *arguments.mode { … 		fmt.Printf("Invalid server mode: %s\n", *arguments.mode) -->
+docker compose 启动后，entrypoint 按 `API_PROXY_SCHEME` 选择后端，Go 栈四种 mode 从同一个 `main` 出发走公共初始化（配置 → DB → 文档引擎 → Redis → 存储 → 消息队列），再进各 mode 分支（[cmd/ragflow_server.go:302-441]()<!-- anchor: 	switch *arguments.mode { … 		fmt.Printf("Invalid server mode: %s\n", *arguments.mode) -->）。`api`/`ingestor` 两个 mode 在初始化尾部按 `NeedsDeepDoc` 注册 in-process native DeepDoc 后端（见上节演进说明，[cmd/ragflow_server.go:295-296]()<!-- anchor: if servermode.NeedsDeepDoc(*arguments.mode) { … 		registerNativeDeepDoc() -->）：
 
 ```mermaid
 flowchart TD

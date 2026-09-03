@@ -16,9 +16,9 @@
 - [deployment-admin.md](deployment-admin.md) — 部署与运维：多 mode 二进制 + Admin 心跳 + 三级配置
 - [CHANGELOG.md](CHANGELOG.md) — 各版本变更汇总（跨版本演进一览）
 
-## 本版增量说明（dev-20260826）
+## 本版增量说明（dev-20260902）
 
-> 对照初版解读（基线 `git 2db8eb6`）的增量更新：①Agentic RAG 已从 `internal/agentic_rag/` 的 ReAct 六工具重构为 `internal/agent/harness/` 的图式状态机；②新增 Azure DevOps / Azure Blob 两个数据源连接器；③对全部子文档引用做深度行号重核。详见 [CHANGELOG.md](CHANGELOG.md)。
+> 对照 dev-20260826（基线 `git 6c2bca8`）的增量更新：①Go 主服务内建 **in-process native DeepDoc**（`-tags cgo` 静态链接 ONNX Runtime），解析生产路径移除外部 Python `deepdoc/server` HTTP 服务，docker-compose 删除独立 `deepdoc` profile 容器；②同步器连接器净增 9 个（Box/Asana/Airtable/OneDrive/OCI Storage/Zendesk/Xquik/SeaFile/BigQuery），注册面 29→38；③`paddleocr` 解析后端支持自托管 PaddleX 部署；④Python 侧 `rag/advanced_rag/harness` 的 agentic search 三次重构；⑤默认镜像升 `v0.27.1`，新增 `ADMIN_DEFAULT_PASSWORD`/`SANDBOX_EXECUTOR_MANAGER_API_TOKEN`/`DEEPDOC_MODEL_DIR` 等部署开关，ingestor 默认并发 1→2；⑥架构/摄取/部署篇引用行号按 dev-20260902 重核零 STALE。详见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 核心能力
 
@@ -26,7 +26,7 @@
 |--------|------|---------|
 | 深度文档理解 | OCR / 版面分析 / 表格重组 / 多模态视觉 解析 PDF/DOCX 等复杂版式 | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
 | 模板式切分 | 内置切分模板，可视化与人工干预，可解释 | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
-| 异构数据源 | Word/Slides/Excel/图片/扫描件/结构化数据/网页/Confluence/Notion/S3/Azure DevOps/Azure Blob 等 | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
+| 异构数据源 | Word/Slides/Excel/图片/扫描件/结构化数据/网页 等本地格式 + 38 个同步连接器（Confluence/Notion/S3/Azure/OneDrive/Box/Asana/Airtable/BigQuery/SeaFile 等） | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
 | 多路召回 + 融合重排 | 全文 + 向量 + 图等多路召回，`weighted_sum` 融合 + `Rerank*` 重排 | [rag-pipeline.md](rag-pipeline.md) |
 | Grounded 引用 | 带可溯源引用的回答，降幻觉；prompt 侧编号 + 句子级 embedding 校验 | [rag-pipeline.md](rag-pipeline.md) |
 | Agent 工作流 | Canvas DSL → eino 运行时，可编排、可恢复、可追踪 | [agent-platform.md](agent-platform.md) |

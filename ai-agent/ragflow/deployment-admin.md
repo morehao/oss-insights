@@ -13,7 +13,7 @@ RAGFlow 是要跑在用户自有机器上的全栈 RAG 引擎：上层有 API �
 
 ## 角色：一个多 mode 的 Go 二进制 + 一座 Admin 控制面
 
-RAGFlow 用单个 Go 二进制承载四种 mode，由 `--api | --admin | --ingestor | --syncer` 决定进程形态。`serverArgs` 的注释直接点明分工——`adminHost` 只被 api/ingestor/syncer 使用，它们是**心跳发送方**；admin 是**心跳接收方**（[cmd/ragflow_server.go:68-78]()）：
+RAGFlow 用单个 Go 二进制承载四种 mode，由 `--api | --admin | --ingestor | --syncer` 决定进程形态。`serverArgs` 的注释直接点明分工——`adminHost` 只被 api/ingestor/syncer 使用，它们是**心跳发送方**；admin 是**心跳接收方**（[cmd/ragflow_server.go:71-81]()）：
 
 <!-- anchor: 	mode          *string // admin | api | ingestor | syncer … 	name          *string // server name -->
 
@@ -24,7 +24,7 @@ RAGFlow 用单个 Go 二进制承载四种 mode，由 `--api | --admin | --inges
 | `--ingestor` | `runIngestor` | 摄取 worker：消费队列做解析/切块/知识编译 | 无（心跳 port 传 -1）|
 | `--syncer` | `runSyncer` | 文件同步 worker：数据源→RAGFlow | 无（心跳 port 传 -1）|
 
-模式与帮助文本一一对应（[cmd/ragflow_server.go:166-169]()）：
+模式与帮助文本一一对应（[cmd/ragflow_server.go:174-177]()）：
 
 <!-- anchor-base64:CQlmbXQuRnByaW50Zihvcy5TdGRlcnIsICIgIC0tYXBpICAgICAgICAgIFx0UnVuIGFzIEFQSSBzZXJ2ZXJcbiIpCiDigKYgCgkJZm10LkZwcmludGYob3MuU3RkZXJyLCAiICAtLXN5bmNlciAgICAgICBcdFJ1biBhcyBmaWxlIHN5bmMgc2VydmljZVxuXG4iKQ== -->
 
@@ -38,7 +38,7 @@ RAGFlow 用单个 Go 二进制承载四种 mode，由 `--api | --admin | --inges
 
 - api/admin/ingestor/syncer 都依赖外部存储（MySQL 元数据、ES/Infinity 向量、MinIO 对象、Redis 缓存+运行时变量、NATS 消息队列），由 docker-compose 按 profile 编排。
 - api 与 admin 是「插件注册」关系：api 向 admin 心跳报到，admin 通过 `DELETE /services/:name`、`DELETE /ingestors` 等路由**远程关停** worker。
-- **双栈前提是运行时 env 决定**：仓库同时存在 Python 传统栈（`api/`、`rag/`、`deepdoc/`）与 Go 主服务栈；entrypoint 靠 `API_PROXY_SCHEME` 决定起哪套（当前默认 `python`，`docker/.env:229`）。这是理解部署的关键前提，详见「全局关联」。
+- **双栈前提是运行时 env 决定**：仓库同时存在 Python 传统栈（`api/`、`rag/`、`deepdoc/`）与 Go 主服务栈；entrypoint 靠 `API_PROXY_SCHEME` 决定起哪套（当前默认 `python`，`docker/.env:249`）。这是理解部署的关键前提，详见「全局关联」。
 
 ## 解决什么问题：部署复杂度的纵切与横切
 
@@ -82,10 +82,12 @@ compose 分两层文件，`docker-compose.yml` 通过 `include` 合并 `docker-c
 
 <!-- anchor: DOC_ENGINE=${DOC_ENGINE:-elasticsearch} … COMPOSE_PROFILES=${DOC_ENGINE},${DEVICE},metadata-${METADATA_DB_PROFILE} -->
 
-由此 `DOC_ENGINE=infinity` 带起 Infinity 容器并过滤掉 ES/OpenSearch；`DEVICE=gpu` 带起 `ragflow-gpu` 容器（叠加 NVIDIA device reservation，[docker/docker-compose.yml:135-141]()）：
+由此 `DOC_ENGINE=infinity` 带起 Infinity 容器并过滤掉 ES/OpenSearch；`DEVICE=gpu` 带起 `ragflow-gpu` 容器（叠加 NVIDIA device reservation，[docker/docker-compose.yml:133-139]()）：
 
 <!-- anchor: 	    deploy: … 	              capabilities: [gpu] -->
 业务容器 `ragflow-cpu` 关键编排包括端口映射（9380/9381/9382/9383/9384）、挂载 `service_conf.yaml.template` 与 `entrypoint.sh`（本地改配置免重打镜像）、`depends_on: mysql 的 service_healthy`、`restart: unless-stopped`，镜像/端口均可由 `.env` 覆盖。**编排不是写死矩阵，而是 env 驱动 profile 自由组合**。
+
+> **演进说明（dev-20260902）**：编排面上的「独立 DeepDoc 解析服务」已从默认 compose 移除——`docker-compose.yml` 删去 `deepdoc` profile 容器（原由 `Dockerfile_deepdoc_oss` 构建、healthcheck 监听 9390），因为 Go 侧 `api`/`ingestor` 已内置 in-process native DeepDoc（ORT 静态链接、无外部 HTTP 服务，详见 [ingestion-deepdoc.md](ingestion-deepdoc.md) 演进说明与 [architecture.md](architecture.md)）。`.env` 默认镜像同步升到 `infiniflow/ragflow:v0.27.1`（[docker/.env:258-262]()<!-- anchor: RAGFLOW_IMAGE=infiniflow/ragflow:v0.27.1 … # RAGFLOW_IMAGE=registry.cn-hangzhou.aliyuncs.com/infiniflow/ragflow:v0.27.1 -->）；另新增两类可运维开关——admin 首次启动会创建默认超管 `admin@ragflow.io`，密码取 `ADMIN_DEFAULT_PASSWORD`，不设时随机生成并只写一次到 `logs/admin_bootstrap_password.txt`（mode 0600，[docker/.env:244-247]()<!-- anchor: # written once to logs/admin_bootstrap_password.txt (mode 0600, the container's … ADMIN_DEFAULT_PASSWORD=admin -->）；沙箱执行器管理器新增共享密钥 `SANDBOX_EXECUTOR_MANAGER_API_TOKEN`（`/run` 端点 Bearer/X-Sandbox-Token）与容器网络开关 `SANDBOX_CONTAINER_NETWORK`（默认 `none` = 沙箱代码无外网，需要出网才改 `bridge`）。
 
 ## 配置三级：`.env` → `service_conf.yaml` → viper＋`RAGFLOW_`
 
@@ -101,7 +103,7 @@ compose 分两层文件，`docker-compose.yml` 通过 `include` 合并 `docker-c
 
 <!-- anchor: 	v.SetEnvPrefix("RAGFLOW") … 	v.AutomaticEnv() -->
 
-引擎/存储的运行时切换由 `GetEnvironments` 从裸环境变量（`DOC_ENGINE`/`DB_TYPE` 等）读入，优先级高于 yaml 的 general 切块（[internal/server/config/environments.go:154-157]()）：
+引擎/存储的运行时切换由 `GetEnvironments` 从裸环境变量（`DOC_ENGINE`/`DB_TYPE` 等）读入，优先级高于 yaml 的 general 切块（[internal/server/config/environments.go:152-155]()）：
 
 <!-- anchor: 	docEngine := common.GetEnvSmall(common.EnvDocEngine) … 		case "infinity", "elasticsearch", "oceanbase", "seekdb": -->
 
@@ -138,11 +140,11 @@ flowchart TD
     M --> L
 ```
 
-Go 栈每个进程统一 `main`，初始化顺序固化：`dao.InitDB → engine.InitDocEngine → redis.Init → storage.Init`，并将关闭动作 `defer` 反向（[cmd/ragflow_server.go:356-376]()）：
+Go 栈每个进程统一 `main`，初始化顺序固化：`dao.InitDB → engine.InitDocEngine → redis.Init → storage.Init`，并将关闭动作 `defer` 反向（[cmd/ragflow_server.go:377-397]()）：
 
 <!-- anchor: 	// Initialize database … 	defer storage.CloseStorage() -->
 
-完成基建后 `server.StartServer` 再按 mode 分支进各 run 函数（[cmd/ragflow_server.go:281-400]()）：
+完成基建后 `server.StartServer` 再按 mode 分支进各 run 函数（[cmd/ragflow_server.go:302-421]()）：
 
 <!-- anchor: 	switch *arguments.mode … 		if err = runAPI(ctx, arguments); err != nil { -->
 
@@ -190,7 +192,7 @@ flowchart LR
     C -->|all| J["defer ShutdownServer"]
 ```
 
-全局信号在 `main` 顶部用 `signal.NotifyContext` 只注册一次（SIGINT/SIGTERM/SIGQUIT），各 mode 在 run 内 `<-ctx.Done()` 感知并自行调用 `http.Server.Shutdown`（带 30s 超时防长请求阻塞）；`defer server.ShutdownServer(ctx)` 是 EE stub（开源态记状态）。**双向关闭**：OS 信号与 admin 命令（`ShutdownCh`）都会触发，二者汇合于 `select`，如 ingestor 收到 admin 关停后回调 `cancel()` 收拢整个进程树（[cmd/ragflow_server.go:617-670]()）：
+全局信号在 `main` 顶部用 `signal.NotifyContext` 只注册一次（SIGINT/SIGTERM/SIGQUIT），各 mode 在 run 内 `<-ctx.Done()` 感知并自行调用 `http.Server.Shutdown`（带 30s 超时防长请求阻塞）；`defer server.ShutdownServer(ctx)` 是 EE stub（开源态记状态）。**双向关闭**：OS 信号与 admin 命令（`ShutdownCh`）都会触发，二者汇合于 `select`，如 ingestor 收到 admin 关停后回调 `cancel()` 收拢整个进程树（[cmd/ragflow_server.go:646-699]()）：
 
 <!-- anchor: 	case <-ingestor.ShutdownCh: … 		cancel() -->
 
@@ -222,13 +224,12 @@ flowchart LR
 
 ## 全局关联：回扣双栈演进
 
-部署模块是 RAGFlow「双栈演进」在交付层的投影：**Python 与 Go 并存，靠运行时 `API_PROXY_SCHEME`（`python`/`go`/`hybrid`）决定谁在跑**——当前 `.env` 默认 `python`，`go`/`hybrid` 为显式注释（[docker/.env:239-241]()）：
+部署模块是 RAGFlow「双栈演进」在交付层的投影：**Python 与 Go 并存，靠运行时 `API_PROXY_SCHEME`（`python`/`go`/`hybrid`）决定谁在跑**——当前 `.env` 默认 `python`，`go`/`hybrid` 为显式注释（[docker/.env:249-251]()）：
 
 <!-- anchor: # API_PROXY_SCHEME=hybrid … API_PROXY_SCHEME=python # use pure python server deployment -->
 
-entrypoint 按此选 nginx 后端与启动进程（`ragflow_server.py` 或 `bin/ragflow_server --api`），并以 `while true` 守护式拉起、崩溃自愈，甚至 hybrid 双起（[docker/entrypoint.sh:314-319]()）：
-
-<!-- anchor: 	        while true; do … 	        done & -->
+entrypoint 按此选 nginx 后端与启动进程（`ragflow_server.py` 或 `bin/ragflow_server --api`），并用 `run_with_restart` 守护式拉起、崩溃自愈；`hybrid` 时 admin/api/ingestor 的 python 与 go 版本**同起并存**（如 313-320 行 python 与 go 两套 API server 同时拉起的 if 分支，[docker/entrypoint.sh:295-320]()）：
+<!-- anchor-base64:aWYgW1sgIiR7QVBJX1BST1hZX1NDSEVNRX0iID09ICJoeWJyaWQiIF1dIHx8IFtbICIke0FQSV9QUk9YWV9TQ0hFTUV9IiA9PSAicHl0aG9uIiBdXTsgdGhlbiDigKYgICAgICAgICBydW5fd2l0aF9yZXN0YXJ0ICJSQUdGbG93IGdvIHNlcnZlciIgYmluL3JhZ2Zsb3dfc2VydmVyIC0tYXBpICY= -->
 
 
 由此四件事在部署层被统一心智模型串起：**多 mode 单二进制（Go 迁移目标）**、**Admin 心跳控制面（跨进程存活）**、**profile 驱动拓扑 + 配置三级（可插拔）**、**env 决定双栈（平滑迁移）**。它们共同回答了同一个根因——「自托管一个企业级 RAG 平台，要够简单、可扩展、可插拔」。
@@ -241,11 +242,11 @@ entrypoint 按此选 nginx 后端与启动进程（`ragflow_server.py` 或 `bin/
 
 <!-- anchor: 	    ulimits: … 	      timeout: 10s -->
 
-Redis 用 valkey 镜像并 `--maxmemory 128mb` 设上限（[docker/docker-compose-base.yml:261-277]()）：
+Redis 用 valkey 镜像并 `--maxmemory 128mb` 设上限（[docker/docker-compose-base.yml:269-373]()）：
 
 <!-- anchor: 	  redis: … 	      retries: 120 -->
 
-- **配置面**：切引擎/设备只动 `.env` 的 `DOC_ENGINE/DEVICE/DB_TYPE`；连接串改对应 `.env` 项；进程内参数改 `service_conf.yaml.template`；后者与 `entrypoint.sh` 已挂载为可覆盖文件（[docker/docker-compose.yml:69-70]()）：
+- **配置面**：切引擎/设备只动 `.env` 的 `DOC_ENGINE/DEVICE/DB_TYPE`；连接串改对应 `.env` 项；进程内参数改 `service_conf.yaml.template`；后者与 `entrypoint.sh` 已挂载为可覆盖文件（[docker/docker-compose.yml:60-120]()）：
 
 <!-- anchor: 	      - ./service_conf.yaml.template:/ragflow/conf/service_conf.yaml.template … 	      - ./entrypoint.sh:/ragflow/entrypoint.sh -->
 
@@ -256,6 +257,7 @@ Redis 用 valkey 镜像并 `--maxmemory 128mb` 设上限（[docker/docker-compos
 
 `/api/v1/admin/services` 一屏看全部服务与 45s 存活窗口。依赖层靠各服务自身 healthcheck，业务容器用 `depends_on: service_healthy` 编排。
 - **日志**：默认 `logs/{serverName}.log`（`main` 按 mode 推导：`admin_server.log`/`api_server_9384.log` 等），轮转参数在被注释的 `log:` 段（max_size/max_backups/max_age/compress）；日志级别改 `--debug` 或运行时 `/api/v1/admin/config/log`。
+- **DeepDoc 解析依赖（dev-20260902 起）**：Go `api`/`ingestor` 生产路径只认 in-process native backend——部署节点须具备 ORT（`-tags cgo` 静态链接）与模型权重，缺失即启动期 `common.Fatal`，不会静默降级到空解析。模型目录用 `DEEPDOC_MODEL_DIR` 覆盖（默认 `rag/res/deepdoc`，权重快照由 `ragflow_deps/download_deps.py` 拉取），置信度阈值 `DEEPDOC_DROP_SCORE`（默认 0.5，语义对齐 Python `Recognizer.drop_score`，两后端共用同一 blank 契约）[internal/common/environments.go:214-224]()<!-- anchor: // EnvDeepDocModelDir points the in-process (Go) DeepDoc backend at the … EnvDeepDocDropScore = "DEEPDOC_DROP_SCORE" -->；`admin`/`syncer` mode 不实例化解析器、本节点可无模型文件（[cmd/ragflow_server.go:1091-1099]()<!-- anchor: // registerNativeDeepDoc wires the in-process (Go) DeepDoc backend as the local … // if the backend is not serving, the server aborts. -->）。
 - **扩展性**：ingestor/syncer 通过提高 `max_concurrent_workers`/`max_concurrent_syncs` 或**多开进程**扩展（多副本靠独立 `--name` 区分；`build.sh --run` 与 entrypoint 的 `while true` 守护是两种拉起来源）。K8s 用 `helm/`，为每个依赖各派一个 Deployment，主工作负载在 `helm/templates/ragflow.yaml`。
 
 ## 待验证与缺口

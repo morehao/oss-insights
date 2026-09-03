@@ -86,11 +86,11 @@ DSL 是唯一事实来源。前端保真存 `graph.nodes/graph.edges`，运行�
 <!-- anchor: type CanvasState struct { … SessionID          string -->
 - 序列化走 **eino 自注册 + 自定义 Marshal/Unmarshal**：`state.go` 的 `init()` 把 `CanvasState` 注册进 `compose.RegisterSerializableType`（`[internal/agent/runtime/state.go:125-127]()`），否则中断恢复时 eino 报 unknown type。
 <!-- anchor: func init() { … _ = compose.RegisterSerializableType[CanvasState]("runtime.CanvasState") -->
-- checkpoint 双通道：Redis 可用时 `buildAgentRunOptions`（`[cmd/ragflow_server.go:1007-1029]()`）装 `canvas.NewRedisCheckPointStore(24h)` + `canvas.NewRunTracker(24h)`；Redis 挂掉则返回零值结构，`AgentService` 视 nil 为「in-memory / 无追踪」继续服务。这是**降级而非中断**的关键设计决策。
+- checkpoint 双通道：Redis 可用时 `buildAgentRunOptions`（`[cmd/ragflow_server.go:1042-1064]()`）装 `canvas.NewRedisCheckPointStore(24h)` + `canvas.NewRunTracker(24h)`；Redis 挂掉则返回零值结构，`AgentService` 视 nil 为「in-memory / 无追踪」继续服务。这是**降级而非中断**的关键设计决策。
 
 ### 运行与事件：Runner 四结局 → SSE
 
-`canvas.Runner`（`[internal/agent/canvas/runner.go:258-380]()`）驱动一次画布执行，把结果归一到 `RunEvent` 通道，HTTP 层再转 SSE 帧。四种结局：正常完成、eino interrupt（wait-for-user，记录 interrupt id 供下次 resume）、取消/超时（静默）、其它错误。`RunFunc` 契约（`[internal/agent/canvas/runner.go:153]()`）让 Runner 与 Compile/Invoke 解耦——service 层注入真实实现。
+`canvas.Runner`（`[internal/agent/canvas/runner.go:261-383]()`）驱动一次画布执行，把结果归一到 `RunEvent` 通道，HTTP 层再转 SSE 帧。四种结局：正常完成、eino interrupt（wait-for-user，记录 interrupt id 供下次 resume）、取消/超时（静默）、其它错误。`RunFunc` 契约（`[internal/agent/canvas/runner.go:153]()`）让 Runner 与 Compile/Invoke 解耦——service 层注入真实实现。
 <!-- anchor: func (r *Runner) Run( … return out -->
 
 ## 关键数据结构
@@ -167,10 +167,10 @@ type MCPToolAdapter struct {
 `BotService.AgentbotCompletion`（`[internal/service/bot.go:151-170]()`）先做一次 IDOR 快速门卫（`loadCanvas`），再代理给 `AgentService.RunAgent`——上游廉价快失败避免空转 LLM token 与画布遥测。
 <!-- anchor: func (s *BotService) AgentbotCompletion( … ch, err := s.agentService.RunAgent(ctx, tenantID, agentID, -->
 
-随后 `RunAgent`（`[internal/service/agent.go:1447-1448]()`）经分布式 lease、版本 DSL 载入、会话建行、`root` 组装后，转交 `canvas.Runner` 驱动。
+随后 `RunAgent`（`[internal/service/agent.go:1456-1457]()`）经分布式 lease、版本 DSL 载入、会话建行、`root` 组装后，转交 `canvas.Runner` 驱动。
 <!-- anchor: func (s *AgentService) RunAgent(ctx context.Context, userID, canvasID, sessionID, version string, userInput any, files []map[string]interface{}) (<-chan canvas.RunEvent, error) { -->
 
-`buildRunFunc`（`[internal/service/agent.go:1842-2125]()`）真正完成解码、状态初始化、`canvas.Compile`、`cc.Workflow.Invoke` 与结果持久化。
+`buildRunFunc`（`[internal/service/agent.go:1851-2134]()`）真正完成解码、状态初始化、`canvas.Compile`、`cc.Workflow.Invoke` 与结果持久化。
 <!-- anchor: func (s *AgentService) buildRunFunc(canvasID string, versionRow *entity.UserCanvasVersion, dsl map[string]any) canvas.RunFunc { … workflowOutput, invokeErr := cc.Workflow.Invoke(ctx2, map[string]any{"query": wfInput}, invokeOpts...) -->
 
 ```mermaid
@@ -315,7 +315,7 @@ sequenceDiagram
 
 ### 决策二：Redis checkpoint 是「可选降级」，不是硬依赖
 
-`buildAgentRunOptions`（`[cmd/ragflow_server.go:1007-1029]()`）把 Redis 当可选件：可用则装 24h TTL 的 `NewRedisCheckPointStore` + `NewRunTracker`；否则返回零值结构，`AgentService` 视 nil 为 in-memory/无追踪继续服务。
+`buildAgentRunOptions`（`[cmd/ragflow_server.go:1042-1064]()`）把 Redis 当可选件：可用则装 24h TTL 的 `NewRedisCheckPointStore` + `NewRunTracker`；否则返回零值结构，`AgentService` 视 nil 为 in-memory/无追踪继续服务。
 <!-- anchor: func buildAgentRunOptions() agentRunOptions { … common.Info("agent: redis-backed run infra installed (24h TTL on checkpoint store + run tracker; eino default serializer)") -->
 
 - **权衡**：牺牲 Redis 缺失时跨进程续跑与取消协调（UserFillUp resume 在分布式下退化），换取「无 Redis 也能起服务」——契合 stand-alone 模式与无 Redis CI。

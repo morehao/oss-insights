@@ -45,7 +45,7 @@ RAGFlow 在**两个层面做"召回后处理"**，分工明确：
   - OceanBase/SereneDB → 本地 `RerankStandard`（引擎会把 chunk 向量带回来）。
   - Elasticsearch → 两遍法 `RerankWithKNN`：第一遍文本检索，第二遍只按候选 chunk id 过滤做 KNN 算干净余弦分。
 
-**放弃的替代方案**：把 chunk 向量全部搬运到应用层做本地余弦。这个方案实现简单，但①每个检索都要把大批向量序列化传回，网络/内存开销大；②分页+重排时向量反复传输。RAGFlow 的取舍是**让向量留在引擎里算**（ES/Infinity 侧算），应用层只拿分数——这一点在 Python `_knn_scores` 里有明确注释"让 chunk vectors never leave the engine"（[rag/nlp/search.py:396-427]()）。
+**放弃的替代方案**：把 chunk 向量全部搬运到应用层做本地余弦。这个方案实现简单，但①每个检索都要把大批向量序列化传回，网络/内存开销大；②分页+重排时向量反复传输。RAGFlow 的取舍是**让向量留在引擎里算**（ES/Infinity 侧算），应用层只拿分数——这一点在 Python `_knn_scores` 里有明确注释"让 chunk vectors never leave the engine"（[rag/nlp/search.py:431-462]()）。
   <!-- anchor: async def _knn_scores(self, sres: "Dealer.SearchResult", idx_names: str | list[s … return self.dataStore.get_scores(res) -->
 
 ### 融合公式：不是"二选一"，而是"词面分数×权重 + 语义分数×权重 + 排名特征加成"
@@ -56,13 +56,13 @@ RAGFlow 在**两个层面做"召回后处理"**，分工明确：
 sim = tkWeight * tksim + vtWeight * vsim + rank_fea
 ```
 
-- `tksim`（词面）：不是简单子串，而是**加权词袋命中率**——一元词权重 0.4、相邻二元组权重取 max 再乘 0.6（[internal/service/nlp/reranker.go:431-439]()）；Python 侧同算法（[rag/nlp/query.py:186-190]()）。
+- `tksim`（词面）：不是简单子串，而是**加权词袋命中率**——一元词权重 0.4、相邻二元组权重取 max 再乘 0.6（[internal/service/nlp/reranker.go:435-443]()）；Python 侧同算法（[rag/nlp/query.py:186-190]()）。
   <!-- anchor: d[t] += c * 0.4 … d[k] += math.Max(c, _c) * 0.6 -->
   <!-- anchor: for i, (t, c) in enumerate(wts): … d[t + _t] += max(c, _c) * 0.6 -->
   最后以 `s/q`（查询权重命中比）归一（[rag/nlp/query.py:202-208]()）。
   <!-- anchor: s = 1e-9 … q += v  # * v -->
 
-- `vsim`（语义）：余弦相似度（[internal/service/nlp/reranker.go:607-628]()），或外部 reranker 的归一化分数。
+- `vsim`（语义）：余弦相似度（[internal/service/nlp/reranker.go:611-632]()），或外部 reranker 的归一化分数。
   <!-- anchor: func cosineSimilarity(a, b []float64) float64 { … return dot / (common.PySqrt(normA) * common.PySqrt(normB)) -->
 - `rank_fea`（文档信号）：`tag_score * 10 + pagerank`（[internal/service/nlp/reranker.go:746-749]()），让带标签/权威文档的 chunk 略胜。
   <!-- anchor: // Final score: tag_score * 10 + pagerank … } -->
@@ -74,15 +74,15 @@ sim = tkWeight * tksim + vtWeight * vsim + rank_fea
 
 引用不是只靠提示词，而是**在 prompt 里给 chunk 编号 + 在答案后做句子级相似度校验**双保险：
 
-- **上游①（编号注入）**：每个知识块前标注 `\nID: n`（可选把真实 chunk_id 哈希成 500 内整数隐藏原始 ID），让模型按编号引用（[internal/service/deep_researcher.go:770-780]()）。
+- **上游①（编号注入）**：每个知识块前标注 `\nID: n`（可选把真实 chunk_id 哈希成 500 内整数隐藏原始 ID），让模型按编号引用（[internal/service/deep_researcher.go:765-775]()）。
   <!-- anchor: cnt := fmt.Sprintf("\nID: %d", id) … cnt += "\n└── Content:\n" -->
   同构的 Python 端 `kb_prompt` 以 `cnt = "\nID: {}"` 给 chunk 编号（[rag/prompts/generator.py:163]()）。
   <!-- anchor: cnt = "\nID: {}".format(i if not hash_id else hash_str2int(get_value(ck, "id", " … cnt = "\nID: {}".format(i if not hash_id else hash_str2int(get_value(ck, "id", " -->
 - **上游②（引用指令）**：Go 侧追加专用 `citationPrompt`，要求"每句后用 `[ID:N]` 标出信息来源"（[internal/service/chat_pipeline.go:3101]()）。
   <!-- anchor: func citationPrompt() string { … func citationPrompt() string { -->
-  该指令在 Python 端由 `rag/prompts/generator.py` 的 `citation_prompt` 用 Jinja 模板渲染（[rag/prompts/generator.py:214-216]()）。
+  该指令在 Python 端由 `rag/prompts/generator.py` 的 `citation_prompt` 用 Jinja 模板渲染（[rag/prompts/generator.py:215-217]()）。
   <!-- anchor: def citation_prompt(user_defined_prompts: dict = {}) -> str: … return template.render() + "\n\nIMPORTANT: The example IDs above (45, 46, 78, et -->
-- **下游（答案侧）**：当模型没有按格式引用（或被禁用引用时），Python 侧 `insert_citations` 在生成后对答案做**句子切分→逐句向量化→与各 chunk 算混合相似度**（阈值 0.63 起步、逐轮 ×0.8 放宽），命中才补打 `[ID:x]` 引用（[rag/nlp/search.py:285-362]()）。这是"用 embedding 校验模型说法的来源"，把幻觉风险降到"模型胡说但恰好在某个 chunk 语义里找得到锚点"这一层。
+- **下游（答案侧）**：当模型没有按格式引用（或被禁用引用时），Python 侧 `insert_citations` 在生成后对答案做**句子切分→逐句向量化→与各 chunk 算混合相似度**（阈值 0.63 起步、逐轮 ×0.8 放宽），命中才补打 `[ID:x]` 引用（[rag/nlp/search.py:320-397]()）。这是"用 embedding 校验模型说法的来源"，把幻觉风险降到"模型胡说但恰好在某个 chunk 语义里找得到锚点"这一层。
   <!-- anchor: def insert_citations(self, answer, chunks, chunk_v, embd_mdl, tkweight=0.1, vtwe … return res, seted -->
 
 ### 何时走 GraphRAG：一种"问题拆解 + 图检索"的特殊召回路
@@ -128,11 +128,11 @@ GraphRAG 不在默认召回里，而是独立的一条 `KGSearch` 检索路径�
 
 ### 上下文组装：`kbinfos` map
 
-多路召回的汇聚容器，贯穿 chat 管线的 Phase 8→10：各召回路（向量/TOC/子chunk/web/KG）都把结果写进 `kbinfos["chunks"]`，最后统一交给 `kbPrompt` 转成模型可读知识块（[internal/service/chat_pipeline.go:617-734]()）。
+多路召回的汇聚容器，贯穿 chat 管线的 Phase 8→10：各召回路（向量/TOC/子chunk/web/KG）都把结果写进 `kbinfos["chunks"]`，最后统一交给 `kbPrompt` 转成模型可读知识块（[internal/service/chat_pipeline.go:615-732]()）。
   <!-- anchor: "chunks":   []map[string]interface{}{}, … kbinfos = map[string]interface{}{ -->
-Go 的 `kbPrompt` 给每个 chunk 加 `\nID: n` + `Content` 等树节点（[internal/service/deep_researcher.go:720-789]()）。
+Go 的 `kbPrompt` 给每个 chunk 加 `\nID: n` + `Content` 等树节点（[internal/service/deep_researcher.go:715-784]()）。
   <!-- anchor: func kbPrompt(kbinfos map[string]interface{}, maxTokens int, hashID bool) []stri … return knowledges -->
-Python 的 `kb_prompt` 同构实现（[rag/prompts/generator.py:139-173]()）。
+Python 的 `kb_prompt` 同构实现（[rag/prompts/generator.py:139-174]()）。
   <!-- anchor: def kb_prompt(kbinfos, max_tokens, hash_id=False): … return knowledges -->
 
 ### Agent 侧的最小契约：`RetrievalChunk` 与工具参数
@@ -281,15 +281,14 @@ sequenceDiagram
 
 这条检索-生成管线站在**数据已被正确解析与索引**的假设之上，只负责把已索引的 chunk 变成高质量上下文：
 
-- **与 ingestion（解析/切分/索引）的关系**：检索质量的上限由 ingestion 决定的字段决定——重排依赖 `content_ltks / title_tks / important_kwd / question_tks` 这些索引字段是否齐备（[internal/service/nlp/reranker.go:298-315]()），融合依赖 `content_with_weight` 与 `q_{dim}_vec` 向量列存在（[internal/service/nlp/retrieval.go:633-639]()）。反过来说，ingestion 若没产出 `important_kwd`、`pagerank_fea`、`tag_feas`，重排里的 `tag_score*10+pagerank` 加成就会退化为纯词面+语义融合——质量链条断在源头。这也解释了"Quality in"的价值主张：**检索-生成层是 ingestion 质量的放大器，不是补丁**。
-  <!-- anchor: contentLtks := extractContentTokens(chunk, cfield) … insTw = append(insTw, tks) -->
+- **与 ingestion（解析/切分/索引）的关系**：检索质量的上限由 ingestion 决定的字段决定——重排依赖 `content_ltks / title_tks / important_kwd / question_tks` 这些索引字段是否齐备（[internal/service/nlp/reranker.go:302-317]()<!-- anchor: contentLtks := extractContentTokens(chunk, cfield) … tks = append(tks, questionTks...) -->），融合依赖 `content_with_weight` 与 `q_{dim}_vec` 向量列存在（[internal/service/nlp/retrieval.go:633-638]()<!-- anchor: // Check if EmbeddingModel is available … searchRequestWithRank.RankFeature = req.RankFeature -->）。反过来说，ingestion 若没产出 `important_kwd`、`pagerank_fea`、`tag_feas`，重排里的 `tag_score*10+pagerank` 加成就会退化为纯词面+语义融合——质量链条断在源头。这也解释了"Quality in"的价值主张：**检索-生成层是 ingestion 质量的放大器，不是补丁**。
   <!-- anchor: src := []string{ … } -->
 - **与 agent-platform / canvas 的关系**：`internal/agent/retrievalbridge` 是刻意的**适配层**——它避免 `internal/agent/tool` 反向 import `internal/service`（[internal/agent/retrievalbridge/enhancer.go:17-19]()），把 service 层检索/重排接口以 `Enhancer`、`MemoryAdapter` 的形式暴露给 agent 工具，消除双向依赖。Canvas 检索工具（`RetrievalTool`）通过 `runtime.GetRetrievalService()` 注入 service 实现，做到了检索能力"一套实现、多前端消费"。
   <!-- anchor: // Package retrievalbridge connects the agent retrieval interfaces to the … package retrievalbridge -->
-- **与 data-model 的关系**：chunk 数据模型直接决定检索字段；`PruneDeletedChunks` 依赖 DAO 里 Document 的记录存在性做查后清洗（[internal/service/nlp/retrieval.go:1041-1049]()），把"数据库行已删但索引仍有残留向量"的 write 一致性缝隙在读路径兜住（Python 注释 [rag/nlp/search.py:86-91]()）。
+- **与 data-model 的关系**：chunk 数据模型直接决定检索字段；`PruneDeletedChunks` 依赖 DAO 里 Document 的记录存在性做查后清洗（[internal/service/nlp/retrieval.go:1041-1049]()），把"数据库行已删但索引仍有残留向量"的 write 一致性缝隙在读路径兜住（Python 注释 [rag/nlp/search.py:121-126]()）。
   <!-- anchor: docs, err := s.documentDAO.GetByIDs(ctx, dao.DB, uniqueDocIDs) … } -->
   <!-- anchor: async def _prune_deleted_chunks(self, sres: SearchResult) -> SearchResult: … # Keep this as a fallback, not as the primary delete mechanism. -->
-- **Go/Python 双栈的一致性**：Go 复用 Python 时代的算法（`RerankByModel` 等注释明确"mirrors Python search.py L404-L429"，[internal/service/nlp/reranker.go:40-51]()），关键 float 求和刻意用同样的累加顺序保证逐位一致（如 `tokensToDict` 与 Python dict 插入序对齐，[internal/service/nlp/reranker.go:447-448]()）。
+- **Go/Python 双栈的一致性**：Go 复用 Python 时代的算法（`RerankByModel` 等注释明确"mirrors Python search.py L404-L429"，[internal/service/nlp/reranker.go:40-51]()），关键 float 求和刻意用同样的累加顺序保证逐位一致（如 `tokensToDict` 与 Python dict 插入序对齐，[internal/service/nlp/reranker.go:451-452]()）。
   <!-- anchor: // Rerank performs reranking based on whether a reranker model is provided … // -->
   <!-- anchor: // Python iterates dict.items() in insertion order (guaranteed since Python 3.7) … // Floating-point addition is non-associative, so the iteration order matters. -->
 
@@ -323,7 +322,7 @@ sequenceDiagram
 
 分析中发现任务给定路径与 RAGFlow 实际布局存在偏差，特此记载，避免后续沿错误路径追踪生成逻辑：
 
-- **`rag/app/qa.py` 与 `rag/app/one.py` 不是"生成管线"，而是 ingestion 侧的 chunker**：`qa.py` 把 Excel/csv/pdf/md/docx 解析成"Q&A 对"作为 chunk（[rag/app/qa.py:289-434]()），`one.py` 把整个文件切一面性 chunk（[rag/app/one.py:63-184]()）。真正生成/上下文组装在 `rag/prompts/generator.py`（`kb_prompt`/`citation_prompt`/`message_fit_in`）与 `rag/llm/chat_model.py`（`async_chat_with_tools`）。
+- **`rag/app/qa.py` 与 `rag/app/one.py` 不是"生成管线"，而是 ingestion 侧的 chunker**：`qa.py` 把 Excel/csv/pdf/md/docx 解析成"Q&A 对"作为 chunk（[rag/app/qa.py:290-435]()），`one.py` 把整个文件切一面性 chunk（[rag/app/one.py:63-187]()）。真正生成/上下文组装在 `rag/prompts/generator.py`（`kb_prompt`/`citation_prompt`/`message_fit_in`）与 `rag/llm/chat_model.py`（`async_chat_with_tools`）。
   <!-- anchor: def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang= … raise NotImplementedError("Excel, csv(txt), pdf, markdown and docx format files  -->
   <!-- anchor: def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang= … return [doc] -->
 - **本模块核心引擎在 Go 侧 `internal/service/nlp/`（retrieval/reranker/query_builder）与 Python 侧 `rag/nlp/`（search/query）**，它们是同一套算法在双栈的完整镜像，是覆盖面最该盯紧的地方。
@@ -374,7 +373,7 @@ sequenceDiagram
 ## 核心发现与设计启示
 
 1. **"多层融合"是 RAGFlow 区别于工具拼接的核心**：引擎内 `weighted_sum` 融合（召回初筛）+ 引擎外 `Rerank*` 重排（排序/分页），且统一到 `sim = tk*vt + vt*vsim + rank_fea` 这一条公式，Go 与 Python 逐位对齐。
-2. **"向量永不离引擎"**是性能关键取舍：ES 用两遍 KNN（先文本召回→再按 chunk id 过滤算干净余弦），避免批量向量回传应用层（[rag/nlp/search.py:396-427]()）。
+2. **"向量永不离引擎"**是性能关键取舍：ES 用两遍 KNN（先文本召回→再按 chunk id 过滤算干净余弦），避免批量向量回传应用层（[rag/nlp/search.py:431-462]()）。
   <!-- anchor: async def _knn_scores(self, sres: "Dealer.SearchResult", idx_names: str | list[s … return self.dataStore.get_scores(res) -->
 3. **Grounded citation 是双保险**：prompt 侧 `ID:n` 编号 + citation 指令，Python 侧 post-hoc `insert_citations` 句子级 embedding 校验补引用，堵住"模型自由发挥出处"。
 4. **路径偏差**：任务给的 `rag/app/qa.py`、`rag/app/one.py` 实为 ingestion chunker，非生成管线；真正的上下文组装在 `rag/prompts/generator.py` 与 Go `chat_pipeline.go` Phase 10。

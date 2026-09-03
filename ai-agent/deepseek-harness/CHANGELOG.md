@@ -2,6 +2,21 @@
 
 > 本解读对 DeepSeek Harness（`dsh`）的跨版本变更汇总；按版本倒序。项目无官方 changelog，故基于上游 git 代码变动（tag 间 diff / release commit / commit message 聚合）生成。各版本条目的"相比上一版"描述即对应某次增量解读落盘时更新的内容。
 
+## [0.1.2-rc.1]（2026-09-03 落盘）
+
+> 依据上游 `dsh-v0.1.2-alpha.4 → dsh-v0.1.2-rc.1` git diff（跨 alpha.5、rc.1 两个 release commit，代码面约 1300 行含测试夹具、全落在 storage-domain / storage-json / session-projection-cache）比对生成。
+
+相比 **0.1.2-alpha.4** 的主要变更（代码面高度聚焦，主题单一：**storage 层跨版本读兼容 + 失效派生数据抢救**）：
+
+**Schema / 数据演进（本次唯一主体）**
+- **`DomainSpec` / `KvUnitDescriptor` 新增 `compatibleVersions` 跨版本读兼容白名单**：per-record 布局读侧从「只认当前版本戳」放宽为接受 `[current, ...compatibleVersions]`（`parseRecord` 签名从单版本改版本集、`acceptedStamps` 汇总）；owner 声明"旧版记录我的当前 schema 也认"，靠把旧版缺的字段声明为 optional 背书；`single` 布局仍 exact-version 拒绝。写永远盖当前版本，兼容只发生在读侧、绝不自动迁移。see [data-model.md](data-model.md)。
+- **legacy 整文件 bootstrap 增加版本门槛**：bootstrap 前校验 legacy 整文件 stored unit version 在接受集内，未背书的旧版本遗留文件原样保留、整 unit 读作空——避免"迁移 owner 从未担保的 stale 缓存 → 盖章当前版本 → 域层 schema 失败"。
+- **`DomainSpec.invalidRecords: 'backup-and-skip'` + `KvUnit.backupRecord` 失效记录抢救**：open 校验某条记录 zod schema 失败时，声明该策略且后端能移文档（per-record）即把 `<key>.json` rename 成 `<key>.json.bak.<YYYYMMDDHHmm>`、记日志、按缺席续开；权威数据与无 per-record 文档的后端（single/行存）保持整体拒绝。语义分界 = 权威数据拒绝、可丢弃派生数据跳过。
+- **projcache 域 spec 演进出第一个消费方**：`session_projcache` 域声明 `version:5 + compatibleVersions:[3,4] + invalidRecords:'backup-and-skip'`——升级后的 home 不必等每个 session 重开就继续服务缓存列表投影；`checkpointIdentity` 谱系位 `isSeeded`/`inheritedEventCount` 变可选，缺席经 `compatibleVersions` 放行的 v3/v4 记录读作 unseeded，`identityMatches` 对缺席 `?? false`/`?? 0`。
+- `tool-cordis` API catalog 同步刷新（`DomainSpec`/`KvUnit`/`KvUnitDescriptor` 声明文本随接口演进）。
+
+**注**：rc.1 与 alpha.5 之间无独立 feature 级移除。rc.1 之后的 master 曾短暂合入又回滚 `feat(session-message-edit)`，不属于本版本代码面。
+
 ## [0.1.2-alpha.4]（2026-09-01 落盘）
 
 > 依据上游 `dsh-v0.1.1-rc.2 → dsh-v0.1.2-alpha.4` git diff（跨 4 个 alpha 版本、含 4 个 release commit）比对生成。

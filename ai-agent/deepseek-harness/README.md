@@ -2,6 +2,8 @@
 
 > 本解读按 **ai-agent ⊗ framework** 类规格产出（ai-agent 主类型 + framework 副类型叠加，因 dsh 向插件作者开放 SDK/扩展接口）。判定依据：README 自述「agent harness / everything is a plugin」+ 顶层 `packages/*/` 插件式扩展接口 + vendored Cordis 插件运行时。由 DeepSeek AI 开源。
 >
+> **本版增量更新（0.1.2-alpha.4 → 0.1.2-rc.1 / 2026-09-03）**：依上游 alpha.5 → rc.1 两版 git diff 比对更新。本次增量的代码面高度聚焦存储层（约 1300 行变更含测试夹具、全落在 storage-domain / storage-json / session-projection-cache），主题是 **schema 演进从「一刀切版本拒绝」软化为「owner 显式背书的跨版本读兼容 + 失效派生数据 backup-and-skip」**：(1) `DomainSpec`/`KvUnitDescriptor` 新增 `compatibleVersions` 白名单——per-record 布局读侧接受旧版本戳（`acceptedStamps` = 当前版 + 兼容列表）、legacy 整文件 bootstrap 也校验 stored version，owner 靠把旧版缺的字段声明为 optional 来背书；`single` 布局仍 exact-version 拒绝；(2) `DomainSpec.invalidRecords: 'backup-and-skip'` + `KvUnit.backupRecord`——某条记录 schema 校验失败时移走 `<key>.json.bak.<stamp>`、按缺席续开，绝不因坏缓存 brick 整个 boot；(3) projcache 域 spec 演进为 `version:5 + compatibleVersions:[3,4] + invalidRecords:'backup-and-skip'`，谱系位 `isSeeded`/`inheritedEventCount` 变可选（缺席读作 unseeded）。主体更新在 [data-model.md](data-model.md)；各版本变更一览见 [CHANGELOG.md](CHANGELOG.md)。
+>
 > **本版增量更新（0.1.1-rc.2 → 0.1.2-alpha.4 / 2026-09-01）**：依上游 4 个 alpha 版本 git diff 比对更新。本次增量 (1) **SQLite 会话持久化后端整体移除**，事件日志收敛为 JSONL 单一后端（[data-model.md](data-model.md)）；(2) **session 事件 seq/log offset 分离**——`SessionSeq`（事件身份）与 `SessionLogOffset`（位置）品牌化、`seedLength`→`isSeeded`+`inheritedEventCount`（[session.md](session.md)）；(3) **Typert Remote 控制器体系取代 apiproxy RPC**——`@Remote`/`@RemoteScope` 声明式暴露 + 构建期生成双契约，session/workspace/settings/credentials 四控制器落地（[remote-controllers.md](remote-controllers.md)）；(4) **新增 webhook 子系统**——无状态 fire-and-forget 规则运行时 + GitHub 适配器（[webhook.md](webhook.md)）；(5) 新增 experimental inspector（CDP 跨域检视，[inspector.md](inspector.md)）与 webworker（浏览器 worker 跑整棵插件树，[webworker.md](webworker.md)）；(6) storage-json per-record 布局 + projection-cache 冷读播种 + sdk-minimal profile。各版本变更一览见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > **本版增量更新（0.1.1-rc.2 / 2026-08-23）**：项目无官方 changelog，依上游 0.1.0-rc.7 → 0.1.1-rc.2 git diff 比对更新。本次增量跨 rc.1、rc.2 两版，主要变更 (1) **新增凭据能力面**——`ctx.credentials`（双键空间 + 持久化记录的 Capability Seam）+ `ctx.authorization`（可交互授权：OAuth/device-code 登录），见 [credentials.md](credentials.md)；(2) **图片/附件管线统一**——canonical admission 归一化 + `readImageRequest` 对象投影 + DeepSeek Files API file-id 首选/base64 兜底，见 [attachments.md](attachments.md)、[llm.md](llm.md)；(3) **LLM 适配器两阶段 `prepareCall`** 与 Files/stream 超时解耦（[llm.md](llm.md)）；(4) **Session 投影状态/视图分离 + 跨 boot checkpoint**（[session.md](session.md)）；(5) 沙箱 bwrap 加 PID 命名空间隔离（[sandbox-capability-seams.md](sandbox-capability-seams.md)）。rc.1 曾短暂引入 `reuseWorkspaceBlank` 空白会话继承默认权限、在 rc.2 整体回滚。各版本变更一览见 [CHANGELOG.md](CHANGELOG.md)。
@@ -37,7 +39,7 @@ DeepSeek Harness（`dsh`）是一个 TypeScript 编写的 agent harness（智能
 | LLM 适配器 seam | 消息/流式词汇 + 多 provider 路由注册表 | [llm.md](llm.md) |
 | 凭据系统 | 双键空间（CredentialRef/CredentialKey）+ 持久化记录 + 可交互授权 | [credentials.md](credentials.md) |
 | 上下文管理与压缩 | compaction capability seam + token 预算 | [memory-compaction.md](memory-compaction.md) |
-| 持久化数据模型 | 事件日志 JSONL 单一后端（zstd 帧 + chunk 打包）、schema「不迁移只拒绝」、storage-json single/per-record + projection-cache 冷读播种 | [data-model.md](data-model.md) |
+| 持久化数据模型 | 事件日志 JSONL 单一后端（zstd 帧 + chunk 打包）、schema「不迁移只拒绝」（rc.1 起 per-record 域可声明 `compatibleVersions` 跨版本读兼容 + `invalidRecords:'backup-and-skip'` 失效抢救）、storage-json single/per-record + projection-cache 冷读播种 | [data-model.md](data-model.md) |
 | 部署形态 | profile/bundle/patch 分层、web/headless 双形态、sdk-minimal/ACP/SDK app bundle | [deployment.md](deployment.md) |
 | 持久化附件 | 不可变内容寻址对象库 + `ImageAttachmentRef`、全量先验后写 | [attachments.md](attachments.md) |
 | Remote 控制器体系 | Typert `@Remote`/`@RemoteScope` 声明式 API + 构建期生成双契约，session/workspace/settings/credentials 四控制器取代 apiproxy RPC | [remote-controllers.md](remote-controllers.md) |
@@ -174,6 +176,7 @@ graph TB
 - **"不打编译的浏览器运行"（alpha）**：WebWorker packer 直接打包真实构建产物 + 运行时零编译器，worker 只是"怎么挂载镜像、怎么补 node 语义"的执行者——预览调试的就是线上要发的字节（[webworker.md](webworker.md)）。
 - **凭据也是"记录即事实"的可交换 seam（rc.1）**：授权产出一条 owner 自解释的持久记录而非内存令牌，`GrantRecord` 的 payload 对 harness 完全不透明——授权一次 = 落一条可回放、可审计、可随会话共享的记录（[credentials.md](credentials.md)）。
 - **"确定性归一化 + 对象投影"换取松耦合（rc.2）**：图片落库前先归一化成 provider 无关版本，再由存储侧按模型字节预算投影出可寻址变体（file-id 首选、base64 兜底）——把"图片怎么变"收敛进存储层，消费方只吃确定性制品（[attachments.md](attachments.md)）。
+- **"拒绝"也可以分级（rc.1）**：schema 演进从"一刀切版本拒绝"细化为两层逃生阀——`compatibleVersions` 让 owner **显式背书**旧版本记录可读（不自动迁移、只开白名单），`invalidRecords:'backup-and-skip'` 让可丢弃的派生数据在单条失效时**移走续开**而非 brick 整个 boot；权威数据仍走默认整体拒绝。拒绝不是非黑即白，而是按"这条数据扔了会不会错"分级（[data-model.md](data-model.md)）。
 
 ## 不足 / 风险
 

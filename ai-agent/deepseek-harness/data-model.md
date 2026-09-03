@@ -184,9 +184,14 @@ graph TB
 
 `per-record` 布局：unit 是一个目录，`<dir>/<table>/<key>.json` 每记录一个版本化文档 + `global.json` 承载全局槽。该 unit 设计为**无内存状态**——`loadAll` 重读目录树、每次写就是一次 durable 文件操作，写失败文件与域内存双双不变、无需回滚[[packages/storage/storage-json/src/per-record-unit.ts:3-10]()]()
 <!-- anchor: /**
- * One opened JSON unit in `per-record` layout: the unit is a directory at -->。键会成为路径段，必须 path-safe（`[a-zA-Z0-9_-]+`），不安全键在写时拒绝[[packages/storage/storage-json/src/per-record-unit.ts:270-271]()]()
-<!-- anchor: /** Reject a record key that would be unsafe as a path segment. */ … function assertSafeKey(unit: string, key: string): void { -->。既有 `single` 布局的整文件在首次打开时被自动 bootstrap 进 per-record 树（legacy 文件保留不改动），任何新文档路径存在即抑制整 unit 的 bootstrap[[packages/storage/storage-json/src/per-record-unit.ts:18-22]()]()
-<!-- anchor: * Legacy bootstrap: when the new tree has no document path, a legacy -->。
+ * One opened JSON unit in `per-record` layout: the unit is a directory at -->。键会成为路径段，必须 path-safe（`[a-zA-Z0-9_-]+`），不安全键在写时拒绝[[packages/storage/storage-json/src/per-record-unit.ts:307-308]()]()
+<!-- anchor: /** Reject a record key that would be unsafe as a path segment. */ … function assertSafeKey(unit: string, key: string): void { -->。既有 `single` 布局的整文件在首次打开时被自动 bootstrap 进 per-record 树（legacy 文件保留不改动），任何新文档路径存在即抑制整 unit 的 bootstrap[[packages/storage/storage-json/src/per-record-unit.ts:18-22]()]()<!-- anchor: * Legacy bootstrap: when the new tree has no document path, a legacy -->。**rc.1 起 bootstrap 前先校验 legacy 整文件的 stored unit version 是否在接受集（当前版本 + `compatibleVersions`）内**——未背书的旧版本遗留文件被原样保留、整 unit 读作空，避免"迁移一条 owner 从未担保的 stale 缓存 → 盖章成当前版本 → 域层 schema 失败"[[packages/storage/storage-json/src/per-record-unit.ts:142-143]()]()
+<!-- anchor:   const stamped = document.unit.version …   if (typeof stamped !== 'number' || !acceptedStamps(descriptor).includes(stamped)) return -->
+
+> **演进说明（0.1.2-rc.1）**：`DomainSpec` 新增两个「读侧策略」字段，把"版本戳拒收"从唯一出口降为兜底——`compatibleVersions` 声明旧版本戳可读（跨版本读兼容），`invalidRecords: 'backup-and-skip'` 声明某条记录 schema 校验失败时如何续开。`single` 布局仍 exact-version、失效即整体拒绝；`per-record` 布局因记录各自成文档，才能逐条「移走续开」：`KvUnit.backupRecord` 把 `<key>.json` rename 成 `<key>.json.bak.<YYYYMMDDHHmm>`（改名后不再以 `.json` 结尾，后续读自动忽略，字节留盘可检视）[[packages/storage/storage-json/src/per-record-unit.ts:238-245]()]()
+<!-- anchor:   async backupRecord(table: string, key: string): Promise<string> { …     return moved -->。域层 open 循环到某条记录校验失败时，若 spec 声明 `backup-and-skip` 且后端实现了 `backupRecord`，就移走该文档、记日志、按缺席续开；后端不能移文档（如 `single`/行存）或未声明策略时回落整体拒绝（`invalid-record`）[[packages/storage/storage-domain/src/index.ts:124-140]()]()
+<!-- anchor:             let parsed: unknown …             records.set(key, parsed) -->。语义分界在 spec 注释里写得很直白：**权威数据用默认的整体拒绝，可丢弃的派生数据才声明 backup-and-skip**[[packages/storage/storage-domain/src/spec.ts:57-67]()]()
+<!-- anchor:    * What `open` does with a stored table record that fails its zod schema. …   readonly invalidRecords?: 'backup-and-skip' -->。
 
 ### session-projection-cache：`session_projcache` 域（per-record 落盘 + 身份含谱系）
 
@@ -194,20 +199,25 @@ graph TB
 <!-- anchor: /**
  * The projection-cache domain declaration: one `sessions` table keyed by -->；同时 `checkpointIdentity` 扩展进 seq/offset 分离后的谱系字段。
 
-职责：投影检查点持久化，`(sessionId, key, ver, seq, val)` 的 RFC 形态；`row 从不错误，只可能过期`——ver 不匹配即丢弃（从非迁移）[[packages/session/session-projection-cache/src/spec.ts:24-24]()]()。日志身份绑定（createdAt/cwd）防止"同 id 不同生命周期"的旧行通过水位检查[[packages/session/session-projection-cache/src/spec.ts:42-42]()]()。
+> **演进说明（0.1.2-rc.1）**：projcache 域 spec 从「单一当前版本戳、升级即报废」演进出**跨版本读兼容**（`version:5` + `compatibleVersions:[3,4]`）与**失效记录 backup-and-skip**（`invalidRecords:'backup-and-skip'`）。谱系位 `isSeeded`/`inheritedEventCount` 相应变可选——缺席即 unseeded（见下）。这是 storage 层「schema 不迁移、只拒绝」哲学在 rc.1 的一次软化：拒绝从"一刀切版本门槛"细化为"owner 显式背书的白名单 + 失效派生数据可移走"，而非自动迁移。
+
+职责：投影检查点持久化，`(sessionId, key, ver, seq, val)` 的 RFC 形态；`row 从不错误，只可能过期`——ver 不匹配即丢弃（从非迁移）[[packages/session/session-projection-cache/src/spec.ts:24-24]()]()
+<!-- anchor:  * discards it at read time (never a migration). -->。日志身份绑定（createdAt/cwd）防止"同 id 不同生命周期"的旧行通过水位检查[[packages/session/session-projection-cache/src/spec.ts:34-40]()]()
+<!-- anchor:  * The stored-log identity a record is bound to: the immutable header fields …  * the stored header (cold read) before accepting any record. -->。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
 | createdAt / cwd | z.number/z.string.optional | checkpointIdentity | 日志身份（列表/冷读时对 live header 校验） |
-| isSeeded / inheritedEventCount | z.boolean / SessionLogOffset | checkpointIdentity | 0.1.2-alpha 起加入的谱系位：同 id 不同谱系的旧记录读时即弃[[packages/session/session-projection-cache/src/spec.ts:45-46]()]()
-<!-- anchor:   isSeeded: z.boolean(), …   inheritedEventCount: z.number().int().nonnegative().transform(SessionLogOffset), --> |
+| isSeeded / inheritedEventCount | z.boolean(可选) / SessionLogOffset(可选) | checkpointIdentity | 0.1.2-alpha 起加入的谱系位；**rc.1 起变为可选**——经 `compatibleVersions` 放进来的旧版本记录（v3/v4）本就缺失这两字段，缺席在 `identityMatches` 读作「unseeded 谱系」，对 seeded 期望则不匹配、整行丢弃走冷重建[[packages/session/session-projection-cache/src/spec.ts:42-53]()]()
+<!-- anchor:  * The lineage fields are optional because records admitted through …   inheritedEventCount: z.number().int().nonnegative().transform(SessionLogOffset).optional(), --> |
 | rows | Record<key, row> | rows 键为投影 key | 每 key 一个 checkpoint |
 | row.ver | int≥0 | | 该 unit 的 stateVersion，不匹配即弃 |
 | row.seq | SessionSeqCursor | int≥-1 转 SessionSeq | 投影最后一次折叠的 seq；`-1` 表示首事件前的 watermark[[packages/session/session-projection-cache/src/spec.ts:26-28]()]()
 <!-- anchor: export const checkpointRow = z.object({ … seq: z.number().int().gte(-1).transform((value): SessionSeqCursor => --> |
 | row.val | z.json() | | 该投影 unit 的内部状态，纯 JSON |
 
-写为整记录替换（whole-value 纪律）；域 spec `version:3` 升级即报废整个媒介[[packages/session/session-projection-cache/src/spec.ts:66-66]()]()。alpha 期间新增**冷读播种**：冷会话从缓存种子直接折 fold 而非全量重放，写回在持久化后异步进行——缓存从「只读捷径」升级为「可播种的折叠捷径」（`session-projection-cache` 的 `loadAndFold` 路径）。
+写为整记录替换（whole-value 纪律）。域 spec 版本在 alpha 周期内多次演进（alpha.1 起 per-record 布局 v3 → v4，seq/offset 分离随谱系位加入 → v5）；**rc.1 起声明 `version:5` + `compatibleVersions: [3, 4]` + `invalidRecords: 'backup-and-skip'`**——`compatibleVersions` 让读侧接受 v3/v4 戳的旧会话文档（它们与当前版只差缺席的可选谱系位），升级后的 home 不必等每个 session 被重开就继续服务缓存列表投影；`invalidRecords` 让个别 schema 校验失败的记录文档被移开备份、按缺席续开，绝不因一条坏缓存 brick 整个 boot[[packages/session/session-projection-cache/src/spec.ts:73-98]()]()
+<!-- anchor:  * The session-projcache domain spec. The `per-record` layout scopes version …   invalidRecords: 'backup-and-skip', -->。alpha 期间新增**冷读播种**：冷会话从缓存种子直接折 fold 而非全量重放，写回在持久化后异步进行——缓存从「只读捷径」升级为「可播种的折叠捷径」（`session-projection-cache` 的 `loadAndFold` 路径）。
 
 ### 附件对象库：`DSH_HOME/attachments/v1`（内容寻址二进制存储）
 
@@ -238,8 +248,13 @@ dsh 的 schema 演进哲学与多数系统相反——**pre-release，无兼容�
   - bump 的代价权衡见 constant 注释："near-identity 升级几乎免费，漏 bump 会让旧 runtime 静默读错新日志"——宁可过度拒绝也不静默重演被掏空的会话。
 - 会话级版本：JSONL 后端从**首行 header** 就拒绝外来格式版本，`refuseForeignFormatVersion` 先于校验今日 header 形态与解码任何事件行，所以未来结构性格式仍报"升级方向"而非"corrupt"[[packages/session/session-persistence-jsonl/src/format.ts:240-240]()]()（原 SQLite 的 `SCHEMA_VERSION` pragma 拒绝逻辑已随后端一并移除，见上条）。
 - ~~`SCHEMA_VERSION = 17`（SQLite 会话后端）~~ **0.1.2-alpha.1 随 SQLite 后端一并移除**（原 rc.8 自 15 bump 到 17 的 `PRAGMA user_version` 校验、openDatabase 盖章/拒绝逻辑不再存在于仓库）；会话日志的格式拒绝现收敛为 `SESSION_FORMAT_VERSION` 单一版本号。
-- `STORAGE_SQLITE_SCHEMA_VERSION = 1`（KV sqlite）：`PRAGMA user_version`，与每 unit 版本正交；非当前拒绝，不迁移[[packages/storage/storage-sqlite/src/schema.ts:20-20]()]()。
-- 域级版本：DomainSpec.version 被拒即拒绝打开[[packages/storage/storage-domain/src/spec.ts:35-35]()]()；投影 projcache 域 version 被拒即报废——cache 语义是"stale/不可读 cache 只花一次长尾重放，绝不产出错值"[[packages/session/session-projection-cache/src/spec.ts:62-62]()]()。
+- `STORAGE_SQLITE_SCHEMA_VERSION = 1`（KV sqlite）：`PRAGMA user_version`，与每 unit 版本正交；非当前拒绝，不迁移[[packages/storage/storage-sqlite/src/schema.ts:20-20]()]()
+<!-- anchor: export const STORAGE_SQLITE_SCHEMA_VERSION = 1 -->
+- 域级版本：DomainSpec.version 是"当前盖章"，medium 版本戳不匹配默认拒绝打开[[packages/storage/storage-domain/src/spec.ts:38-39]()]()
+<!-- anchor:   /** Domain format version; a medium stamped with a different version rejects at open. */ …   readonly version: number -->；**rc.1 起 per-record 布局读侧接受 `compatibleVersions` 白名单内的旧戳**（`acceptedStamps = [current, ...compatibleVersions]`[[packages/storage/storage-json/src/per-record-unit.ts:104-107]()]()
+<!-- anchor: function acceptedStamps(descriptor: KvUnitDescriptor): readonly number[] { …   return [descriptor.version, ...descriptor.compatibleVersions ?? []] -->），owner 声明"旧版记录我的当前 schema 也认"（靠把旧版缺的字段声明为 optional）；`single` 布局仍 exact-version 拒绝[[packages/storage/storage/src/backend.ts:64-73]()]()
+<!-- anchor:    * Older unit versions whose stored records are also readable under the …   readonly compatibleVersions?: readonly number[] -->。投影 projcache 域（version:5）正是借此声明 `compatibleVersions:[3,4]` 让升级 home 不丢缓存，并配 `invalidRecords:'backup-and-skip'` 兜底——cache 语义是"stale/不可读 cache 只花一次长尾重放，绝不产出错值"[[packages/session/session-projection-cache/src/spec.ts:88-92]()]()
+<!-- anchor:  * `invalidRecords: 'backup-and-skip'`: a stored record that fails the schema …  * cold read rebuilds and rewrites it). -->。
 
 **回滚/灰度**：由于"拒绝不迁移"，上线前必须保证磁盘格式与代码版本配套；投影缓存依赖 `stateVersion` 的版本不匹配就地丢弃，是唯一"自动回滚"点（重读重放即可）。JSONL 改压缩编码需独立/全新 root 或选 legacy raw mode（见其 README）——因为格式版本无迁移。
 

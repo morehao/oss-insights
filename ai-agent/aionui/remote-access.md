@@ -7,7 +7,7 @@ tags: [AionUi, WebUI, channel, remote-access, web-host, electron, im-bot]
 
 # AionUi 深度解读：远程访问与 IM 渠道接入（WebUI + Channels）
 
-> 本解读对应 AionUi v2.1.61 源码，仓库相对路径均以 AionUi 根为基准。叙事承接前几篇（骨架 / 收敛 / 数据 / Team / Cron）——前几篇把桌面 Agent 的骨架、数据与自动化收拢完毕，本篇回答最后一个问题：**怎么让这套桌面系统在人不坐在电脑前时也能被触达**。
+> 本解读对应 AionUi v2.2.1 源码（2026-09-01 发布，引擎 aioncore v0.2.1；相对 v2.1.61 的版本演进与本次引用校准见 [`CHANGELOG.md`](CHANGELOG.md)），仓库相对路径均以 AionUi 根为基准。叙事承接前几篇（骨架 / 收敛 / 数据 / Team / Cron）——前几篇把桌面 Agent 的骨架、数据与自动化收拢完毕，本篇回答最后一个问题：**怎么让这套桌面系统在人不坐在电脑前时也能被触达**。
 
 
 
@@ -104,10 +104,10 @@ web-host 里**没有任何密码逻辑**。`/login`、`/logout`、`/api/auth/*` 
 
 ### 渠道接入：做在「远程访问层」，而非桌面层
 
-渠道配置页面（Channels Tab）不依赖 Electron IPC 而是**直接 HTTP 访问 `/api/channel/*`**。启用/禁用/测试走插件 API（[packages/desktop/src/common/adapter/ipcBridge.ts:2177-2186]()）：
+渠道配置页面（Channels Tab）不依赖 Electron IPC 而是**直接 HTTP 访问 `/api/channel/*`**。启用/禁用/测试走插件 API（[packages/desktop/src/common/adapter/ipcBridge.ts:2175-2184]()）：
 <!-- anchor: export const channel = { …   >('/api/channel/plugins/test'), -->
 
-配对与用户授权走另一组端点（[packages/desktop/src/common/adapter/ipcBridge.ts:2190-2193]()）：
+配对与用户授权走另一组端点（[packages/desktop/src/common/adapter/ipcBridge.ts:2188-2191]()）：
 <!-- anchor:   approvePairing: httpPost<void, { code: string }>('/api/channel/pairings/approve'), …   revokeUser: httpPost<void, { user_id: string }>('/api/channel/users/revoke'), -->
 
 实时事件（配对请求、状态变更、用户授权）通过 WebSocket 推送（`channel.pairing-requested` / `channel.plugin-status-changed` / `channel.user-authorized`）。
@@ -236,7 +236,7 @@ readiness 判定是这套流程里最讲究的部分：aioncore 在 stdout 输�
 |---|---|---|
 | 后端引擎 aioncore | 一切业务/认证/渠道插件的真正实现者；web-host 只做反代与生命线管理 | `packages/web-host/src/static-server.ts:183-195`；`packages/web-host/src/backend-launcher.ts` |
 | Electron 主进程 | `__backendPort` 全局注入后端端口；webuiBridge 管 WebUI 生命周期，不碰凭据（凭据走 HTTP） | `packages/desktop/src/process/utils/webuiConfig.ts:228-263`；`packages/desktop/src/process/bridge/webuiBridge.ts` |
-| 桥/数据模型 | renderer 通过 ipcBridge 的 HTTP 层直连 `/api/channel/*`、`/api/webui/*`，与桌面 IPC 并存 | `packages/desktop/src/common/adapter/ipcBridge.ts:2177-2193`、`1604-1622` |
+| 桥/数据模型 | renderer 通过 ipcBridge 的 HTTP 层直连 `/api/channel/*`、`/api/webui/*`，与桌面 IPC 并存 | `packages/desktop/src/common/adapter/ipcBridge.ts:2175-2191`、`1602-1620` |
 | Cron（前一篇） | Cron 在 aioncore 内触发 agent；远程访问让「Cron 跑完的结果」可被浏览器/IM 触达，两者合起来才是 24/7 anywhere | — |
 | 扩展系统 | 扩展渠道通过 `extensionMeta` schema 动态表单注册进 Channels 列表（含 `ext-wecom-bot` 回调 URL 提示） | `packages/desktop/src/renderer/components/settings/SettingsModal/contents/channels/ChannelModalContent.tsx:619-644` |
 

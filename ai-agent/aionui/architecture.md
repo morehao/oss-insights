@@ -39,7 +39,7 @@ import '@process/utils/configureChromium';
 
 展开是三组具体冲突，每一组都直接决定了下文的一个架构选择：
 
-1. **跨栈集成**：核心引擎是 Rust 写的独立仓库 AionCore（v0.1.72），不是 npm 包。壳要运行它只能走「二进制分发 + 子进程 spawn + 生命周期管理」这条最传统的路（[packages/desktop/electron-builder.yml:110-112]() 用 `extraResources` 把预编译 aioncore 打进安装包；[packages/desktop/src/process/backend/binaryResolver.ts:71-93]() 运行时按「env 覆盖 → 捆绑资源 → 系统 PATH」三级查找）。这与 Electron 应用常选的「纯 Node 主进程」架构有本质差别——引擎不是主进程的一部分，而是壳管理的另一个进程。 <!-- anchor: # aioncore binary (pre-compiled per platform/arch, ships its own bun runtime) … to: bundled-aioncore --> <!-- anchor: export function resolveBinaryPath(): string { … diagnostics -->
+1. **跨栈集成**：核心引擎是 Rust 写的独立仓库 AionCore（v0.2.1），不是 npm 包。壳要运行它只能走「二进制分发 + 子进程 spawn + 生命周期管理」这条最传统的路（[packages/desktop/electron-builder.yml:110-112]() 用 `extraResources` 把预编译 aioncore 打进安装包；[packages/desktop/src/process/backend/binaryResolver.ts:71-93]() 运行时按「env 覆盖 → 捆绑资源 → 系统 PATH」三级查找）。这与 Electron 应用常选的「纯 Node 主进程」架构有本质差别——引擎不是主进程的一部分，而是壳管理的另一个进程。 <!-- anchor: # aioncore binary (pre-compiled per platform/arch, ships its own bun runtime) … to: bundled-aioncore --> <!-- anchor: export function resolveBinaryPath(): string { … diagnostics -->
 
 2. **多进程 + 多传输**：一个会话里至少有 Electron 主进程、renderer（沙箱）、aioncore 三个进程，而同一套 renderer 业务代码还要能跑在 WebUI 浏览器里（无 Electron）。这逼出一个**进程内事件总线 + 可插拔适配器**的抽象：业务只认 `provider`/`invoke`/`on`/`emit`，传输层（IPC 或 WebSocket）由适配器决定（[packages/desktop/src/common/platform/bridge.ts:151-164]() 的 `buildProvider` 是这套抽象的最小单元）。 <!-- anchor: export const buildProvider = <Data, Params = undefined>(key: string) => { … export const buildEmitter = <Params = undefined>(key: string) => ({ -->
 
@@ -192,7 +192,7 @@ sequenceDiagram
 
 ### 决策一：二进制分发 + 子进程 spawn，而非把引擎编译进壳
 
-**为什么**：引擎（Rust）与壳（TS/Electron）技术栈不同、发布节奏不同、崩溃隔离需求不同。子进程边界让引擎崩溃不至于拖垮 UI，也让引擎可以独立发布版本（壳 v2.1.61 / 引擎 v0.1.72 各自演进）。
+**为什么**：引擎（Rust）与壳（TS/Electron）技术栈不同、发布节奏不同、崩溃隔离需求不同。子进程边界让引擎崩溃不至于拖垮 UI，也让引擎可以独立发布版本（壳 v2.2.1 / 引擎 v0.2.1 各自演进）。
 
 **不选什么**：Native addon（N-API）会把两边绑进同一进程和同一编译链；「renderer 直连远程引擎」则把生命周期控制权拱手让给页面。
 
@@ -204,7 +204,7 @@ sequenceDiagram
 
 **不选什么**：抽「接口层」由各平台实现。接口抽象的问题是跨层穿透（IPC/WS/REST 三套语义不一致时接口会漏）；项目选的是「传输细节全收进适配器 + 调用面保持同一个对象」的穷举式方案。
 
-**代价**：`ipcBridge.ts` 因此变成一个 2508 行的巨型域对象清单，且 HTTP/WS/IPC 三种 provider 混排，读代码需要「看文件头注释 + 按域定位」两种技巧。这是平台无关性的直接成本。
+**代价**：`ipcBridge.ts` 因此变成一个 2506 行的巨型域对象清单，且 HTTP/WS/IPC 三种 provider 混排，读代码需要「看文件头注释 + 按域定位」两种技巧。这是平台无关性的直接成本。
 
 ### 决策三：启动失败结构化分类，UI 按 `reason` 分诊
 

@@ -16,6 +16,9 @@ tags: [aionui, electron, acp, multi-agent, teamwork, cron, webui, mcp, skills, a
 - [`automation.md`](automation.md) — Cron 24/7 自动化调度
 - [`remote-access.md`](remote-access.md) — WebUI 远程访问与 IM 渠道接入
 - [`mcp-skills.md`](mcp-skills.md) — MCP 统一管理与三层 Skill 体系
+- [`CHANGELOG.md`](CHANGELOG.md) — 各版本变更汇总（基线 v2.1.61 → 本次 v2.2.1）
+
+> **本版（v2.2.1）增量更新说明**：对照上游 v2.2.1（2026-09-01 发布，引擎 aioncore v0.2.1）校准既有 v2.1.61 解读——上游 #4198 移除 `confirmation.add` 死 emitter 后，ipcBridge 引用行号整体 −2、团队待确认徽标语义更新（见 [`team-mode.md`](team-mode.md)）；引擎版本表述 v0.1.72 → v0.2.1；25 处 STALE 引用全部校正，无 UNRESOLVED。变更细节见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 根因：CLI Agent 很强，但只住在终端里
 
@@ -39,7 +42,7 @@ Claude Code、Codex、Qwen Code、Hermes、OpenClaw、OpenCode 这些 CLI AI age
 
 ## 架构总览
 
-AionUi 的骨架是**壳-引擎分离**：Electron 前端壳只做窗口/进程/IPC/数据持久化，一切业务逻辑下沉到外部 Rust 二进制 `aioncore`（独立仓库，v0.1.72），二者经「HTTP REST + WebSocket」通信。壳与引擎之间隔着一层**平台无关事件总线**——同一套 renderer 业务代码，靠 `window.electronAPI` 是否存在在 Electron IPC 与 WebSocket 之间切换，于是桌面、WebUI、移动端共用一份前端。
+AionUi 的骨架是**壳-引擎分离**：Electron 前端壳只做窗口/进程/IPC/数据持久化，一切业务逻辑下沉到外部 Rust 二进制 `aioncore`（独立仓库，v0.2.1），二者经「HTTP REST + WebSocket」通信。壳与引擎之间隔着一层**平台无关事件总线**——同一套 renderer 业务代码，靠 `window.electronAPI` 是否存在在 Electron IPC 与 WebSocket 之间切换，于是桌面、WebUI、移动端共用一份前端。
 
 ```mermaid
 graph TB

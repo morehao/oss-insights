@@ -103,7 +103,7 @@ Skills 侧的核心是「一个目录 + 三种来源 + 按会话快照」。
 
 **目录**即 `listAvailableSkills`（`GET /api/skills`）返回的索引：每个技能带 `name/description/location/is_auto_inject/is_custom/source`，`source` 区分 `builtin`（内置）/`custom`（自定义）/`extension`（扩展）/`cron`（定时任务专用）。
 
-[packages/desktop/src/common/adapter/ipcBridge.ts:912-923]()
+[packages/desktop/src/common/adapter/ipcBridge.ts:910-921]()
 
 <!-- anchor:   listAvailableSkills: httpGet< …   >('/api/skills'), -->
 
@@ -260,7 +260,7 @@ sequenceDiagram
 
 - **MCP server**：设置页 Tools 的 CRUD 全部走 `mcpService`，核心是 `GET/POST/PUT /api/mcp/servers` 与 `toggle`。
 
-[packages/desktop/src/common/adapter/ipcBridge.ts:1206-1271]()
+[packages/desktop/src/common/adapter/ipcBridge.ts:1204-1269]()
 
 <!-- anchor: export const mcpService = { …   getAuthenticatedServers: httpGet<string[], void>('/api/mcp/oauth/authenticated'), -->
 
@@ -312,7 +312,7 @@ JSON 批量导入由 `parseMcpJsonImport` 承担，它要同时兼容两种形�
 
 技能注入 agent 的显式入口是 `materializeSkillsForAgent`（`POST /api/skills/materialize-for-agent`）：按会话把选中的技能物化进 agent 的工作区（依赖 aioncore 外部实现：该端点在 aioncore 侧的实现——如何把 SKILL.md 目录复制/软链进 workspace 并在 agent 提示词里声明）。
 
-[packages/desktop/src/common/adapter/ipcBridge.ts:924-927]()
+[packages/desktop/src/common/adapter/ipcBridge.ts:922-925]()
 
 <!-- anchor:   materializeSkillsForAgent: httpPost< …   >('/api/skills/materialize-for-agent'), -->
 

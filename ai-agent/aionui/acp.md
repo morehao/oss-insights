@@ -51,9 +51,9 @@ renderer 对 aioncore 的所有访问收敛在 `common/adapter`。`ipcBridge.ts`
 [packages/desktop/src/common/adapter/httpBridge.ts:37-43]()
 <!-- anchor: function getBackendPort(): number { … return g.__backendPort ?? 13400; -->
 
-ACP 会话的 REST 路由全部挂在 `/api/agents/*` 与 `/api/conversations/*` 下（`ipcBridge.ts:1124-1128` 的 `acpConversation` 对象），发送是 `POST /api/conversations/{id}/messages`（`ipcBridge.ts:369-381`），流式回显是 WS 单例上的 `message.stream` 事件（`ipcBridge.ts:422`）：
+ACP 会话的 REST 路由全部挂在 `/api/agents/*` 与 `/api/conversations/*` 下（`ipcBridge.ts:1122-1126` 的 `acpConversation` 对象），发送是 `POST /api/conversations/{id}/messages`（`ipcBridge.ts:369-381`），流式回显是 WS 单例上的 `message.stream` 事件（`ipcBridge.ts:422`）：
 
-[packages/desktop/src/common/adapter/ipcBridge.ts:1124-1128]()
+[packages/desktop/src/common/adapter/ipcBridge.ts:1122-1126]()
 <!-- anchor: export const acpConversation = { … getManagedAgents: httpGet<import('@/renderer/utils/model/agentTypes').ManagedAgent[], void>('/api/agents/management'), -->
 
 [packages/desktop/src/common/adapter/ipcBridge.ts:369-381]()
@@ -156,7 +156,7 @@ sequenceDiagram
 
 ### 与 adapter 桥（common/adapter）
 
-ACP 层是 adapter 桥**最重的消费者**。`acpConversation` 路由对象（`ipcBridge.ts:1124-1200`）几乎覆盖 Agent 管理的全部操作：`/api/agents/management`（管理视图）、`/api/agents/custom/*`（自定义 ACP agent 的增删改 + `try-connect` 探测）、`/api/agents/{id}/enabled`、`health-check`、`overrides`（command/env 覆盖）等；会话侧复用 `conversation` 对象（sendMessage / responseStream / ensureRuntime / stop / getUsage）。可以说 adapter 桥的 HTTP/WS 工厂（`httpBridge.ts` 的 `httpGet/httpPost/wsEmitter`）就是为 ACP 会话这种"REST 控制面 + WS 数据面"模式量身定做的——同一模式也被 openclawConversation、remoteAgent 等次要通道复用。
+ACP 层是 adapter 桥**最重的消费者**。`acpConversation` 路由对象（`ipcBridge.ts:1122-1198`）几乎覆盖 Agent 管理的全部操作：`/api/agents/management`（管理视图）、`/api/agents/custom/*`（自定义 ACP agent 的增删改 + `try-connect` 探测）、`/api/agents/{id}/enabled`、`health-check`、`overrides`（command/env 覆盖）等；会话侧复用 `conversation` 对象（sendMessage / responseStream / ensureRuntime / stop / getUsage）。可以说 adapter 桥的 HTTP/WS 工厂（`httpBridge.ts` 的 `httpGet/httpPost/wsEmitter`）就是为 ACP 会话这种"REST 控制面 + WS 数据面"模式量身定做的——同一模式也被 openclawConversation、remoteAgent 等次要通道复用。
 
 ### 与数据模型 / chatLib
 
@@ -211,7 +211,7 @@ aionrs 是唯一不走 ACP 的运行时面，可作对照：它也用同一 `res
 ## README 宣传点核对
 
 - **"Dozens of external agents… in one unified interface"**（`readme.md:164`）：属实。前端只有 `case 'acp'` 一个渲染分支（`ChatConversation.tsx:314-343`），backend 目录可无限制扩充 ACP 类型 agent，前端零改动——这正是收敛设计要兑现的卖点。
-- **"Auto Detection"**（`readme.md:172`）：**半属实、本仓库不可验证**。检测逻辑在 aioncore（本仓库只有消费端：`/api/agents/management` 返回 `available/installed/last_check_*`，`agentTypes.ts:102-139`，以及 `/api/agents/custom/try-connect` 探测，`ipcBridge.ts:1141-1144`）；前端看不到"谁被检测到"以外的检测过程，无法评估检测覆盖质量（依赖 aioncore 外部实现）。
+- **"Auto Detection"**（`readme.md:172`）：**半属实、本仓库不可验证**。检测逻辑在 aioncore（本仓库只有消费端：`/api/agents/management` 返回 `available/installed/last_check_*`，`agentTypes.ts:102-139`，以及 `/api/agents/custom/try-connect` 探测，`ipcBridge.ts:1139-1142`）；前端看不到"谁被检测到"以外的检测过程，无法评估检测覆盖质量（依赖 aioncore 外部实现）。
 - **"YOLO / Full-Auto Mode"**（`readme.md:176`）：属实但依赖 backend。实现是"legacy `yolo`/`yoloNoSandbox` 别名 → backend 的 native mode id → `session/set_mode`"（`agentTypes.ts:125-128` 的 `yolo_id` 字段；cron 任务面直接用 `agent?.yolo_id || 'yolo'`，`CreateTaskDialog.tsx:366`）。README 自己也承认"available modes and permission behavior depend on the selected agent"——平台只负责把别名翻译成协议 mode，不保证每个 agent 都有无监督模式。
 - **"Parallel Sessions"**（`readme.md:174`）：属实。每个会话有独立 runtime 门控（`conversationRuntimeViewStore.ts` 按 `conversation_id` 维护视图）与独立 WS 订阅过滤（`useAcpMessage.ts:256-257` 按 `conversation_id` 丢弃异会话帧），多 agent 会话可并行互不干扰。
 - **Team Mode 的 "External agents connect through ACP"**（`readme.md:186`）：属实。TeamChatView 复用 `AcpChat`（`TeamChatView.tsx:23,260`），teammates 以 ACP 会话为基础接入。

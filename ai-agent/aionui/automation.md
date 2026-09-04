@@ -15,7 +15,7 @@ tags: [aionui, cron, automation, scheduling, electron, aioncore]
 
 AionUi 的 Cron 模块承担一个把"对话式 agent"升级为"自动值守 agent"的转换：把自然语言构建的指令装进时间驱动（`schedule`）、会话绑定（`metadata.conversation_id`）、可寻址执行的统一模型 `ICronJob`，交给后端按计划反复触发。
 
-它的本质位置是**前端管理面**而非执行面：本仓库内 cron 的全部读写都收敛为对后端 REST 端点的调用，没有调度器、没有定时器、没有 `node-cron` 类依赖。`cron` 命名空间把增删改查、立即运行全部映射为 `/api/cron/*` HTTP 路由，其中 `runNow` 对应 `POST /api/cron/jobs/{id}/run`，执行器拿到任务后返回 `conversation_id`——即"触发即开会话" [packages/desktop/src/common/adapter/ipcBridge.ts:1630-1653]()。
+它的本质位置是**前端管理面**而非执行面：本仓库内 cron 的全部读写都收敛为对后端 REST 端点的调用，没有调度器、没有定时器、没有 `node-cron` 类依赖。`cron` 命名空间把增删改查、立即运行全部映射为 `/api/cron/*` HTTP 路由，其中 `runNow` 对应 `POST /api/cron/jobs/{id}/run`，执行器拿到任务后返回 `conversation_id`——即"触发即开会话" [packages/desktop/src/common/adapter/ipcBridge.ts:1628-1651]()。
 
 <!-- anchor: export const cron = { … runNow: httpPost<{ conversation_id: string }, { job_id: string }>((p) => `/api/cron/jobs/${p.job_id}/run`), -->
 
@@ -51,7 +51,7 @@ Cron 模块的三种调度模式、conversation-bound、keep-awake + `missed` �
 
 ### 三种调度模式：一个模型承载全部周期语义
 
-调度被建模成封闭的三态联合类型 `ICronSchedule`：`at`（一次性，`atMs` 绝对时间戳）、`every`（固定间隔，`everyMs` 毫秒数）、`cron`（5 字段 cron 表达式 + 可选 `tz` 时区）[packages/desktop/src/common/adapter/ipcBridge.ts:1675-1678]()。三个 `kind` 共享同一个 `description` 字段作为人类可读描述。
+调度被建模成封闭的三态联合类型 `ICronSchedule`：`at`（一次性，`atMs` 绝对时间戳）、`every`（固定间隔，`everyMs` 毫秒数）、`cron`（5 字段 cron 表达式 + 可选 `tz` 时区）[packages/desktop/src/common/adapter/ipcBridge.ts:1673-1676]()。三个 `kind` 共享同一个 `description` 字段作为人类可读描述。
 
 <!-- anchor: export type ICronSchedule = … | { kind: 'cron'; expr: string; tz?: string; description: string }; -->
 
@@ -73,7 +73,7 @@ cron 表达式创建时就被锚定到**本地 IANA 时区**：`createCronSchedu
 
 ### conversation-bound：任务绑定会话，上下文成为一等公民
 
-每个任务持有 `metadata.conversation_id`（绑定源会话）和 `target.execution_mode`（`'existing'` 延续该会话 / `'new_conversation'` 每次新会话）。`target` 只携带一条 `payload.message` 文本 [packages/desktop/src/common/adapter/ipcBridge.ts:1686-1693]()——**任务的本体不是一份"作业脚本"，而是一条自然语言消息**，执行 = 把这条消息投进一个会话，让 agent 像收到用户消息一样处理。这是整个模块最核心的设计立场：Cron 不发明新的执行模型，而是复用聊天即任务（chat-as-task）的既有管道，只加"定时投递"这一层。
+每个任务持有 `metadata.conversation_id`（绑定源会话）和 `target.execution_mode`（`'existing'` 延续该会话 / `'new_conversation'` 每次新会话）。`target` 只携带一条 `payload.message` 文本 [packages/desktop/src/common/adapter/ipcBridge.ts:1684-1691]()——**任务的本体不是一份"作业脚本"，而是一条自然语言消息**，执行 = 把这条消息投进一个会话，让 agent 像收到用户消息一样处理。这是整个模块最核心的设计立场：Cron 不发明新的执行模型，而是复用聊天即任务（chat-as-task）的既有管道，只加"定时投递"这一层。
 
 <!-- anchor:   target: { …     agent_type: string; -->
 
@@ -100,7 +100,7 @@ Team 联动：当任务绑定的会话属于某个 team，创建/编辑对话框
 
 <!-- anchor: power = { … preventDisplaySleep: (): number | null => powerSaveBlocker.start('prevent-display-sleep'), -->
 
-- **补救层（missed）**：任务状态枚举 `last_status` 含 `'missed'` [packages/desktop/src/common/adapter/ipcBridge.ts:1702-1702]()。
+- **补救层（missed）**：任务状态枚举 `last_status` 含 `'missed'` [packages/desktop/src/common/adapter/ipcBridge.ts:1700-1700]()。
 
 <!-- anchor:     last_status?: 'ok' | 'error' | 'skipped' | 'missed'; -->
 
@@ -118,7 +118,7 @@ readme 宣传 "detects missed triggers after wake" [readme.md:351-351]()。
 
 理解模块所需的核心类型集中在两处：前端类型契约（renderer ↔ 后端）与历史遗留的本地表结构（后端接管前的主进程实现）。
 
-**`ICronJob`（前端契约）** [packages/desktop/src/common/adapter/ipcBridge.ts:1680-1708]()：四段结构——`schedule`（何时跑，三态联合）、`target`（跑什么：一条消息 + 执行模式）、`metadata`（绑定哪个会话、哪个 agent、谁创建的）、`state`（调度器回写的时间戳与状态）。其中 `next_run_at_ms` / `last_run_at_ms` / `run_count` / `max_retries` / `queue_enabled` 全部由后端维护，前端只读展示——再次印证"前端看状态，后端算时间"。
+**`ICronJob`（前端契约）** [packages/desktop/src/common/adapter/ipcBridge.ts:1678-1705]()：四段结构——`schedule`（何时跑，三态联合）、`target`（跑什么：一条消息 + 执行模式）、`metadata`（绑定哪个会话、哪个 agent、谁创建的）、`state`（调度器回写的时间戳与状态）。其中 `next_run_at_ms` / `last_run_at_ms` / `run_count` / `max_retries` / `queue_enabled` 全部由后端维护，前端只读展示——再次印证"前端看状态，后端算时间"。
 
 <!-- anchor: export interface ICronJob { …     queue_enabled: boolean; -->
 
@@ -138,7 +138,7 @@ v22/v24 又补了 `execution_mode`、`agent_config`、`description` 列 [package
 
 <!-- anchor: export function repairLegacyHandoffSchema(db: ISqliteDriver): LegacyHandoffRepairResult { …     repairedColumns.push({ table: entry.table, column: entry.column }); -->
 
-**`ICronAgentConfigRead/Write`（每任务专属 agent 配置）** [packages/desktop/src/common/adapter/ipcBridge.ts:1711-1722]()：承载 README 宣传的 "each task can have its own model, workspace directory, and reasoning effort settings"。
+**`ICronAgentConfigRead/Write`（每任务专属 agent 配置）** [packages/desktop/src/common/adapter/ipcBridge.ts:1709-1720]()：承载 README 宣传的 "each task can have its own model, workspace directory, and reasoning effort settings"。
 
 <!-- anchor: export interface ICronAgentConfigRead { …   workspace?: string; -->
 
@@ -154,7 +154,7 @@ v22/v24 又补了 `execution_mode`、`agent_config`、`description` 列 [package
 
 <!-- anchor: * Get the directory for per-cron-job SKILL.md files. … const getCronSkillsDir = () => { -->
 
-保存/查询/删除三个端点挂在同一 `/api/cron/jobs/{id}/skill` 路由下 [packages/desktop/src/common/adapter/ipcBridge.ts:1654-1662]()。
+保存/查询/删除三个端点挂在同一 `/api/cron/jobs/{id}/skill` 路由下 [packages/desktop/src/common/adapter/ipcBridge.ts:1652-1660]()。
 
 <!-- anchor: saveSkill: httpPost<void, { job_id: string; content: string }>( …   deleteSkill: httpDelete<void, { job_id: string }>((p) => `/api/cron/jobs/${p.job_id}/skill`), -->
 
@@ -198,7 +198,7 @@ sequenceDiagram
 
 <!-- anchor: - **Natural Language** — tell the agent what to do, just like chatting -->
 
-**事件驱动的状态同步**：所有列表/详情组件不依赖轮询，而是订阅四个 WebSocket 事件 `cron.job-created/updated/removed/executed` [packages/desktop/src/common/adapter/ipcBridge.ts:1663-1666]()。
+**事件驱动的状态同步**：所有列表/详情组件不依赖轮询，而是订阅四个 WebSocket 事件 `cron.job-created/updated/removed/executed` [packages/desktop/src/common/adapter/ipcBridge.ts:1661-1664]()。
 
 <!-- anchor:   onJobCreated: wsEmitter<ICronJob>('cron.job-created'), …   onJobExecuted: wsEmitter<{ job_id: string; status: 'ok' | 'error' | 'skipped' | 'missed' -->
 
@@ -245,11 +245,11 @@ unread 集合持久化到 `localStorage`，冷启动可恢复 [packages/desktop/
 
 <!-- anchor: export type CronJobStatus = 'none' | 'active' | 'paused' | 'error' | 'unread' | 'unconfigured'; -->
 
-- **消息系统（触发回写）**：`cron_trigger` 与 `skill_suggest` 两类会话 artifact [packages/desktop/src/common/adapter/ipcBridge.ts:1920-1920]() 把"任务触发了 / 建议给任务配个 skill"作为会话内卡片呈现，点击跳任务详情。这是调度动作反哺对话流的桥。
+- **消息系统（触发回写）**：`cron_trigger` 与 `skill_suggest` 两类会话 artifact [packages/desktop/src/common/adapter/ipcBridge.ts:1918-1918]() 把"任务触发了 / 建议给任务配个 skill"作为会话内卡片呈现，点击跳任务详情。这是调度动作反哺对话流的桥。
 
 <!-- anchor: export type IConversationArtifactKind = 'cron_trigger' | 'skill_suggest'; -->
 
-- **Skill 体系（AI-created tasks）**：`skill_suggest` artifact 携带完整 SKILL.md 内容 [packages/desktop/src/common/adapter/ipcBridge.ts:1946-1953]()。
+- **Skill 体系（AI-created tasks）**：`skill_suggest` artifact 携带完整 SKILL.md 内容 [packages/desktop/src/common/adapter/ipcBridge.ts:1944-1951]()。
 
 <!-- anchor: export type ISkillSuggestArtifact = IConversationArtifactBase< …     skill_content?: string; -->
 
@@ -257,7 +257,7 @@ unread 集合持久化到 `localStorage`，冷启动可恢复 [packages/desktop/
 
 <!-- anchor: const handleSave = async () => { …       updateArtifactStatus(artifact_id, 'saved'); -->
 
-`created_by: 'user' | 'agent'` 类型表明后端允许 agent 自主建任务 [packages/desktop/src/common/adapter/ipcBridge.ts:1694-1694]()——具体触发点在 aioncore（依赖 aioncore 外部实现）。
+`created_by: 'user' | 'agent'` 类型表明后端允许 agent 自主建任务 [packages/desktop/src/common/adapter/ipcBridge.ts:1692-1692]()——具体触发点在 aioncore（依赖 aioncore 外部实现）。
 
 <!-- anchor:     created_by: 'user' | 'agent'; -->
 
@@ -271,7 +271,7 @@ unread 集合持久化到 `localStorage`，冷启动可恢复 [packages/desktop/
 
 ### 决策一：执行器整体外置到 aioncore，前端退化为"契约 + 事件"层
 
-- **选了什么**：cron 的调度、执行、状态回写、keep-awake、补跑全部在外部 Rust 引擎；Electron 前端只管表单、列表、事件订阅。证据链完整：REST 路由（见模块定位一节的 `cron` 命名空间）、WS 事件 [packages/desktop/src/common/adapter/ipcBridge.ts:1663-1666]()。
+- **选了什么**：cron 的调度、执行、状态回写、keep-awake、补跑全部在外部 Rust 引擎；Electron 前端只管表单、列表、事件订阅。证据链完整：REST 路由（见模块定位一节的 `cron` 命名空间）、WS 事件 [packages/desktop/src/common/adapter/ipcBridge.ts:1661-1664]()。
 
 <!-- anchor:   onJobCreated: wsEmitter<ICronJob>('cron.job-created'), …   onJobExecuted: wsEmitter<{ job_id: string; status: 'ok' | 'error' | 'skipped' | 'missed' -->
 
@@ -326,7 +326,7 @@ unread 集合持久化到 `localStorage`，冷启动可恢复 [packages/desktop/
 
 ### 亮点
 
-- **"任务 = 一条消息 + 定时投递"的建模**：不发明 agent 执行协议，复用 chat-as-task 管道，`target.payload` 只有 `kind: 'message'` + `text` [packages/desktop/src/common/adapter/ipcBridge.ts:1687-1688]()。这让任务、会话、消息三者在语义上同构，学习成本与实现成本同时最低。
+- **"任务 = 一条消息 + 定时投递"的建模**：不发明 agent 执行协议，复用 chat-as-task 管道，`target.payload` 只有 `kind: 'message'` + `text` [packages/desktop/src/common/adapter/ipcBridge.ts:1685-1686]()。这让任务、会话、消息三者在语义上同构，学习成本与实现成本同时最低。
 
 <!-- anchor: payload: { kind: 'message'; text: string }; … execution_mode?: 'existing' | 'new_conversation'; -->
 

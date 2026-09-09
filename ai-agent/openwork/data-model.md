@@ -1,524 +1,464 @@
-# OpenWork den-db 数据模型：企业控制平面统一数据层深度解读
+---
+type: 数据模型深度解读
+title: OpenWork Den 数据模型 · @openwork-ee/den-db 五要素解构
+description: 从存储选型（MySQL+Drizzle+PlanetScale 双驱动）、org/team/worker/inference/automation/shareable 实体关系、8 张核心表字段设计、96 个编号迁移的演进策略，到 den-api/inference 的读写时序，系统性解构 OpenWork Den 组织控制平面的单一共享 schema 数据层。
+tags: [openwork, den-db, drizzle, mysql, planetscale, data-model, encrypted-column, typeid, schema-migration]
+---
 
-## 快速概览
+# OpenWork Den 数据模型 · `@openwork-ee/den-db` 五要素解构
 
-OpenWork 开源 AI 工作流分享平台的企业控制平面 Den，背后有一套名为 **den-db** 的统一数据层包（`ee/packages/den-db`）。本解读回答三个问题：这套多服务共享的 MySQL 数据模型长什么样、为什么这么建模、数据如何随版本演进。"长什么样"用 ER 图 + 核心表字段表回答，"为什么"落在存储选型与演进策略，"如何演进/读写"用迁移机制与读写路径回答。
+> 版本快照：`v0.18.44`（git `cac94b079`）。源码根 `ee/packages/den-db`。本解读只归纳该数据层包的**设计意图**（Why > What），不整段搬运建表 SQL；每个论断都用 `仓库相对路径:行号` 指回真实源码，可点开复核。
 
-核心事实：约 80 张表分布在 `src/schema/` 13 个 schema 文件 + `sharables/` 3 个 schema 文件，统一从 `src/schema/index.ts` 导出；Drizzle ORM + MySQL(mysql-core)，同时支持原生 MySQL / PlanetScale 两种驱动；演进靠 `drizzle/` 目录 50+ 个编号迁移 SQL；敏感字段通过自定义 `encryptedTextColumn` 在应用层做 AES-256-GCM 加密。
+## 定位与根因：为什么需要"一个数据层包胶合多个服务"
 
-> 前置叙事：本文是 Den 服务架构之后的第二个关注面。前一个模块拆解了 Den 各服务如何组织；本文解构「这些服务背后共用同一套 MySQL 数据模型」。它是后续 MCP 注入/企业能力解读的存储根基——memory、marketplace、connector、external_mcp_connection 这些表正是能力落地的落点。
+OpenWork 的 Den（组织控制平面）不是单体，而是一组独立的 ee 服务——`den-api`（组织/认证/计费/能力编排）、`inference`（推理代理与用量记账）、`den-gateway`、`den-worker-runtime`（云端 worker 执行）。如果每个服务各自维护一份 schema，跨服务的事务一致性、类型安全、迁移演进都会失控。`@openwork-ee/den-db` 的存在就是把这层复杂性**收敛成一个可被多服务 import 的、类型驱动的单一 schema**：谁需要碰数据，就 `import { createDenDb }` 拿同一个 schema 的客户端。
 
-## 存储选型与理由
+实际 import 的面比"三服务直连"更收敛——我在源码里逐服务核实：**只有 `den-api` 和 `inference` 直接 `import "@openwork-ee/den-db"`**；`den-gateway` 与 `den-worker-runtime` 的 `src` 里没有任何 den-db 引用（下面读写路径会说明它们如何间接拿数据）。这与通常"每个服务一个数据库"的思路相反，是"单库多入口"的强耦合设计，其代价与约束是本文第四、五节的核心。
 
-### 为什么是 Drizzle + MySQL，而不是别的
+`@openwork-ee/den-db` 的包面刻意做得很薄却很关键：它导出 `client`（双驱动客户端工厂）、`columns`（自定义列类型）、`schema`（全部表）、`schema-repairs`（运行期 DDL 修复）、以及一个 `./drizzle` 子入口（重导出 Drizzle 查询操作符，供上层写 `and/eq/sql`）。这个组合的意图是：**schema 是唯一真源，操作符与客户端复用同一份**，上层服务不必各自引入 drizzle-orm。`src/index.ts` 一行一行地把这些面都 `export *` 出去，构成了包的门面。
 
-仓库对外接口最直接的证据在 `drizzle.config.ts`：`dialect: "mysql"`，schema 出口是 `./src/schema.ts`，credentials 支持 `DATABASE_URL`（原生 MySQL）与 `DATABASE_HOST/USERNAME/PASSWORD/DATABASE_NAME`（PlanetScale，强制 TLS）两种。
+## 存储选型：为什么是 MySQL + Drizzle + PlanetScale 双驱动
 
-```ts
-export default defineConfig({
-  dialect: "mysql",
-  schema: "./src/schema.ts",
-  out: "./drizzle",
-  dbCredentials: resolveDrizzleDbCredentials(),
-})
-```
-<!-- snippet: 逐字复制片段（drizzle.config.ts:43-47）：export default defineConfig({
-  dialect: "mysql",
-  schema: "./src/schema.ts",
-  out: "./drizzle",
-  dbCredentials: resolveDrizzleDbCredentials(),
-}) -->
+### 关系型 vs 文档型的权衡
 
-选型是一次**面向部署形态的折中**，逐项对比：
+Den 的核心对象是"组织 + 成员 + 分组 + 授权 + 工作流运行 + 用量记账"，这些实体之间有**实打实的外键语义**（member 属于 organization、run 属于 automation、bucket charge 属于 ledger entry），且大量查询是"按 org 过滤 + 按状态/时间排序 + 唯一约束去重"。这是关系型的主场：唯一索引去重（`organization_slug`、`member_organization_user`、`automation_run_occurrence` 幂等键）、复合索引覆盖典型访问路径，都比文档库在 MySQL 里更直接、更可查。同时 Den 大量依赖**强唯一约束做幂等与防重**（`idempotency_key`、`external_event_id`、`token_hash`），这在无约束的文档库里要么靠应用层竞态、要么靠软去重，可靠性要低一档。
 
-| 候选 | 取舍 | 为什么不选 |
-|------|------|-----------|
-| SQLite | 单文件、零运维，最省心 | Den 是多租户企业控制平面，多写并发 + 被多服务（den-api、inference、worker 运行时）同时访问。SQLite 写锁是单写者，无法承载高并发 admin 读 + 遥测写 + 计费记账同时发生 |
-| MongoDB / 文档型 | schema-less、嵌套自然（如 organization.metadata） | 但计费记账（usage ledger + bucket charges）需要强一致的事务与唯一约束防重；关系型唯一索引与 `ON DUPLICATE KEY UPDATE` / `MATCH...AGAINST` 全文检索等 MySQL 原生能力是文档型不好替代的 |
-| PostgreSQL | 功能更全（pg 也有 jsonb、更强的 fulltext） | 生态与核心：Den 的主要目标部署拥抱 **PlanetScale（Vitess）**，MySQL 协议是其客户端默认协议。同一份 schema 同时跑 mysql2 与 planetscale-serverless 两种驱动，是架构层明确支持的双部署形态 |
+但 Den 也承认了文档型的价值——用 **JSON blob 列**承接"形态多变、查询需求弱"的负载：组织元数据（`organization.metadata`）、桌面策略（`desktop_policy.policy`）、自动化指令与动作（`automation.instructions` / `automation.action`，加密后写 JSON）。这些字段的 key 集合随产品演进，硬编码成列会引发无休止的迁移；写成 JSON 让 schema 演进"软起来"。于是形成一条清晰的**分界线**：
 
-真正的取舍集中在 **关系型 vs 文档型**：schema 大量用 `json` 列承载半结构化数据（`organization.metadata`、`desktop_policy.policy`、connector 的各类 `*_config_json`），但**用关系型表承担一切要求一致性/唯一性/可查询的部分**（成员、订阅、计费、权限、身份），JSON 只留给"演进最快、查询面最窄"的扩展位。这是"JSON blob + 提升列"演进哲学的基石（详下）。
+- **要过滤、要排序、要唯一、要审计** → 提成真列（`organization_id`、`status`、`created_at`，加索引）。
+- **只整存整取、内部结构会扩** → 放进 JSON 列（`metadata`、`policy`、`payload`、`extra`）。
+- **敏感、看到即泄露** → 加密列（见下）。
 
-### 一致性/可用性取向
+这条"先 JSON 后提升列"的路径，正是 Drizzle + 编号迁移里反复出现的演进手法（第四节展开）。
 
-从 `client.ts` 能看到对双部署形态的显式适配，以及其隐含的一致性策略：
+### MySQL 双驱动：`mysql2` 与 `@planetscale/database` 的取舍
 
-- 双模式切换在 `resolveDbMode`：无 `DATABASE_URL` 即 planetscale，有则视为原生 mysql。
-- 针对 PlanetScale/Vitess 的网络抖动，做了一个**只对读查询重试一次**的包装：`isRetryableReadQuery` 只匹配 `select/show/describe/explain` 前缀，配合 `TRANSIENT_DB_ERROR_CODES`（ECONNRESET/EPIPE/PROTOCOL_CONNECTION_LOST 等）判定瞬时断连。
+实现层最特别的一处是**同一个列/表定义要同时服务两种驱动**：本地/自托管用 `mysql2` 连接池，PlanetScale 用其 HTTP 无连接驱动。`createDenDb` 根据 `mode` 二选一，默认逻辑是"给了 `DATABASE_URL` 走 mysql，否则走 planetscale"：
 
-```ts
-function isRetryableReadQuery(sql: string | null): boolean {
-  if (!sql) { return false }
-  const normalized = sql.trimStart().toLowerCase()
-  return RETRYABLE_QUERY_PREFIXES.some((prefix) => normalized.startsWith(prefix))
-}
-```
-<!-- snippet: 逐字复制片段（client.ts:67-74）：function isRetryableReadQuery(sql: string | null): boolean {
-  if (!sql) { return false }
-  const normalized = sql.trimStart().toLowerCase()
-  return RETRYABLE_QUERY_PREFIXES.some((prefix) => normalized.startsWith(prefix))
-} -->
+- 决策点在 `resolveDbMode`：`input.mode` 优先，否则 `databaseUrl` 存在取 `mysql`，否则 `planetscale`。这个"有没有 URL"的启发式让同一份 env 配置在多部署形态下无需改代码。函数体很小，但它是"一套 schema、两种部署"的枢纽。
 
-设计取向：**读可用性 > 强一致**。写不重试（写重试会引入重复插入/重复记账风险），只对可安全重放的读做一次瞬时重试——这与 PlanetScale 的 Vitess 分片主从架构是匹配的：读可能打到副本，短暂连接抖动可接受一次重试；写必须走主节点，失败则由业务侧重试或靠幂等约束兜底。业务侧用**唯一约束防重**（如 ledger 的 `external_event_id` 唯一）弥补写路径的一致性，而非依赖单点强一致。
+[ee/packages/den-db/src/client.ts:104-110]()
+<!-- anchor: function resolveDbMode(input: { mode?: DenDbMode; databaseUrl?: string | null }): DenDbMode { … } -->
+
+- mysql 分支用 `mysql.createPool`（`connectionLimit: 10`、`enableKeepAlive`），并**原地替换 `query`/`execute`**，给只读 SQL（`select/show/describe/explain`）包一层"网络瞬断重试一次"。这折射出共享库作者的现实：多服务共享一个 MySQL，连接被网络抖动拆掉是常态，对幂等读自动重试、对非只读语句绝不重试（避免写重复）。
+
+- planetscale 分支用 `new Client(...)`，并对 `fetch` 注入 `createRetryingPlanetScaleFetch` —— 一个"保守入场"的读重试：只在**单独的 `select` 语句**（无分号/注释/`for|lock|into`，且能被解析为纯 select）且是 socket 层失败时，才退避约 25–50ms 后重试一次，总预算 250ms。注释里写得很直白：“这是保守准入，不是 SQL 解析器。含糊的 SQL 放行一次。”这套保守策略的动机是：**宁可多漏防一次，也不在非幂等语句上重试**——PlanetScale 的 HTTP 驱动把 SQL 当 body 传，无法保证写语句重试安全。
+
+### 多服务共享单库的代价：为何不拆库
+
+共享单库换来的是三类硬约束，Den 用机制逐一对冲：
+
+**1. 所有服务读到的是同一份 schema** → 必须让"schema"成为唯一真源。为此 `schema.ts`（包入口）只做两行 `export *`，把所有表从 `schema/index.ts` 顶出，再补 `models-analytics` 这个不经过 index 的独立面。上层服务从 `@openwork-ee/den-db/schema` 直接拿表对象，绝不本地复制定义。
+
+**2. 敏感字段在多服务间流转** → 用应用层加密列兜底（见第二节末与第三节）。
+
+**3. 迁移必须一次性、向后兼容地演进** → 96 个编号迁移 + 运行期 `schema-repairs`（第四节）。
+
+### 应用层加密：`encryptedColumn` / `encryptedTextColumn`
+
+最值得强调的选型是**敏感字段不进明文 DB**：Den 不用 MySQL 原生透明加密，而是自建 `customType`，在 Drizzle 的 `toDriver`/`fromDriver` 钩子里做 AES-256-GCM 加解密。`encryptedColumn<TData>` 接收一个 `{ dataType, serialize, deserialize }`，`toDriver` 先 `serialize` 再 `encryptDatabaseValue`，`fromDriver` 先 `decryptDatabaseValue` 再 `deserialize`。这样把"加密"变成**列类型层面的事**，上层写 `encryptedTextColumn("scim_token")` 就跟写普通 `text` 一样，读出来自动是明文——这是"应用层加密 + ORM 类型穿透"的漂亮组合：
+
+[ee/packages/den-db/src/columns.ts:91-105]()
+<!-- anchor: export function encryptedColumn<TData>( … })(columnName) -->
+
+加密实现有几个值得记的设计决策：
+
+- **前缀版本化**：密文格式 `enc:v1:<iv>.<authTag>.<cipher>`，`enc:v1:` 前缀让未来算法升级可以在解密侧按前缀路由。
+- **GCM 空密文歧义处理**：AES-GCM 对空明文会产生合法空密文，而 IV 与 authTag 仍能认证。代码专门注释了这一点（artifact view 的可选 CSS 用空加密串），解密时区分"缺段"与"存在但为空"，否则会把空字符串误判为 malformed。
+- **密钥只从 env 取**：`DEN_DB_ENCRYPTION_KEY` 缺失或长度 <32 直接抛错（`MIN_ENCRYPTION_KEY_LENGTH = 32`），并用 SHA-256 把 secret 派生成 32 字节 key。
+- **数据类型可配**：`dataType: "text" | "mediumtext"`，文本用小写 `text` 列，指令/结果这类大 JSON 用 `encryptedMediumTextColumn`，避免 MySQL 行布局与大字段的默认限制。
+
+加密列被实际用在哪些敏感处？SSO 的 OIDC/SAML 配置、SCIM token、OpenAI/自定义 LLM provider 的 apiKey、external MCP 连接的 access/refresh token、PKCE code verifier、自动化指令与 validated result。一个典型例子：SCIM provider 的 `scim_token` 直接走 `encryptedTextColumn`，说明"带外令牌"默认落库即加密是团队约定：
+
+<!-- anchor:     scimToken: encryptedTextColumn("scim_token").notNull(), -->
+[ee/packages/den-db/src/schema/auth.ts:314]()
+
+### URL 与长文本索引的 MySQL 限制处理
+
+MySQL 对 TEXT 列建索引必须指定前缀长度，Drizzle 里 Den 用 `sql\`${col}(191)\`` 的方式对 account/providerId 这类 TEXT/长 varchar 截断建前缀索引。这个细节看似琐碎，却是"能对敏感账号与 provider 做快速查找"的前提——在 MySQL 5.6+ 的 InnoDB 上既满足索引前缀，又不突破索引键长度上限：
+
+<!-- anchor:     index("account_account_id_provider_id").on(sql`${table.accountId}(191)`, sql`${table.providerId}(191)`), -->
+[ee/packages/den-db/src/schema/auth.ts:62]()
+
+与"如何给长文本建索引"相呼应的是"如何存 URL"：Den 对 URL 类字段统一用小写 `varchar` 并给一个**显式长度上界**，比如 external MCP 服务器的地址锚定为 2048：
+
+<!-- anchor:     url: varchar("url", { length: 2048 }).notNull(), -->
+[ee/packages/den-db/src/schema/sharables/capability-credentials.ts:174]()
+
+用 `varchar(2048)` 而非 `text` 的决策很克制——它让"URL 可被唯一键/索引引用但不至于失控"，同时因为大多数连接走 `id + organization_id` 查询、URL 本身几乎不做范围过滤，因此**不为其建索引**，只作展示与连接使用。
 
 ## 实体关系总览
 
-下面用 Mermaid `erDiagram` 画出核心实体与关系。注意 den-db **几乎不使用 DB 级外键约束**（PlanetScale/Vitess 惯例，见 memory.ts 注释），关系在应用层由 `drizzle relations()` 声明靠 `denTypeIdColumn` 的 TypeId 对齐维护；ER 图中的关系标注仅作语义表述。
+Den 的 schema 可以切成五个"语义簇"：**组织身份簇**（organization/user/member/invitation/team/scim_group）、**控制面资源簇**（plugin/config_object/marketplace/connector）、**能力与目录簇**（llm_provider/external_mcp_connection/dashboard/artifact_view）、**运维与治理簇**（desktop_policy/audit_event/remote_session_command/telemetry）、**推理与自动化运行簇**（worker/inference_key/automation_run）。以下 ER 图取的是**当前态真实存在**的表（96 个迁移已把中间态 cleaned 掉），节点只列出承载核心关系的表：
 
 ```mermaid
 erDiagram
-  ORGANIZATION ||--o{ MEMBER : has
-  ORGANIZATION ||--o{ INVITATION : issues
-  ORGANIZATION ||--o{ TEAM : contains
-  TEAM ||--o{ TEAM_MEMBER : has_members
-  MEMBER ||--o{ TEAM_MEMBER : belongs_to
-  ORGANIZATION ||--o| SCIM_PROVIDER : configures
-  SCIM_PROVIDER ||--o{ SCIM_GROUP : maps
-  SCIM_GROUP ||--o{ SCIM_GROUP_MEMBER : contains
-  ORGANIZATION ||--o| ORG_SUBSCRIPTION : subscribes
-  ORGANIZATION ||--o{ INFERENCE_ORG_LIMIT_POLICY : limits
-  INFERENCE_ORG_LIMIT_POLICY ||--o{ INFERENCE_ORG_USAGE_BUCKET : has_buckets
-  INFERENCE_ORG_USAGE_BUCKET ||--o{ INFERENCE_USAGE_LEDGER_BUCKET_CHARGE : charged_by
-  INFERENCE_USAGE_LEDGER_BUCKET_CHARGE }o--|| INFERENCE_USAGE_LEDGER_ENTRY : from
-  INFERENCE_KEY ||--o{ INFERENCE_USAGE_LEDGER_ENTRY : accounts
-  MEMBER ||--o{ INFERENCE_KEY : owns
-  MEMBER ||--o{ INFERENCE_USAGE_LEDGER_ENTRY : attributes
-  USER ||--o{ MEMBER : linked
-  MEMBER ||--o{ MEMORY : authored
-  MEMORY ||--o{ MEMORY_CONTEXT : has_context
-  ORGANIZATION ||--o{ PLUGIN : contains
-  ORGANIZATION ||--o{ MARKETPLACE : contains
-  MARKETPLACE ||--o{ MARKETPLACE_PLUGIN : lists
-  PLUGIN ||--o{ PLUGIN_CONFIG_OBJECT : packages
-  CONFIG_OBJECT ||--o{ CONFIG_OBJECT_VERSION : versions
-  ORGANIZATION ||--o{ EXTERNAL_MCP_CONNECTION : contains
-  EXTERNAL_MCP_CONNECTION ||--o{ CONNECTED_ACCOUNT : per_member_creds
-  MEMBER ||--o{ CONNECTED_ACCOUNT : grants
-  CONNECTOR_ACCOUNT ||--o{ CONNECTOR_INSTANCE : runs
-  CONNECTOR_INSTANCE ||--o{ CONNECTOR_TARGET : targets
-  CONNECTOR_INSTANCE ||--o{ CONNECTOR_SYNC_EVENT : logs
-  CONFIG_OBJECT ||--o{ CONNECTOR_SOURCE_BINDING : bound
+  ORGANIZATION ||--o{ MEMBER : "1 org has n members"
+  USER ||--o{ MEMBER : "user joins org as"
+  ORGANIZATION ||--o{ INVITATION : "invites"
+  ORGANIZATION ||--o{ TEAM : "1 org has n teams"
+  TEAM ||--o{ TEAM_MEMBER : "team has memberships"
+  MEMBER ||--o{ TEAM_MEMBER : "member in team"
+  ORGANIZATION ||--o{ ORG_SUBSCRIPTION : "billing"
+  ORGANIZATION ||--o{ WORKER : "provisioned workers"
+  WORKER ||--o{ WORKER_INSTANCE : "instances"
+  WORKER ||--o{ DAYTONA_SANDBOX : "sandboxes"
+  ORGANIZATION ||--o{ INFERENCE_KEY : "api keys"
+  INFERENCE_KEY ||--o{ INFERENCE_USAGE_LEDGER_ENTRY : "usage"
+  ORGANIZATION ||--o{ INFERENCE_ORG_LIMIT_POLICY : "limits"
+  INFERENCE_ORG_LIMIT_POLICY ||--o{ INFERENCE_ORG_USAGE_BUCKET : "windowed buckets"
+  INFERENCE_ORG_USAGE_BUCKET ||--o{ INFERENCE_USAGE_LEDGER_BUCKET_CHARGE : "charged"
+  INFERENCE_USAGE_LEDGER_ENTRY ||--o{ INFERENCE_USAGE_LEDGER_BUCKET_CHARGE : "allocated"
+  ORGANIZATION ||--o{ LLM_PROVIDER : "provider"
+  LLM_PROVIDER ||--o{ LLM_PROVIDER_MODEL : "models"
+  LLM_PROVIDER ||--o{ LLM_PROVIDER_ACCESS : "grants"
+  LLM_PROVIDER ||--o{ LLM_PROVIDER_MEMBER_CREDENTIAL : "per-member key"
+  ORGANIZATION ||--o{ PLUGIN : "plugins"
+  ORGANIZATION ||--o{ MARKETPLACE : "marketplaces"
+  MARKETPLACE }o--o{ PLUGIN : "marketplace_plugin"
+  ORGANIZATION ||--o{ CONFIG_OBJECT : "library objects"
+  CONFIG_OBJECT ||--o{ CONFIG_OBJECT_VERSION : "immutable versions"
+  PLUGIN }o--o{ CONFIG_OBJECT : "plugin_config_object"
+  ORGANIZATION ||--o{ CONNECTOR_ACCOUNT : "connectors"
+  CONNECTOR_ACCOUNT ||--o{ CONNECTOR_INSTANCE : "instances"
+  CONNECTOR_INSTANCE ||--o{ CONNECTOR_TARGET : "targets"
+  CONNECTOR_TARGET ||--o{ CONNECTOR_MAPPING : "mappings"
+  CONFIG_OBJECT ||--o{ CONNECTOR_SOURCE_BINDING : "bound to source"
+  ORGANIZATION ||--o{ EXTERNAL_MCP_CONNECTION : "any-MCP"
+  EXTERNAL_MCP_CONNECTION ||--o{ EXTERNAL_MCP_CONNECTION_ACCESS_GRANT : "who may use"
+  ORGANIZATION ||--o{ SCIM_GROUP : "groups"
+  SCIM_GROUP ||--o{ SCIM_GROUP_MEMBER : "members"
+  SCIM_GROUP ||--o{ SCIM_GROUP_ROLE : "roles"
+  ORGANIZATION ||--o{ DESKTOP_POLICY : "policies"
+  DESKTOP_POLICY ||--o{ DESKTOP_POLICY_MEMBER : "targets"
+  ORGANIZATION ||--o{ DASHBOARD : "MCP app tiles"
+  DASHBOARD ||--o{ DASHBOARD_ACCESS_GRANT : "grants"
+  ORGANIZATION ||--o{ AUTOMATION : "automations"
+  AUTOMATION ||--o{ AUTOMATION_REVISION : "revisions"
+  AUTOMATION ||--o{ AUTOMATION_RUN : "runs"
+  AUTOMATION_RUN ||--o{ AUTOMATION_RUN_EVENT : "event stream"
+  ORGANIZATION ||--o{ ARTIFACT_VIEW : "artifact views"
+  ARTIFACT_VIEW ||--o{ ARTIFACT_VIEW_REVISION : "revisions"
+  ORGANIZATION ||--o{ TELEMETRY_EVENT : "activity pings"
 ```
 
-关系要点（均是应用层 `relations()` 语义）：
+几条贯穿全局的关系值得点破：
 
-- **Multi-tenancy 是绝对主干**：几乎每张业务表都以 `organization_id`（或 `org_id`）开头，是天然的租户隔离轴。`Organization -- Member -- Team` 是三件套，`Member` 是 `USER` 与 `ORG` 之间的身份桥（同一 user 可加入多 org）。
-- **多对多经中间表**：`Marketplace -- MarketplacePlugin -- Plugin`、`Plugin -- PluginConfigObject -- ConfigObject`、`Team -- TeamMember -- Member` 都是显式联接表。
-- **授权三范式**：各类 access grant 表（`marketplace_access_grant`、`plugin_access_grant`、`config_object_access_grant`、`connector_instance_access_grant`、`llm_provider_access`、`external_mcp_connection_access_grant`）共用同一套「三列取其一」模式：`orgMembershipId`（人）/`teamId`（团队）/`orgWide`（全组织），表达"把资源授予谁"。
-- **计费是链状**：`inference_org_limit_policy -> usage_bucket -> ledger_bucket_charge -> ledger_entry`，记账明细与分摊到 bucket 的量解耦。
+- **所有"资源表"都以 `organization_id` 打头**——这是 Den 多租户的根。更激进的是，`schema-repairs.ts` 里维护了一张 `ORGANIZATION_REPAIRS` 清单，逐表把**历史遗留丢失的 `organization_id` 列补齐、回填并改成 NOT NULL**（配 `<table>_organization_id` 索引）。也就是说，"每个资源必须归属某个 org"不止是 schema 约定，还由运行期脚本强制兜底，防止旧表缺列导致跨租户脏读：
 
-## 核心表设计
+[ee/packages/den-db/src/schema-repairs.ts:13-24]()
+<!-- anchor: const ORGANIZATION_REPAIRS: OrganizationRepair[] = [ … ] -->
 
-以下选取代表性核心表，每张配一个 Markdown 字段表，字段行序按设计要点而非建表顺序；`{文件:行号}` 指向 schema 定义。
+- **member 是"人 × 组织"的中间实体**，不是 user。`user` 只存人的全局身份（name/email/emailVerified），`member` 才是"某用户在某组织里的席位"（role、joinedAt、removedAt、invitedBy）。授权几乎都挂在 `member_id`（即 org membership）上，而不是直接挂 user——这让"一个用户在多个组织各有一席、且可被移除/重邀请"成为一等公民。
 
-### Organization / Member
+- **team 与 member 是松耦合的**：`team` 只存名字/成员数/是否授予组织管理员，`team_member` 通过 `orgMembershipId` 或 `userId` 双向绑定（UI 用 `membershipKey` 去重）。这让"把 X 团队授予组织管理员"这类治理能力可以**脱离具体成员**独立表达，再在撤销时精准回收。
 
-**Organization**（[ee/packages/den-db/src/schema/org.ts:40-56]()）：多租户根实体。identity 用 `denTypeIdColumn("organization", ...)`——每个 TypeId 带类型前缀，天然防串表引用。多处 `json` 承载快速演进的策略与扩展位：`allowedEmailDomains`（域名校验）、`desktopAppRestrictions`（桌面限制，默认空对象）、`metadata`（自由键值，inference/plan 等大量子能力都写这里）。
+- **授权以"member 或 team 或 orgWide"三选一表达**：marketplace/plugin/config_object/connector_instance/dashboard/external_mcp 的 access_grant 表几乎都遵循 `(orgMembershipId | teamId | orgWide)` + `role` 的模板。这是 Den 的最小授权模型：grant 不是给"谁的什么权限"建组合键，而是固定用"目标 + 接收方 + 角色"三列，外加 `role` 枚举（viewer/editor/manager）。它的代价是**不能表达"某人某插件某权限"的细粒度**——团队显然认为"到资源 × 到主体 × 到角色"这一层已经覆盖了绝大多数控制面需求。
 
-| 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId | 类型化主键 `denTypeIdColumn` |
-| name | varchar(255) | NOT NULL | 组织名 |
-| slug | varchar(255) | NOT NULL, UNIQUE(organization_slug) | 品牌短名，唯一约束 |
-| logo | varchar(2048) | 可空 | Logo URL |
-| allowedEmailDomains | json | 可空 string[] | 准入域名白名单，`$type<string[]\|null>` |
-| desktopAppRestrictions | json | NOT NULL 默认 `(json_object())` | `DesktopAppRestrictions` 类型约束，空对象兜底 |
-| metadata | json | 可空 Record<string,unknown> | 自由扩展位：inference 开关/tier、plan、allowedDesktopVersions 等 |
-| createdAt / updatedAt | timestamp(3) | NOT NULL，updatedAt 带 `ON UPDATE` | 审计时间戳 |
+- **不可变版本链**：config_object→config_object_version、automation→automation_revision、artifact_view→artifact_view_revision 都遵循"指针表 + 不可变版本表"结构。运行时只写新版本、推进指针，版本行只增不改。这是把"产物溯源 + 回滚"做进数据层，而不是在应用层堆快照。
 
-**Member**（[ee/packages/den-db/src/schema/org.ts:79-101]()）：user 与 org 的桥实体，同时承载邀请与移除的软状态。
+## 核心表设计（8 张）
+
+下面八张表是 Den 的关键路径：每一张我先一句话说清"它负责什么决策"，再列字段表（不整段贴建表 SQL）。
+
+### 1. `organization` —— 多租户根，slice 一切的锚点
+
+它的职责是"作为所有资源的归属锚，并携带一层可变的租户级配置"。`id` 用 `denTypeIdColumn`（内部前缀 ID，非自增），`slug` 做唯一入口，`metadata`/`desktopAppRestrictions`/`allowedEmailDomains` 走 JSON 承接可扩展配置——尤其 `desktop_app_restrictions` 有默认 `(json_object())`，确保读出来永远是对象而非 null。`organization_created_at_id` 复合索引为"按创建时间翻页组织"服务。
+
+[ee/packages/den-db/src/schema/org.ts:40-43]()
+<!-- anchor: export const OrganizationTable = mysqlTable( …     id: denTypeIdColumn("organization", "id").notNull().primaryKey(), -->
 
 | 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId | |
-| organizationId | varchar(64) | NOT NULL, TypeId | 所属组织 |
-| userId | varchar(64) | 可空, TypeId | 唯一约束(member_organization_user) 在 (org,user) 上——一个 user 一个 org 至多一条活跃成员 |
-| inviteId | varchar(64) | 可空, TypeId(invitation) | 入组织经邀请时回指 |
-| invitedByOrgMember | varchar(64) | 可空, TypeId(member) | 邀请人（成员） |
-| role | varchar(255) | NOT NULL 默认 `member` | 成员角色：owner/admin/member |
-| joinedAt / removedAt | timestamp(3) | removedAt 可空 | 软删除标记（成员可移除但保留历史） |
-| removedByOrgMember | varchar(64) | 可空 | 移除人 |
-| createdAt | timestamp(3) | NOT NULL | |
+|---|---|---|---|
+| `id` | `varchar(64)` (denTypeId) | PK | `denTypeIdColumn("organization", …)`，内部前缀 ID |
+| `name` | `varchar(255)` | NOT NULL | 组织显示名 |
+| `slug` | `varchar(255)` | NOT NULL, UNIQUE `organization_slug` | 唯一 URL 入口 |
+| `logo` | `varchar(2048)` | | 品牌 logo 地址 |
+| `allowedEmailDomains` | `json` | `$type<string[]\|null>` | 组织允许的邮箱域名白名单 |
+| `desktop_app_restrictions` | `json` | NOT NULL, default `(json_object())` | 桌面端功能开关策略 |
+| `metadata` | `json` | `$type<Record<string, unknown>\|null>` | 可扩展租户元数据（含 `plan`/`requireSso`/`allowedDesktopVersions` 等） |
+| `created_at` | `timestamp(3)` | NOT NULL defaultNow | |
+| `updated_at` | `timestamp(3)` | NOT NULL `ON UPDATE CURRENT_TIMESTAMP(3)` | 自动更新时间 |
 
-设计要点：`member_organization_user` 唯一约束保证"一个用户在一个组织至多一条活跃关系"；`removedAt` 可空意味着**软移除**，保留历史计费/审计归属。身份用 TypeId 前缀避免跨类型串扰（[ee/packages/den-db/src/schema/org.ts:82-82]() 的 `denTypeIdColumn("member", ...)` 校验 `member_` 前缀）。
+### 2. `member` —— "人 × 组织"的席位，授权的起点
 
-### Worker / WorkerInstance
+它是 Den 授权的最小单位。注意 `userId` 与 `inviteId` 是**二选一**（已认领的成员有 userId，未认领的邀请占位只有 inviteId），`role` 默认 `member`，`joinedAt`/`removedAt` 记录生命周期。`member_organization_user` 唯一索引保证"同一组织同一用户只有一个 active 席位"。
 
-**Worker**（[ee/packages/den-db/src/schema/workers.ts:8-32]()）：远程运行时的抽象登记表。用 `mysqlEnum` 约束 `destination`(local/cloud)、`status`(provisioning/healthy/failed/stopped)。heartbeat/last_active 是可观测字段，被 worker 心跳写路径更新。
-
-| 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId | |
-| org_id | varchar(64) | NOT NULL, TypeId(org) | 租户隔离（此表用 `org_id` 命名） |
-| created_by_user_id | varchar(64) | 可空 | 创建者 |
-| name / description | varchar | description 可空 | 展示信息 |
-| destination | enum | NOT NULL | local / cloud |
-| status | enum | NOT NULL | 生命周期状态 |
-| image_version | varchar(128) | 可空 | 运行镜像版本 |
-| workspace_path | varchar(1024) | 可空 | 工作区路径 |
-| sandbox_backend | varchar(64) | 可空 | sandbox 后端标识 |
-| last_heartbeat_at / last_active_at | timestamp(3) | 可空 | 心跳/活跃，成 `worker_last_heartbeat_at`/`worker_last_active_at` 索引用于探活扫描 |
-| created_at / updated_at | timestamp(3) | NOT NULL（`...timestamps` 展开） | 复用时间戳组合 |
-
-**WorkerInstance**（[ee/packages/den-db/src/schema/workers.ts:34-46]()）：一个 worker 可有多实例（多 region/多 provider）。`...timestamps` 是 [ee/packages/den-db/src/columns.ts:166-171]() 定义的可复用时间戳组合。
+[ee/packages/den-db/src/schema/org.ts:79-82]()
+<!-- anchor: export const MemberTable = mysqlTable( …     id: denTypeIdColumn("member", "id").notNull().primaryKey(), -->
 
 | 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId | |
-| worker_id | varchar(64) | NOT NULL, TypeId(worker)，`worker_instance_worker_id` 索引 | 归属 worker |
-| provider | varchar(64) | NOT NULL | 云厂商/提供方 |
-| region | varchar(64) | 可空 | 部署区域 |
-| url | varchar(2048) | NOT NULL | 实例接入地址 |
-| status | enum(WorkerStatus) | NOT NULL | 沿用 worker 状态机 |
-| created_at / updated_at | timestamp(3) | NOT NULL | |
+|---|---|---|---|
+| `id` | `varchar(64)` (denTypeId) | PK | 席位 ID |
+| `organization_id` | `varchar(64)` (denTypeId) | NOT NULL | 归属组织 |
+| `user_id` | `varchar(64)` (denTypeId) | | 已认领用户；与 invite_id 二选一 |
+| `invite_id` | `varchar(64)` (denTypeId) | | 未认领的邀请占位 |
+| `invited_by_org_member` | `varchar(64)` (denTypeId) | | 邀请人席位 |
+| `role` | `varchar(255)` | NOT NULL, default `member` | 组织内角色 |
+| `joined_at` / `removed_at` | `timestamp(3)` | | 席位生命周期 |
+| `removed_by_org_member` | `varchar(64)` (denTypeId) | | 移除人 |
+| `member_organization_user` | UNIQUE | | 同组织同用户唯一 |
 
-### InferenceKey / InferenceUsageLedgerEntry（推理计费）
+### 3. `user` —— 全局身份，不掺组织
 
-**InferenceKey**（[ee/packages/den-db/src/schema/inference.ts:18-37]()）：组织在 inference 代理持有的一份 API key 登记。存 `key_hash` 不存明文；`key_prefix` 供 UI 识别。
+它是 Better Auth 的 `user` 表，只存人的生物信息（name/email/emailVerified），`email` 全局唯一。Den 刻意把"人"与"席"(member) 拆开，这样同一用户在多个组织各有独立 seat、互不污染。session/account/verification 都挂在这个表下，且 `session` 带 `active_organization_id`/`active_team_id` 记录"当前激活上下文"。
 
-| 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId(inferenceKey) | |
-| organization_id | varchar(64) | NOT NULL, TypeId | 归属组织 |
-| org_membership_id | varchar(64) | NOT NULL, TypeId(member) | 成员级 key：`inference_keys_org_membership_id` 索引 |
-| name | varchar(255) | 可空 | key 名称 |
-| key_hash | varchar(255) | NOT NULL, UNIQUE(inference_keys_key_hash) | 哈希防重，靠唯一约束保证 key 不重复 |
-| key_prefix | varchar(32) | 可空 | 显示用的前缀 |
-| status | enum | NOT NULL 默认 active | active/revoked |
-| revoked_at | timestamp(3) | 可空 | 撤销时间 |
-| created_at / updated_at | timestamp(3) | NOT NULL | |
-
-**InferenceUsageLedgerEntry**（[ee/packages/den-db/src/schema/inference.ts:109-133]()）：推理用量**不可变流水账**，一条 = 一个外部计费事件，靠两层唯一索引防重复入账。这是整套计费正确性的核心。
+[ee/packages/den-db/src/schema/auth.ts:6-9]()
+<!-- anchor: export const AuthUserTable = mysqlTable( …     id: denTypeIdColumn("user", "id").notNull().primaryKey(), -->
 
 | 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId(inferenceUsageLedgerEntry) | |
-| organization_id | varchar(64) | NOT NULL, TypeId | 归属组织 |
-| org_membership_id | varchar(64) | NOT NULL, TypeId(member) | 记账归属成员 |
-| inference_key_id | varchar(64) | 可空, TypeId(inferenceKey) | 若经 key 记账，回指 |
-| external_job_id | varchar(255) | NOT NULL | 外部 job 标识 |
-| external_event_id | varchar(255) | 可空, UNIQUE(external_event_id) | **外部事件 id 唯一**＝幂等入账关键 |
-| cost_amount | bigint | NOT NULL | 成本（最小单位，整型防浮点误差） |
-| event_type | varchar(64) | NOT NULL | UNIQUE(external_job_id, event_type)：同一 job 同一事件类型只入账一次 |
-| occurred_at | timestamp(3) | NOT NULL | 事件发生时间 |
-| created_at | timestamp(3) | NOT NULL | 入账时间 |
+|---|---|---|---|
+| `id` | `varchar(64)` (denTypeId) | PK | 用户 ID |
+| `name` | `varchar(255)` | NOT NULL | |
+| `email` | `varchar(255)` | NOT NULL, UNIQUE `user_email` | 全局唯一登录邮箱 |
+| `email_verified` | `boolean` | NOT NULL, default false | |
+| `image` | `text` | | |
+| `created_at` / `updated_at` | `timestamp(3)` | NOT NULL | |
 
-配套的有 `inference_org_limit_policies`（窗口+重置策略）、`inference_org_usage_buckets`（时间窗口桶，`used_amount` 累计）、`inference_usage_ledger_bucket_charges`（把一条 ledger entry 的分摊额挂到某个 bucket 上）。金额统一 `bigint(mode:"number")` 存整数，规避浮点误差——计费正确性的典型工程取舍。
+### 4. `worker` —— 云端/本地执行单元的生命周期
 
-### OrgSubscription（订阅计费）
+Den 的执行不是"Cowork 直连模型"，而是**注册式 worker**：`destination`（local/cloud）、`status`（provisioning/healthy/failed/stopped）、`last_heartbeat_at`/`last_active_at` 构成调度判据。最关键的复合索引 `worker_claimable_updated`（destination+sandbox_backend+status+updated_at）正是给"哪些 worker 当前可认领"的扫描路径用的；`image_version`/`sandbox_backend` 记录运行形态。
 
-**OrgSubscription**（[ee/packages/den-db/src/schema/subscriptions.ts:19-46]()）：Stripe 钟摆同步的结构化镜像。它刻意**不**把计划细节塞进 metadata，而是把 Stripe 侧的 id、状态、周期、数量每一项列化，便于按 status/period 查询与计费判断。
+[ee/packages/den-db/src/schema/workers.ts:8-11]()
+<!-- anchor: export const WorkerTable = mysqlTable( …     id: denTypeIdColumn("worker", "id").notNull().primaryKey(), -->
 
 | 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId(orgSubscription) | |
-| organization_id | varchar(64) | NOT NULL, TypeId | `org_subscriptions_org_type` 唯一(org,type)：一组织一类型至多一条活跃订阅 |
-| created_by_org_membership_id | varchar(64) | 可空, TypeId(member) | 购买人 |
-| type | enum | NOT NULL | inference / seat |
-| status | enum | NOT NULL 默认 incomplete | 9 态覆盖 Stripe 全生命周期（trialing/active/past_due/canceled/...） |
-| stripe_customer_id | varchar(255) | NOT NULL, 索引 | Stripe 客户 |
-| stripe_subscription_id | varchar(255) | NOT NULL, UNIQUE | 订阅幂等主键 |
-| stripe_price_id / item_id | varchar(255) | 可空 | 价格与计费项 |
-| quantity | int | NOT NULL 默认 0 | 席位数量 |
-| current_period_start / end | timestamp(3) | 可空 | 当前计费周期 |
-| cancel_at_period_end / canceled_at / ended_at | boolean / timestamp | | 取消与结束状态 |
-| last_event_id | varchar(255) | 可空 | **Stripe webhook 幂等游标**：防事件重复处理 |
-| created_at / updated_at | timestamp(3) | NOT NULL | |
+|---|---|---|---|
+| `id` | `varchar(64)` (denTypeId) | PK | worker ID |
+| `org_id` | `varchar(64)` (denTypeId) | NOT NULL | 注释用 `org_id` 而非 `organization_id`（命名漂移，另见下） |
+| `created_by_user_id` | `varchar(64)` (denTypeId) | | 创建者 |
+| `destination` | `mysqlEnum` | NOT NULL | `local` / `cloud` |
+| `status` | `mysqlEnum` | NOT NULL | `provisioning` / `healthy` / `failed` / `stopped` |
+| `image_version` / `sandbox_backend` | `varchar` | | 运行镜像/沙箱后端 |
+| `last_heartbeat_at` / `last_active_at` | `timestamp(3)` | | 存活/活跃判据 |
+| `worker_claimable_updated` | UNIQUE 复合索引 | | 可认领扫描路径 |
 
-设计要点：`stripe_subscription_id` 唯一 + `last_event_id` 游标 = 订阅同步的幂等三保险，与 ledger 的 `external_event_id` 唯一是同一套"事件幂等"哲学。
+值得注意：`worker`、`telemetry_event`、`remote_session_command`、`audit_event`、`models_analytics_event` 这几张表用的是 `org_id`（而非 `organization_id`）做外键列名，与 `schema-repairs` 里"补齐 organization_id"的修复对象**不重叠**。这暴露了共享 long-lived schema 的一个现实代价：**列名规范在演进里并不完全一致**，靠类型 `denTypeId` 兜住语义、靠索引兜住查询。
 
-### Memory / MemoryContext（agent 记忆）
+### 5. `automation_run` —— 自动化运行的一次调度/租约/结果
 
-**Memory**（[ee/packages/den-db/src/schema/memory.ts:16-30]()）：持久化的 agent 用户记忆条目，`content` 挂 FULLTEXT 索引供文本搜索。这是"记忆作为能力落地"在存储层的根基。注意 `MEMORY_CONTENT_FULLTEXT_INDEX = "memory_content_fulltext"` 是一个**外置常量名**：Drizzle 的 mysql-core DSL 无法表达 FULLTEXT 索引，所以索引名被提为常量，由 `ensureMemoryFulltextIndex`/迁移 SQL 在建库后幂等补建（见演进策略）。
+这是自动化子系统最重的表：一条 `automation_run` 记录"某次按 schedule/recovery/manual 触发的执行"。它把**调度语义（idempotency_key、claim_deadline_at、lease_owner、heartbeat_at、attempt_count）**与**执行语义（provider_id/model_id/execution_target、cloud_thread_id、error/result）**压在一张表里；`idempotency_key` 唯一索引防重复调度，`cloud_thread_id` 唯一索引保证一个 run 只对应一个云端线程，`automation_run_claimable` 索引（status+lease_expires_at）是 worker 轮询"可认领任务"的主路径。`instructions`/`action`/`validated_result` 走加密列，说明 agent 指令与产物默认落库即加密。
+
+[ee/packages/den-db/src/schema/automations.ts:96-99]()
+<!-- anchor: export const AutomationRunTable = mysqlTable( …     id: denTypeIdColumn("automationRun", "id").notNull().primaryKey(), -->
 
 | 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId(memory) | |
-| user_id | varchar(64) | NOT NULL, TypeId(user)，`memory_user_id` 索引 | 记忆主体 |
-| org_id | varchar(64) | NOT NULL, TypeId(org) | 也在组织轴内（同租户隔离） |
-| scope | enum | NOT NULL 默认 user | user / org 两级记忆范围 |
-| content | text | NOT NULL | 记忆正文，挂 FULLTEXT 索引 `memory_content_fulltext` |
-| source | varchar(64) | NOT NULL | 来源（chat 等） |
-| tags | json | 可空 | 检索标签 |
-| created_at / updated_at | timestamp(3) | NOT NULL | |
+|---|---|---|---|
+| `id` | `varchar(64)` (denTypeId) | PK | run ID |
+| `automation_id` / `revision_id` | `varchar(64)` (denTypeId) | NOT NULL | 归属自动化与锁定版本 |
+| `trigger` | `mysqlEnum` | NOT NULL | scheduled / recovery / manual |
+| `idempotency_key` | `varchar(512)` | NOT NULL, UNIQUE `automation_run_occurrence` | 调度幂等键 |
+| `status` | `mysqlEnum` | NOT NULL, default `queued` | queued/claimed/running/succeeded/failed/cancelled/skipped |
+| `lease_owner` / `lease_expires_at` / `heartbeat_at` | `varchar`/`timestamp` | | 租约与心跳，可认领判据 |
+| `cloud_thread_id` | `varchar(64)` (denTypeId) | NOT NULL, UNIQUE | 对应云端线程 |
+| `provider_id` / `model_id` / `model_variant` | `varchar` | NOT NULL | 执行到哪个模型 |
+| `error` / `usage` | `json` (compatJson) | | 结构化错误与用量 |
+| `instructions` / `action` / `validated_result` | `encryptedMediumText`/`encryptedJson` | | 加密的指令/动作/结果 |
 
-**MemoryContext**（[ee/packages/den-db/src/schema/memory.ts:32-45]()）：记忆条目的检索上下文片段（引用、snippet）。schema 注释明确说明**没有 DB 级 FK**，级联删除在应用层 delete handler 显式执行。
+### 6. `inference_org_limit_policies` + `inference_org_usage_buckets` —— 窗口化的用量限额
 
-| 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId(memctx) | |
-| memory_id | varchar(64) | NOT NULL, TypeId(memory)，索引 | 归属记忆，应用层级联删除 |
-| citation | json | 可空 | 引用元数据 |
-| snippet | text | NOT NULL | 检索命中片段 |
-| origin | enum | 可空 | active_conversation / searched_conversation |
-| created_at | timestamp(3) | NOT NULL | |
+Den 的推理用量不是简单计数器，而是"每个 org 对每种窗口（daily/weekly/…）一条 policy，policy 指向当前 bucket，bucket 记 `limit_amount`/`used_amount`"。`ensureBucket` 在事务里 `for("update")` 锁当前 bucket、滚动到新窗口，再用 ledger 把每次调用的 cost 分摊进去。这套"policy→bucket→ledger charge"三层的意义：**限额是分窗口滚动计算的，且每笔调用都要能回溯到具体 bucket**，不靠一次性 UPDATE 计数，避免并发下超计/漏计。`inference_org_limit_policies_org_window_type` 唯一索引保证同 org 同窗口只有一条 policy。
 
-### Plugin / Marketplace（插件与市场）
-
-**Plugin**（[ee/packages/den-db/src/schema/sharables/plugin-arch.ts:97-117]()）：组织内打包与派发的一组配置对象（skill/agent/tool/mcp...）。
+[ee/packages/den-db/src/schema/inference.ts:41-44]()
+<!-- anchor: export const InferenceOrgLimitPolicyTable = mysqlTable( …     id: denTypeIdColumn("inferenceOrgLimitPolicy", "id").notNull().primaryKey(), -->
 
 | 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId(plugin) | |
-| organization_id | varchar(64) | NOT NULL, TypeId | 租户轴 |
-| name / description | varchar/text | | 展示信息 |
-| source_repository_url | varchar(1024) | 可空 | 来源仓库 |
-| status | enum | NOT NULL 默认 active | active/inactive/deleted/archived |
-| created_by_org_membership_id | varchar(64) | NOT NULL, TypeId(member) | 创建人 |
-| created_at / updated_at | timestamp(3) | NOT NULL | |
-| deleted_at | timestamp(3) | 可空 | 软删除 |
+|---|---|---|---|
+| `id` | `varchar(64)` (denTypeId) | PK | policy ID |
+| `organization_id` | `varchar(64)` (denTypeId) | NOT NULL | |
+| `window_type` | `mysqlEnum` | NOT NULL | 窗口类型（daily/weekly/…） |
+| `reset_strategy` | `mysqlEnum` | NOT NULL | 重置策略 |
+| `anchor_at` | `timestamp(3)` | | 窗口锚点 |
+| `current_bucket_id` | `varchar(64)` (denTypeId) | | 指向当前 bucket |
+| bucket（`inference_org_usage_buckets`） | | | `limit_amount`/`used_amount`/`window_start_at`/`window_end_at` |
 
-**Marketplace**（[ee/packages/den-db/src/schema/sharables/plugin-arch.ts:119-139]()）+ **MarketplacePlugin**（`141-158`）：市场（渠道）+ 市场与插件成员关系。
+注意 `limit_amount` 在早期迁移曾被误建成 NOT NULL，现在 schema 里省略、由 `schema-repairs` 的 `ensureInferenceOrgLimitAmountNullable` 在运行期把已存在 DB 里的 NOT NULL 强制改回 NULL——这是一处"误建的列靠运行期修复"的活标本。
 
-| 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId(marketplace) | |
-| organization_id | varchar(64) | NOT NULL | |
-| name / description / logoUrl | varchar/text | logoUrl 可空 | 展示 |
-| status | enum | NOT NULL 默认 active | |
-| created_by_org_membership_id | varchar(64) | NOT NULL | |
-| created_at / updated_at / deleted_at | timestamp(3) | deletedAt 可空 | |
+### 7. `config_object` —— 插件/库对象的多态容器
 
-MarketplacePlugin 是中间表，`marketplace_plugin_marketplace_plugin` 唯一(marketplace_id, plugin_id) 表达"某插件在某市场只出现一次"，`membershipSource` 区分 manual/connector/api/system 来源——同一 join 表记录不同导入渠道，是"来源标注"的演进友好设计。
+`config_object` 是 Den 的"对象超市"：`object_type` 枚举出 skill/agent/command/tool/mcp/hook/context/custom/script/workflow/app 十一种形态，`source_mode`（cloud/import/connector）标明来源。它本身只存**元数据与指针**（title、currentFileName、status），真正的负载在不可变的 `config_object_version`（`normalizedPayloadJson`/`rawSourceText`/`schemaVersion`，加密列），并由 `config_object` 指向当前的 source binding/connector instance。这把"一个库对象"统一成一个表 + 一条版本链，让多形态对象共享一套**创建、归属、授权、审计**路径。
 
-### ExternalMcpConnection（"接入任意 MCP"）
-
-**ExternalMcpConnection**（[ee/packages/den-db/src/schema/sharables/capability-credentials.ts:155-240]()）：本模块对未来「MCP 注入/企业能力」解读最重要的存储根基。它是"add any MCP"的通用化登记——任意 URL 可作为外部 MCP 服务器接入，或作为 Den 自研能力(native_provider)持证。
+[ee/packages/den-db/src/schema/sharables/plugin-arch.ts:42-45]()
+<!-- anchor: export const ConfigObjectTable = mysqlTable( …     id: denTypeIdColumn("configObject", "id").notNull().primaryKey(), -->
 
 | 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId(externalMcpConnection) | |
-| organization_id | varchar(64) | NOT NULL，索引 | 租户轴 |
-| name / url | varchar(2048) | NOT NULL | 名称与 MCP 端点 |
-| authType | enum | NOT NULL | oauth / apikey / none |
-| kind | enum | NOT NULL 默认 external_mcp | external_mcp(动态握手) / native_provider(自研能力持证) |
-| nativeProviderKey | varchar(64) | 可空 | 仅 native_provider 时指向 provider-registry 注册键 |
-| oauthConfiguration | json(compatJsonColumn) | 可空 | 版本化 OAuth 策略：authorizationServerIssuer/requestedScopes/callbackMode/discovery |
-| credentialMode | enum | NOT NULL 默认 shared | shared(组织级单凭证) / per_member(每人授权自己的账号) |
-| apiKey | encryptedTextColumn | 可空 | authType=apikey 时的凭证，发送为 Bearer |
-| accessToken / refreshToken / tokenType / scope / expiresAt | encrypted 等 | 可空 | OAuth tokens，组织级共享 |
-| pendingCodeVerifier | encryptedTextColumn | 可空 | PKCE 一次性验证码（connect/start 到 callback 之间，存后即清） |
-| credentialHealth | json | 可空 | 凭证健康：ready/reconnect_required + reason |
-| oauthIssuerReviewRequiredAt | timestamp(3) | 可空 | issuer 与实时发现不符时置位，fail-closed 待管理员确认 |
-| connectedAt / createdByOrgMembershipId / createdAt / updatedAt | | | 审计与时间戳 |
+|---|---|---|---|
+| `id` | `varchar(64)` (denTypeId) | PK | 对象 ID |
+| `organization_id` | `varchar(64)` (denTypeId) | NOT NULL | |
+| `object_type` | `mysqlEnum` | NOT NULL | skill/agent/command/tool/mcp/hook/context/custom/script/workflow/app |
+| `source_mode` | `mysqlEnum` | NOT NULL | cloud/import/connector |
+| `title` / `description` | `varchar/text` | | |
+| `status` | `mysqlEnum` | NOT NULL, default `active` | active/inactive/deleted/archived/ingestion_error |
+| `current_file_name/extension/relative_path` | `varchar` | | 来源文件定位 |
+| `created_by_org_membership_id` / `connector_instance_id` | `varchar(64)` (denTypeId) | | 归属与同步来源 |
+| `config_object_version`（子表） | | | `normalizedPayloadJson`/`rawSourceText` 加密、`schemaVersion`、`isDeletedVersion` |
 
-设计亮点：**这是免新表扩展的典范**——schema 注释明确说明加一个 native 能力或一个外部 MCP 连接，都不需要新表，只加一个新的 `providerId` 值。`credentialMode` 里"组织级共享凭证" vs "每人授权"，是对"服务账号型集成"与"个人权限型 SaaS"两类 MCP 的两种合规模型。
+### 8. `external_mcp_connection` —— "任意 MCP"的民主化入口
 
-### ScimProvider / ScimGroup（SSO/SCIM）
+这张表是 OpenWork"任何 URL 都能变成能力"的载体。`kind` 区分是动态发现的 `external_mcp`（走 MCP handshake）还是 Den 自己实现的 `native_provider`（持凭据、不走 tools/list）；`authType`（oauth/apikey/none）、`credentialMode`（shared/per_member）、`oauthConfiguration` 版本化策略共同描述"这个连接怎么鉴权、被谁用"。token 全走加密列；`exposeDirectly` 控制是否把工具目录直接暴露成标准 MCP 服务；`oauthIssuerReviewRequiredAt` 在"实时发现与所选 issuer 不匹配"时置位，**fail-closed** 直到管理员确认。它把"外部资源接入"从一个写死特例（Notion/Linear 那类）变成一张表——这正是设计者注释里那句"any URL can be added here"的落地。
 
-**ScimProvider**（[ee/packages/den-db/src/schema/auth.ts:236-253]()）+ **ScimGroup**（[ee/packages/den-db/src/schema/scim-groups.ts:4-21]()）：企业身份供给。
+[ee/packages/den-db/src/schema/sharables/capability-credentials.ts:164-167]()
+<!-- anchor: export const ExternalMcpConnectionTable = mysqlTable( …     id: denTypeIdColumn("externalMcpConnection", "id").notNull().primaryKey(), -->
 
 | 字段 | 类型 | 约束 | 说明 |
-|------|------|------|------|
-| id | varchar(64) | PK，TypeId(scimProvider) | |
-| providerId | varchar(255) | NOT NULL, UNIQUE(scim_provider_provider_id) | 单一 SCIM 提供方 |
-| scimToken | encryptedTextColumn | NOT NULL | **加密**存储的 SCIM token |
-| organizationId | varchar(64) | NOT NULL, UNIQUE(scim_provider_organization_id) | 一组织一 SCIM 提供方 |
-| groupMappingMode | varchar(32) | NOT NULL 默认 metadata_only | 组->团队映射模式（新迁移列，见演进） |
-| created_at / updated_at | timestamp(3) | NOT NULL | |
+|---|---|---|---|
+| `id` | `varchar(64)` (denTypeId) | PK | 连接 ID |
+| `organization_id` | `varchar(64)` (denTypeId) | NOT NULL | |
+| `name` / `external_key` | `varchar` | UNIQUE `org_external_key` | 展示名 + 声明式引用键 |
+| `url` | `varchar(2048)` | NOT NULL | MCP 服务器地址 |
+| `auth_type` | `mysqlEnum` | NOT NULL | oauth / apikey / none |
+| `kind` | `mysqlEnum` | NOT NULL, default `external_mcp` | external_mcp / native_provider |
+| `native_provider_key` | `varchar(64)` | | 指向 NATIVE_OAUTH_PROVIDERS 注册表 |
+| `oauth_configuration` | `json` (compatJson) | | 版本化 OAuth 策略（回调模式/发现缓存） |
+| `tool_policy` | `json` (compatJson) | | 工具禁用策略 |
+| `credential_mode` | `mysqlEnum` | NOT NULL, default `shared` | shared / per_member |
+| `api_key` / `access_token` / `refresh_token` | `encryptedText` | | 敏感凭据，落库即加密 |
+| `expose_directly` | `boolean` | NOT NULL, default false | 是否暴露为标准 MCP 服务 |
+| `oauth_issuer_review_required_at` | `timestamp(3)` | | issuer 不匹配的 fail-closed 标记 |
 
-ScimGroup：以 `providerId + externalId` 唯一（远端组幂等），`teamId` 唯一（一 SCIM 组至多映射一个内部 team）。配套有 `scim_group_member`（组与成员关系，`group_id + remote_user_id` 唯一）与 `scim_user_tombstone`（离职与去供给墓碑，防远端重建后重复入账）。
+## Schema 演进策略（96 个编号迁移）
 
-## Schema 演进策略
+### 迁移机制：drizzle-kit 生成 + 人工补丁混用
 
-### Drizzle 迁移机制
+演进靠 `drizzle-kit` 的 `generate`/`migrate`，`drizzle.config.ts` 固定三件事：`dialect: "mysql"`、`schema: "./src/schema.ts"`、`out: "./drizzle"`。命令在 `package.json` 里有两条线：
 
-den-db 用 Drizzle 的**编号 SQL 迁移**方案：开发改 schema -> `drizzle-kit generate` 生成编号迁移文件（`drizzle/00NN_*.sql`）与快照（`drizzle/meta/00NN_snapshot.json` + `_journal.json` 记录已应用序）-> 部署/启动时按 journal 顺序 apply。`drizzle.config.ts` 的 `out: "./drizzle"` 就是迁移输出目录。
+- `db:generate`：先 build 再跑 `drizzle-kit generate --config drizzle.config.ts`，纯离线，生成本 migration。
+- `db:migrate`：`drizzle-kit migrate` 应用，然后**追加跑 `node --import tsx scripts/ensure-schema-repairs.ts`**——把 schema-repairs 当作迁移链的"运行期补刀"一环。
 
-关键点：目录里大量 `00NN_random-name.sql`（drizzle 用一组随机词给迁移命名），部分带 `.manual.sql` 后缀（如 `0004_organization_plugin.manual.sql`）表示**手写迁移**，说明团队允许跨越 DSL 生成、直接手编 SQL 处理 DSL 表达不了的场景（数据回填、FULLTEXT、复杂 DDL）。目录里同时出现 `0015`, `0031`（用户生成）与 `0002`（desktop/worker 相关），编号并非完全连续——是数条开发线的迁移被合并的历史痕迹。
+`drizzle/` 里除了 96 个 `.sql`，还有 `meta/_journal.json`（记录每条迁移的 `idx/tag`）和每步的 `meta/<nn>_snapshot.json`（drizzle-kit 的 schema 快照）。从快照分布能看出一个很有意思的事实：**快照并不对所有迁移存在**——`0017_desktop_policies`、`0018_invited_org_members`、`0021_telemetry_event` 等人工写的迁移没有对应 snapshot（meta 里 0016 之后直接跳到 0019）。这说明目录是"drizzle-kit 自动生成（带快照）+ 人手补写（无快照）"的混合体；`0019_scim_sso_identity`、`0045_drop_skill_hub`、`0042_superb_swarm` 这类都是**人工起草的纯 DDL**，不经过 generate，从而绕开了"改完 .ts 再生成"的循环。
 
-### JSON blob + 提升列的渐进加字段
+命名上既有 `0010_plugin_arch` 这种语义名，也有 `0086_jittery_selene` 这种 drizzle-kit 的随机代号 tag；编号本身**并不严格单调唯一**——`0004_organization_plugin.manual.sql` 与 `0004_organization_plugin.sql` 并存，`0050` 同时有 `familiar_vindicator` 与 `mixed_johnny_storm` 两条。这是 git 合并与手工阶段留下的痕迹，也提醒读者：**不能把目录序号当成严格的全序时间线**，要以 `_journal.json` 的 `idx` 为准。
 
-这是演进的核心哲学，一条脉络贯穿所有 schema：**能塞 metadata 的字段先进 JSON，等它变得"需要被查询/约束/索引"了再提升成独立列**。
+### JSON blob + 提升列：软演进的核心手法
 
-证据链：
+Den 的 schema 演进从不"为每个新需求建列"，而是先落到 JSON，等某字段出现**明确的查询/约束诉求**再提升为真列。最典型的正向例子是把租户计划直接写进 `organization.metadata` 这个 JSON blob——`0023_grandfather_enterprise_plans` 用一句 `JSON_SET` 把带 `tier/source/grandfatheredAt` 的 `plan` 对象塞进 metadata，**完全不动表结构**：
 
-- 组织层的演化缩影在 `organization.metadata`：`0023_grandfather_enterprise_plans.sql` 用一坨 SQL 直接给所有已用企业功能的历史组织 **UPDATE 回填 metadata** 里的 plan 字段（`JSON_SET`/`JSON_OBJECT`），而不是新增列——证明"演进最快的业务状态暂存 JSON"。
+[ee/packages/den-db/drizzle/0023_grandfather_enterprise_plans.sql:8-9]()
+<!-- anchor: UPDATE `organization` `o` … SET `o`.`metadata` = JSON_SET( -->
 
-```sql
-UPDATE `organization` `o`
-SET `o`.`metadata` = JSON_SET(
-  COALESCE(`o`.`metadata`, JSON_OBJECT()),
-  '$.plan',
-  JSON_OBJECT('tier', 'enterprise', 'source', 'grandfathered', ...)
-)
-WHERE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`o`.`metadata`, '$.plan.tier')), '') <> 'enterprise'
-  AND (EXISTS (SELECT 1 ... FROM `sso_connection` ...) OR ...)
-```
-<!-- snippet: 逐字复制片段（drizzle/0023_grandfather_enterprise_plans.sql:8-18）：UPDATE `organization` `o`
-SET `o`.`metadata` = JSON_SET(
-  COALESCE(`o`.`metadata`, JSON_OBJECT()),
-  '$.plan',
-  JSON_OBJECT(
-    'tier', 'enterprise',
-    'source', 'grandfathered',
-    'grandfatheredAt', DATE_FORMAT(UTC_TIMESTAMP(3), '%Y-%m-%dT%H:%i:%s.%fZ')
-  )
-)
-WHERE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`o`.`metadata`, '$.plan.tier')), '') <> 'enterprise' -->
+这条迁移的动机注释说得很清楚：给**已经用了企业功能**的组织"祖父式"升到 enterprise 计划，以免开启 `DEN_PLAN_GATING_ENABLED` 时装死现有客户。它用 `JSON_EXTRACT` 判断 `$.plan.tier` 是否为 enterprise、用 `EXISTS` 查询 SSO/desktop_policy 等已有表判断是否"已在用企业功能"，全在 JSON 层做——**没有为"计划"单独建列**。这种"宁可 JSON 也不加列"的取向，正是为了把每次产品迭代的 schema 负担压到最低。
 
-- **提升列**的典型例子：`0022_marketplace_logo_url.sql` 是一条单行 `ALTER TABLE marketplace ADD logo_url varchar(1024);`——logo 由可选字段提升为独立列便于读取。单行 ADD COLUMN 是"提升"的最小粒度。
+反向的提升示例在 SSO 上：`0086_jittery_selene` 一口气给 `sso_connection` 加了一批**真列**（`config_revision`、`test_status`、`last_tested_revision`、`active_test_*` 等），并保守地把 `status` 默认值改成 `disabled`。这说明当"SSO 测试生命周期"成为需要被**筛选、排序、审计**的关系时，松散 JSON 已经不够——于是从 blob 提升为列：
 
-- **加新枚举/模式列**：`0042_superb_swarm.sql` 里 `ALTER TABLE scim_provider ADD group_mapping_mode varchar(32) DEFAULT 'metadata_only' NOT NULL;` 是一次带默认值的增量加列，旧行自动获得合法值，无需回填即可向前兼容。
+[ee/packages/den-db/drizzle/0086_jittery_selene.sql:2-11]()
+<!-- anchor: ALTER TABLE `sso_connection` ADD `config_revision` varchar(64) DEFAULT '' NOT NULL; … ALTER TABLE `sso_connection` ADD `active_test_started_at` timestamp(3); -->
 
-```sql
-ALTER TABLE `scim_provider` ADD `group_mapping_mode` varchar(32) DEFAULT 'metadata_only' NOT NULL;
-```
-<!-- snippet: 逐字复制片段（drizzle/0042_superb_swarm.sql:40）：ALTER TABLE `scim_provider` ADD `group_mapping_mode` varchar(32) DEFAULT 'metadata_only' NOT NULL; -->
+注意这条迁移的列名里同时存在 `config_revision`（真列）与 `oauth_configuration`（capability-credentials 里的 compatJson），说明 Den 在同一功能域里**保留"列 + JSON"的双轨**，各自服务各自的诉求：要索引/唯一用列，要可扩展用 JSON。
 
-### 向后兼容与幂等的工程纪律
+### 向后兼容与读写匹配
 
-- **幂等迁移**是显式目标：`0023` 文件头注释"Idempotent: organizations already on the enterprise tier are skipped"；`0009_api_keys.sql` 用 `CREATE TABLE IF NOT EXISTS`。凡是可能被重复 apply / 多路径 apply 的迁移都自带 guard。
-- **FULLTEXT 外置统一 seam**：memory FULLTEXT 索引无法用 Drizzle DSL 表达，团队做了一个**单一 seam** `ensureFulltextIndexes`（[ee/packages/den-db/src/fulltext.ts:106-109]()），在 **bootstrap（新装）** 和 **migrate（增量）两条 apply 路径都调用**，并把索引名提为常量，防止两条路径漂移。`0028_memory_bank.sql` 也是"手写 FULLTEXT CREATE INDEX" + migrate 路径兜底的双保险。
+两个"跨引擎/跨版本"的兼容点值得强调：
 
-```sql
-CREATE FULLTEXT INDEX `memory_content_fulltext` ON `memory` (`content`);
-```
-<!-- snippet: 逐字复制片段（drizzle/0028_memory_bank.sql:29）：CREATE FULLTEXT INDEX `memory_content_fulltext` ON `memory` (`content`); -->
+- **`compatJsonColumn`**：Drizzle 的 `json()` 会拿到"驱动原样返回的东西"——MySQL 原生 JSON 类型到驱动时已被解析成对象，而 MariaDB 把 JSON 别名为 LONGTEXT、`mysql2` 交出原始字符串。Den 在 `fromDriver` 里"是字符串就 parse"，从而让两种引擎产出同一形状。这个"读时归一化"是让"跨 MySQL/MariaDB、跨 mysql2/PlanetScale 驱动"共享一个 schema 的关键缓冲区：
 
-- **读路径应用层幂等**：`client.ts` 只对 `select/show/describe/explain` 读做一次瞬时重试（[ee/packages/den-db/src/client.ts:67-74]() 见上），写不回放——写入幂等交给唯一约束（如 ledger `external_event_id`、subscription `stripe_subscription_id`）。这是把"失败语义"也做进向后兼容：失败决策宁可向上抛，让唯一约束挡住重复，也不冒险重放写。
+[ee/packages/den-db/src/columns.ts:127-139]()
+<!-- anchor: export const compatJsonColumn = <TData>(columnName: string) => … })(columnName) -->
 
-### 演进脉络（挑代表性迁移）
+- **加密列版本化**：`enc:v1:` 前缀 + GCM。前缀让"算法升级"在未来不用炸库——解密侧按前缀路由不同版本；同时 GCM 空密文歧义被显式处理。这让加密列跨迁移演进时不必回填旧行，只需在读取端兼容旧前缀。
 
-| 迁移 | 性质 | 体现的演进 |
-|------|------|-----------|
-| `0001_desktop_handoff_grants.sql` | 建表 | 早期桌面临时授权，纯 `CREATE TABLE` + 两个索引 |
-| `0003_rate_limit.sql` | 建表 | 系统级限流 `rate_limit(key, count, last_request)` 一张极简表 |
-| `0009_api_keys.sql` | 建表(IF NOT EXISTS) | OSS 认证 apikey，带 refill 与 rate limit 全套字段 |
-| `0022_marketplace_logo_url.sql` | ALTER ADD | JSON->列的"提升列"最小示意 |
-| `0023_grandfather_enterprise_plans.sql` | 手写 UPDATE 回填 | 用 SQL 一次性给存量组织回填 metadata 里的 plan 字段，幂等 |
-| `0028_memory_bank.sql` | 建表 + 手写 FULLTEXT | 记忆落库，含 DSL 无法表达的全文索引 |
-| `0015_inference_proxy.sql` | 多表建表 + 索引 | 推理计费整块落地，唯一约束防重入账 |
-| `0019_scim_sso_identity.sql` | 多表建表 | 企业身份：scim_provider / sso_connection / external_identity 统一入模 |
-| `0042_superb_swarm.sql` | 建表 + ALTER | SCIM 组/成员/墓碑 + 提升组映射模式列 |
+### Drop 迁移：能力演进的时间胶囊
 
-## 读写路径
+迁移日志里最能说明产品方向的是 drop 迁移。`0077_drop_memory_bank` 直接把 `memory_context` 和 `memory` 两张表删掉；`0045_drop_skill_hub` 一次 drop 掉 `skill_hub_member`/`skill_hub_skill`/`skill_hub`/`skill` 四张。这两处不是"修 bug"，而是**明确的能力退役**：Den 从独立的"技能中心/skill hub"、"记忆库/memory bank"形态转向了统一的对象容器 `config_object`（object_type 枚举里已含 skill/agent/command…）与不可变版本链。也就是把"技能/记忆"从**独立数据形态**降格为**config_object 的一种 object_type**。
 
-数据从写入到读取的关键链路：谁写、何时写、谁读、经什么中间层。这里挑两条最有代表性的链路，一条写密集（推理用量记账）、一条读密集（记忆全文检索）。
+[ee/packages/den-db/drizzle/0077_drop_memory_bank.sql:1-2]()
+<!-- anchor-base64: RFJPUCBUQUJMRSBgbWVtb3J5X2NvbnRleHRgOy0tPiBzdGF0ZW1lbnQtYnJlYWtwb2ludCDigKYgRFJPUCBUQUJMRSBgbWVtb3J5YDs= -->
 
-### 推理用量记账：inference 服务写 ledger，admin 读 bucket
+与之呼应的正向迁移是 `0057_codemode_scripts`：新建 `codemode_run`，又给 `config_object.object_type`/`connector_mapping.object_type` 的枚举**扩充** `script` 值。这正是"能力形态 → 数据形态"迁移的一体两面：**退出的功能删表，新增的功能复用同一容器并扩枚举**，而不是各起各的新表。
 
-推理用量走"**不可变流水 + 桶内累计**"双结构。写入侧的核心是 **inference 服务（或 webhook 回调）**，读取侧是 **org admin 的 `/v1/inference` 状态 API**。
+### 运行期修复：`schema-repairs` 作为迁移链的"补刀"
 
-写路径的关键代码在 `den-api/src/inference.ts`：`syncInferenceLimitPolicies` 在每个窗口滚过时插入新 `usage_bucket` 并把 policy 的 `current_bucket_id` 指向它；bucket 是 `used_amount` 累计位。
+因为共享库 + 长寿命 schema，历史库可能与当前 schema 存在**漂移**，而很多漂移不值得（或来不及）编进迁移。`schema-repairs.ts` 承担这种兜底：`ORGANIZATION_REPAIRS` 列出十张"先建表后补 organization_id"的子表（config_object_version、plugin_config_object、connector_* 等），运行期逐表检查 `organization_id` 是否存在/是否 nullable：
 
-```ts
-const bucketId = createDenTypeId("inferenceOrgUsageBucket")
-await db.insert(InferenceOrgUsageBucketTable).values({
-  id: bucketId,
-  organization_id: input.organizationId,
-  policy_id: policy.id,
-  window_start_at: window.start,
-  window_end_at: window.end,
-  limit_amount: limitAmount,
-  used_amount: 0,
-})
-await db
-  .update(InferenceOrgLimitPolicyTable)
-  .set({ current_bucket_id: bucketId })
-  .where(eq(InferenceOrgLimitPolicyTable.id, policy.id))
-```
-<!-- snippet: 逐字复制片段（den-api/src/inference.ts:369-381）：await db.insert(InferenceOrgUsageBucketTable).values({
-      id: bucketId,
-      organization_id: input.organizationId,
-      policy_id: policy.id,
-      window_start_at: window.start,
-      window_end_at: window.end,
-      limit_amount: limitAmount,
-      used_amount: 0,
-    })
-    await db
-      .update(InferenceOrgLimitPolicyTable)
-      .set({ current_bucket_id: bucketId })
-      .where(eq(InferenceOrgLimitPolicyTable.id, policy.id)) -->
+- 表存在但缺 `organization_id` 列 → 先加 nullable 列；
+- 之后再从父表 `JOIN` 回填（`UPDATE child JOIN parent SET child.organization_id = parent.organization_id WHERE child.organization_id IS NULL`）；
+- 回填后若仍有 NULL（孤儿行）→ 抛错并列出最多 20 个孤儿 id；
+- 最后 `MODIFY ... NOT NULL` + 建 `<table>_organization_id` 索引。
 
-读路径：`getInferenceStatus` 用 `innerJoin` 通过 `current_bucket_id` 把 policy 窗口与 bucket 用量联出来，返回给 admin 面板（[ee/apps/den-api/src/inference.ts:533-547]()）。这是"policy 指到当前活动 bucket"的读取技巧——不需要一个"是否活跃"的标志位，靠 `current_bucket_id` 这一指针就够了。
+这套逻辑的意图是**让"组织归属"这一约束不但在 schema 里成立，也在存量数据里被强制执行**——正是"多租户"这条主线的运行期保证。它还顺带修一个历史遗留：`inference_org_limit_policies.limit_amount` 曾被 0015 误建成 NOT NULL，`ensureInferenceOrgLimitAmountNullable` 在运行期改回 NULL。
+
+## 读写路径：谁写、何时写、谁读、经什么中间层
+
+### 两条直连入口与两条间接通道
+
+Den 的多服务对数据层的接触分两种：**直连**和**间接**。直连的只有两个：
+
+- `den-api`：`ee/apps/den-api/src/db.ts` 里 `createDenDb({ databaseUrl, mode, planetscale })` 拿一个带 schema 的客户端，然后 Better Auth 通过 `drizzleAdapter(db, { provider: "mysql", schema })` 把 `user/session/account/apikey/oauthClient…` 全接到 `auth.ts` 这一组表上；`database.generateId` 被注入 `createDenTypeId`，保证 new ID 走前缀 ID 而非裸 UUID。其它所有 API 路由（orgs/members/plugins/mcp-connection/automation…）都从 `db` 读写同一份 schema。
+- `inference`：`ee/apps/inference/src/db.ts` 用**同一个** `createDenDb` 拿客户端。它写 `inference_keys`、`inference_org_upstream_provider_keys`（加密的 provider API key）、`inference_usage_ledger_entries`；并在 `limits.ts` 里通过 drizzle 事务滚动 bucket。
+
+间接的两条通道（它们**不** import den-db）：
+
+- `den-gateway`：纯网关，做路由/鉴权转发，数据访问走 den-api 暴露的接口。
+- `den-worker-runtime`：执行调度出的 agent 任务，通过 den-api 的 MCP/agent 端点拿能力与持久化（例如 `cloud_thread_id` 对到 den-api 的自动化线程），不直接碰 MySQL。
+
+这种"直连少数 + 间接多数"的布局不是偶然：**schema 的并发写点被收敛到两个服务**，避免多服务同时写同一批表导致锁竞争与迁移互踩；worker 这类高扇出服务一旦直接连库，就会把数据库变成热点。
+
+### 写入时序：推理准入 → 用量记账（`inference/src/limits.ts`）
+
+下面以"推理调用被准入并记账"为例，串起 inference 服务经由共享 schema 的写路径。它把"限额判断"做成 **事务内先锁 bucket、滚动窗口、再分摊 ledger**，而不是简单计数 UPDATE。
 
 ```mermaid
 sequenceDiagram
-  participant IM as Inference服务/回调
-  participant DB as MySQL (den-db)
-  participant LS as LedgerEntry表
-  participant BS as UsageBucket表
-  participant AP as Admin API
-  participant UI as 管理面板
-
-  IM->>BS: 校验窗口是否过期(current_bucket_id)
-  Note over IM,DB: 窗口滚动则建新bucket并回写current_bucket_id
-  alt 新窗口
-    IM->>DB: INSERT usage_bucket + UPDATE policy.current_bucket_id
-  else 窗口仍在
-    IM->>BS: 继续用现有bucket(used_amount累计)
+  autonumber
+  participant C as 客户端/worker
+  participant I as inference limits
+  participant DB as shared MySQL schema
+  C->>I: 携带 inference_key 发起推理
+  I->>DB: 读 policy
+  I->>DB: 读 current_bucket FOR UPDATE
+  I->>DB: 窗口过期则插新 bucket
+  I->>DB: 更新 policy.current_bucket_id
+  I->>DB: 算 remaining=limit-used
+  alt remaining<=0
+    I-->>C: 拒绝(limitedBy)
+  else remaining>0
+    I->>DB: insert ledger entry
+    I->>DB: insert bucket charge(唯一)
+    I-->>C: 准入+返回bucketIds
   end
-  IM->>LS: INSERT ledger_entry(external_event_id UNIQUE, cost_amount)
-  IM->>DB: INSERT/UPDATE bucket_charge(entry->bucket分摊)
-  Note over AP,UI: 读取
-  UI->>AP: GET /v1/inference (require admin)
-  AP->>BS: INNER JOIN usage_bucket ON policy.current_bucket_id=lhs.id
-  AP->>AP: 组聚合 windowType/limit/used
-  AP-->>UI: {enabled, tier, memberCount, buckets[]}
+  C->>I: 完成后上报 webhook
+  I->>DB: 幂等 upsert ledger
 ```
 
-要点：`external_event_id` 唯一保证同一计费事件重复推送不会重复入账；`cost_amount` 用整型存最小单位规避浮点误差；写入与读取各走各的表族（流水 vs 桶累计），查询面向 admin 只读桶，不扫流水。
+这条链路里最值得注意的两个"唯一约束兜底"：`inference_usage_ledger_entries_external_event_id` 唯一索引让"第三方事件重放"无法重复记账；`inference_usage_ledger_bucket_charges_entry_bucket` 唯一索引保证"一条 ledger 只对同一个 bucket 计一次费"。因为 `ensureBucket` 用了 `for("update")` 行锁 + 窗口判定，并发的两次准入不会同时写坏同一个 bucket——这是"共享库"上做高并发计费的关键选择。
 
-### 记忆写入与检索：一次 save + 一次全文搜索
+### 读取时序：den-api 认证 → 组织上下文 → 资源授权
 
-记忆读写集中在 `den-api/src/routes/memory/`。**写**：`core.ts` 把一条 `memory` 与其若干 `memory_context` 放在**同一事务**里写入，用同一个 app 时钟时间戳作权威排序；**读**：`shared.ts` 用 `MATCH(...) AGAINST(... IN NATURAL LANGUAGE MODE)` 全文检索，外层强制 `scope="user"` 做越权防护。
-
-写路径（[ee/apps/den-api/src/routes/memory/core.ts:86-90]()）：一次 `db.transaction` 内先插 memory 再插 context 行——保证记忆与其检索上下文要么都成功要么都不落库。
-
-```ts
-await db.transaction(async (tx) => {
-  await tx.insert(MemoryTable).values(row)
-  if (input.contexts && input.contexts.length > 0) {
-    await tx.insert(MemoryContextTable).values(
-      input.contexts.map((ctx) => ({
-        id: createDenTypeId("memctx"),
-        memory_id: memoryId,
-        snippet: ctx.snippet,
-        citation: buildCitation(ctx),
-```
-<!-- snippet: 逐字复制片段（den-api/src/routes/memory/core.ts:86-93）：await db.transaction(async (tx) => {
-        await tx.insert(MemoryTable).values(row)
-        if (input.contexts && input.contexts.length > 0) {
-          await tx.insert(MemoryContextTable).values(
-            input.contexts.map((ctx) => ({
-              id: createDenTypeId("memctx"),
-              memory_id: memoryId,
-              snippet: ctx.snippet,
-              citation: buildCitation(ctx), -->
-
-读路径（[ee/apps/den-api/src/routes/memory/shared.ts:165-167]()）：全文检索用带参数绑定的 `MATCH ... AGAINST`，不是 `sql.raw`，规避注入。
-
-```ts
-export function memoryRelevance(query: string): SQL<number> {
-  return sql<number>`MATCH(${MemoryTable.content}) AGAINST (${query} IN NATURAL LANGUAGE MODE)`
-}
-```
-<!-- snippet: 逐字复制片段（den-api/src/routes/memory/shared.ts:165-167）：export function memoryRelevance(query: string): SQL<number> {
-  return sql<number>`MATCH(${MemoryTable.content}) AGAINST (${query} IN NATURAL LANGUAGE MODE)`
-} -->
+读路径由 Better Auth 经由 den-api 发起，后续几乎所有资源查询都要先解析组织上下文与成员授权。
 
 ```mermaid
 sequenceDiagram
-  participant C as Agent客户端
-  participant M as memory API
-  participant DB as MySQL den-db
-  participant FT as FULLTEXT memory_content_fulltext
-
-  Note over C,M: 写路径
-  C->>M: PUT /memory
-  M->>DB: tx.begin
-  M->>DB: INSERT memory row
-  M->>DB: INSERT memory_context rows
-  M->>DB: tx.commit
-  M-->>C: 201 返回 memoryId 与 createdAt
-  Note over M,FT: 读路径
-  C->>M: GET /memory/search
-  M->>FT: MATCH content AGAINST query NATURAL LANGUAGE MODE
-  M->>DB: WHERE scope user AND user_id plus 越权防护
-  FT-->>M: 命中行与相关性
-  M-->>C: 200 memories 与 contexts
+  autonumber
+  participant U as 桌面/REST 客户端
+  participant API as den-api routes
+  participant A as better-auth adapter
+  participant DB as shared MySQL schema
+  U->>API: 携带 session token
+  API->>A: 校验 session/user
+  A->>DB: select session(token)
+  A->>DB: select user(email/id)
+  A->>DB: select member(唯一)
+  API->>DB: 解析 active_org_id
+  API->>DB: 查询 access_grant
+  alt 有授权
+    API->>DB: 查询资源(org_id+索引)
+    API-->>U: 200 (数据)
+  else 无授权
+    API-->>U: 403
+  end
 ```
 
-要点：写入在同一事务内保一致；全文索引靠 `ensureFulltextIndexes` seam 保证 bootstrap/migrate 两路径都存在（`fulltext.ts`）；删除层级联（先删 memory_context 再删 memory）由应用层 delete handler 显式维护，替代 DB 外键。
+这段链路揭示了 den-db 作为"胶合层"承担的三件事：**认证**（session/user/account 由 better-auth 驱动写读 den-db 的表）、**组织归属**（几乎每个资源查询都带 `organization_id`）、**授权判定**（member/team/orgWide + role 的 access_grant 查询）。也正是因为这三件事都落在**同一份 schema** 上，den-api 才能用一次连接完成"认证 + 上下文 + 授权 + 资源"的连贯查询，而 worker 则通过 MCP 让 den-api 代为执行这些查询。
+
+### 加密与 JSON 在写读两侧的行为
+
+写读两侧的特殊处理都封装在 `columns.ts` 里，对上层透明：
+
+- 写加密列 → `toDriver` 先 `serialize` 再 AES-GCM 加密加前缀；读 → `fromDriver` 先解密再 `deserialize`。
+- 写 JSON → `toDriver` `JSON.stringify`（compatJsonColumn）；读 → 若驱动给的是字符串则 parse（跨 MySQL/MariaDB 归一）。
+- 写 denTypeId → `toDriver`/`fromDriver` 都走 `normalizeDenTypeId`，**写读都归一化**，保证同一前缀 ID 不变形。
+
+## 设计取舍小结：这套数据层最值得学的三件事
+
+1. **"schema 是唯一真源，靠类型穿透"**：`denTypeIdColumn`/`encryptedColumn`/`compatJsonColumn` 把"ID 前缀、加密、跨引擎 JSON 归一"全部下沉成列类型，上层写 `encryptedTextColumn("api_key")` 与写 `text` 无差别，但从 DB 到应用层一路透明——这是把横切关注点做成**数据类型**而非重复代码。
+2. **"先 JSON、后提升列"的软演进**：96 个迁移里，新需求先落 JSON blob，等到出现"要唯一/要过滤/要审计"再提成真列 + 索引；同时用 drop 迁移（memory bank / skill hub）把能力退役表达为删表，把新增能力表达为扩同一容器的枚举。
+3. **"单库多入口"的代价要有机制对冲**：跨 MySQL/MariaDB 与 mysql2/PlanetScale 的驱动差异用读时归一化缓冲，网络瞬断只对只读语句重试、写语句绝不重试，历史漂移交给运行期 `schema-repairs` 兜底——每一处"共享"都配套了一个"防御"。

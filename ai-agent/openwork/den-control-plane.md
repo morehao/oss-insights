@@ -1,325 +1,442 @@
-# OpenWork Den 企业控制平面服务架构
+---
+type: "开源项目深度解读 · Den 控制平面与推理供应"
+title: "OpenWork Den：组织控制平面与推理供应模块深度解读"
+description: "解构 OpenWork Den 多服务控制平面（den-api/den-gateway/den-worker-runtime/inference）的职责切分、worker 云端状态机与 checkpoint 迁移、多云 provisioner、以及 OpenWork Models 推理供应与分层限流，含真实源码引用与跨服务时序。"
+tags: [OpenWork, Den, control-plane, inference, provisioning, checkpoint, daytona, maas, gateway, rate-limit]
+---
 
-> 承接「代理运行时 + Server API 层」如何构成本地数据面。本模块讲：当需要团队/组织级管理时，Den 控制平面如何叠加成多云可部署的控制面，并为「MCP 双工具注入 + marketplace/SSO/inference」的部署与服务骨架铺路。
->
-> 源码根：`ee/apps`（对齐仓库根），`ee/packages/den-db` 作为共享数据层。
+# OpenWork Den 组织控制平面与推理供应模块深度解读
 
-## 架构总览
+> 源码根：`/Users/morehao/Documents/study/ai-agent/openwork`（pnpm monorepo，v0.18.44）。
+> 本解读聚焦「组织控制平面 + 推理供应」：多服务职责切分、低频写状态机 + 高频无状态转发、容器状态可迁移（checkpoint）、多云 provisioner、OpenWork Models 推理供应与限流。
+> 数据模型（den-db 表结构）不在本模块范围，仅在需要处点到为止。
 
-```mermaid
-graph TB
-    subgraph clients["客户端"]
-        WEB["den-web<br>/api/den/* 代理"]
-        DESKTOP["桌面 App<br>/mcp/agent 双工具"]
-        ADMIN_MCP["Admin MCP<br>/mcp/admin"]
-    end
+## 一句话定位
 
-    subgraph control["控制面（ee/apps）"]
-        API["den-api<br>认证/org/SSO/SCIM<br>worker 生命周期<br>inference·marketplace·MCP"]
-        GATE["den-gateway<br>resolve→worker 代理<br>/api/den 反向代理"]
-        WPROXY["den-worker-proxy<br>/workerId/* 出口代理<br>signedURL 刷新/限流"]
-        INF["inference<br>OpenAI 网关/记账"]
-    end
-
-    subgraph store["共享数据层"]
-        DB[("MySQL / PlanetScale<br>(ee/packages/den-db)")]
-    end
-
-    subgraph backend["底座供应商"]
-        DYT["Daytona 沙箱/快照"]
-        RND["Render web service/Vercel DNS"]
-        OR["OpenRouter 上游+OTLP webhook"]
-        DGP["diagnostics<br>Redis wire-history"]
-    end
-
-    WEB -->|"/api/den/*"| GATE
-    DESKTOP -->|"/mcp/agent"| API
-    ADMIN_MCP -->|"/mcp/admin"| API
-    GATE -->|"/v1/cloud/gateway/resolve"| API
-    GATE -->|"proxy worker"| WPROXY
-    WPROXY -->|"sandbox http"| API
-    WPROXY --> API
-    API --> DB
-    INF --> DB
-    WPROXY --> DB
-    API -->|"proxy/voice upstream"| OR
-    OR -->|"OTLP usage webhook"| INF
-    API -->|"provision/deprovision"| DYT
-    API --> RND
-    API --> DGP
-```
-
-> 图例略去了部分真实连接。关键点是：**三处读写共享 DB（den-api 写、inference 读+扣、worker-proxy 读），一条 SaaS 流量主链（WEB→GATE→resolve→WPROXY→沙箱），一条模型结算闭环（proxy→OpenRouter→OTLP→webhook→bucket）**。
-
-## 在项目中的角色
-
-一句话根因：**单机版 OpenWork（一个 openwork-server 进程 + 本地工作区）没有「组织边界」**——无法多人共享、无法统一管理 worker、无法中心化配推理/SSO，也没有一处多租户的控制面把 agent 实例编排起来。Den 就是叠加在 OpenWork 之上的企业级控制平面，把 worker 从「本机进程」抽象成「可跨云、可复活、可代理托管」的远程实例。去掉它，产品退回单人单机工具。
-
-Den 由多个独立服务组成，全部在 `ee/apps/`：
-
-| 服务 | 定位 | 一句话职责 |
-|------|------|-----------|
-| `den-api` | 控制面核心 | 认证(Better Auth)、org/member/team/role、SSO/SCIM、worker 生命周期(provision→wake→recycle→stop→deprovision)、inference 目录、marketplace、MCP 注入 `/mcp`、`/mcp/agent`、`/mcp/admin` |
-| `den-web` | 控制台 | Next.js 前端，经 `/api/den/*` 代理到 den-api |
-| `den-gateway` | 实例路由网关 | 用当前用户 Bearer 解析其 cloud worker，代理到 worker 实例或静态托管 SPA；`/api/den` 反向代理 |
-| `den-worker-proxy` | worker 出口代理 | 以 `/workerId/*`、host/client token 认证、DB 限流，刷新 Daytona signed preview URL 并代理到沙箱内 openwork-server |
-| `den-worker-runtime` | Worker 渲染镜像 | Dockerfile 构建目录 + opencode 安装脚本，供 Render/Daytona 渲染工作镜像 |
-| `inference` | 推理代理服务 | OpenAI 兼容网关：认 `ow_inf_*` key、改写模型别名、走 org 的 OpenRouter 上游 key、额度桶限流、usage webhook 结算 |
-| `diagnostics` | 连接诊断 | 记录与可回放的 wire-history（debug proxy / auth 模拟），Redis 持久化、本地内存回退 |
-| `enterprise-mock-lab` / `landing` | 辅助 | 企业模拟实验台 / 落地页 |
-| `den-controller` | 已废弃 | 唯一残留是 README，声明被 `den-api` 取代并合并 |
-
-这些服务通过一份**共享 MySQL schema**（`ee/packages/den-db`）和一堆**互指 ENV** 胶合。
-
-## 解决什么问题、根因
-
-单机 OpenWork 本质只有"一个用户 + 一个进程 + 本地文件"。转向团队/企业，四类问题立即出现：
-
-1. **多租户与身份**：多人需要组织边界、成员/角色/团队模型，以及企业必备的 SSO（OIDC/SAML）与 SCIM（目录同步）。
-2. **远程 worker 的可编排性**：agent 实例在用户本机是"进程"，在组织里要变成可被控制面创建、唤醒、休眠、回收、销毁的云端资源，且用户断网/换机器后工作区可找回（需持久化）。
-3. **实例路由与安全边界**：SaaS 不能让用户直连任意沙箱，需要一个统一入口把"当前会话 → 具体 worker 实例"解析出来，并注入正确的 client/host token。
-4. **模型与企业数据合规**：企业要统一管 LLM（推理目录/多模型）、统一限额计费、统一审计/诊断。
-
-根因落在现代云应用的典型张力：**多租户要共享（DB/控制面）、实例要隔离（沙箱）、身份要中心化（SSO/SCIM）、模型要治理（inference 网关）**。
-
-## 设计思路
-
-### 方案总览：控制面 = 一组按"请求 IO 画像"切分的微服务，共享一份 MySQL 状态库
-
-Den 不是单进程，而是把「企业的状态机」与「请求加工」拆成多个可独立扩容、部署的服务。核心拆分逻辑不是按功能域，而是按**请求的本质差异**：
-
-- **长生命周期、幂等、面向数据库的状态操作**（建 worker、改成员、发 token）→ `den-api`，几乎唯一写数据库的控制面大脑。
-- **高 QPS、跟随 bearer 令牌翻译成上游 URL 的转发** → `den-gateway`，无状态数据面分流器，只 resolve + 代理，不碰数据库（除缓存）。
-- **输出端口到沙箱、刷新短期 signed URL、按 IP 限流** → `den-worker-proxy`，实例出口专用代理，直读 `daytona_sandbox` 与 `worker_token` 表。
-- **纯转发 + 额度记账的服务化模型网关** → `inference`，只认 `ow_inf_*` key，不透传 org 上游密钥。
-- **记录/回放调试流量** → `diagnostics`，用独立 Redis。
-
-`den-api` 之外的服务**只读**共享 DB 的少数几张表。这体现了「Server-consumption first」不变式：**服务消费控制面造好的状态，不自己发明平行行为。**
-
-worker-proxy 启动即直连共享库（[ee/apps/den-worker-proxy/src/app.ts:9-13]()）：
-
-<!-- snippet-base64:Y29uc3QgeyBkYiB9ID0gY3JlYXRlRGVuRGIoewogIGRhdGFiYXNlVXJsOiBlbnYuZGF0YWJhc2VVcmwsCiAgbW9kZTogZW52LmRiTW9kZSwKICBwbGFuZXRzY2FsZTogZW52LnBsYW5ldHNjYWxlLAp9KQ== -->
-
-```ts
-const { db } = createDenDb({ databaseUrl: env.databaseUrl, mode: env.dbMode, planetscale: env.planetscale })
-```
-
-`den-db/src/client.ts` 的 `createDenDb` 统一支持 MySQL 与 PlanetScale，且内置"只读查询瞬时断连重试一次"的韧性。
-
-### 关键抽象一：`worker` 状态机 + 三类 token
-
-worker 是控制面核心资源，表 `worker` 上有 `status ∈ {provisioning, healthy, failed, stopped}`、`destination ∈ {local, cloud}`、`TokenScope ∈ {client, host, activity}`。三个枚举由 Drizzle `mysqlEnum` 直接约束到表列（[ee/packages/den-db/src/schema/workers.ts:4-6]()）：
-
-<!-- snippet: export const WorkerDestination = ["local", "cloud"] as const
-export const WorkerStatus = ["provisioning", "healthy", "failed", "stopped"] as const
-export const TokenScope = ["client", "host", "activity"] as const -->
-
-- **local worker**：本机进程，创建即 `healthy`。
-- **cloud worker**：远端沙箱生命周期，控制面异步编排，创建时标 `provisioning`。
-
-三类 token 把数据面/管理面/遥测面在凭据层直接拆开，是安全分级的第一道闸：
-
-- `client`：agent/浏览器对 worker 的普通访问（读）令牌。
-- `host`：控制面/管理面访问 worker 的特权令牌，能触发写操作。
-- `activity`：worker 回连控制面上报心跳的专用令牌。
-
-### 关键抽象二：worker 生命周期 = 可重入的"状态机推进"函数
-
-Den 不常用一个常驻 orchestrator 守护 worker 状态，而是用**一组推进状态机的函数**（provision/adopt/wake/recycle/stop/deprovision），加上**多个入口**（路由、reconcile 循环、自愈）触发同一套推进逻辑，以「数据库条件更新时间 + 进程内 in-flight Map」保证多副本安全、单副本高效：
-
-```ts
-// routes/workers/shared.ts:444-445
-// Conditional updates are the multi-replica safety; this in-process map is
-// single-replica efficiency shared by routes, reconcilers, and self-heals.
-```
-
-### 关键抽象三：`provisionerMode` 可插拔 —— 「ejectable / 多云可部署」的落地
-
-`den-api` 的 worker provisioning 抽象为 `provisionWorker`/`deprovisionWorker`，按 `PROVISIONER_MODE` 分发（render / daytona / stub）。分派发生在统一的 `provisionWorker` 入口，用 `env.provisionerMode` 分支到三家提供商实现（[ee/apps/den-api/src/workers/provisioner.ts:352-360]()），默认值在 [ee/apps/den-api/src/env.ts:527-527]() 取 `stub`：
-
-<!-- snippet: export async function provisionWorker(
-  input: ProvisionInput,
-): Promise<ProvisionedInstance> {
-  if (env.provisionerMode === "render") {
-    return provisionWorkerOnRender(input)
-  }
-  if (env.provisionerMode === "daytona") {
-    return provisionWorkerOnDaytona(input)
-  } -->
+Den 是 OpenWork 面向组织的控制平面：它把自己定位成**既有 Server 数据面之上的「编排与治理」层**，而不是另一套 Agent 行为。AGENTS.md 明确写：应用消费 OpenWork Server 表面（self-hosted 或 hosted），而不是发明平行行为。Den 的名分是"provision inference、manage teams/access、set desktop policies、publish skills/plugins"。
 
 ```text
-env.provisionerMode === "render"  → provisionWorkerOnRender  (Render API 建 web service)
-env.provisionerMode === "daytona" → provisionWorkerOnDaytona (@daytonaio/sdk 建沙箱/快照)
-默认 stub                          → 占位 URL（无底座自托管/评测）
+A第三层：Den 控制面（本模块）
+    ee/apps/den-api            Hono 主服务：认证/org/SSO/SCIM/worker/inference/marketplace
+    ee/apps/den-gateway        实例路由网关（解析 bearer -> worker 实例，反向代理）
+    ee/apps/den-worker-runtime cloud worker 运行时（openwork-server + opencode）
+    ee/apps/inference          OpenAI 兼容推理网关（代理 OpenRouter，做限流）
+B第二层：Server 数据面（非本模块）
+    agent 运行时 / opencode 引擎 / 本地 Server
+C第一层：代理运行时（非本模块）
 ```
 
-**不把供应商固有行为硬编码，而是以环境变量切换，正是 ejectable 不变式的直接证据**。
+一个关键事实要先建立：`ee/apps/den-controller` 已**废弃**，被并入 `den-api`（den-api 旧名即 den-controller），该目录只留一个迁移说明 stub。所以"多服务控制面"实际落地为 **den-api + den-gateway + inference + den-web** 四件套，den-controller 只是历史快照。
 
-Render 调 Render API 建 web service、Daytona 用 `@daytonaio/sdk` 建沙箱/装镜像/快照、stub 仅返回占位 URL（默认，用于无底座自托管/评测）。**不把供应商固有行为硬编码，而是以环境变量切换，正是 ejectable 不变式的直接证据**。
+## 一、在项目中的角色：去掉它会怎样
 
-### 关键抽象四：checkpoint 持久化 —— worker 的"状态可迁移"
+Den 负责四件别处不做的活：**隔离性**（org/team/role 访问边界）、**可治理性**（policy、audit、SSO/SCIM）、**可掌控性**（买断制计费、seat、配额）、**云端编排**（worker 生命周期与推理供应）。移除 Den 后系统退化：
 
-Daytona 沙箱的容器 overlay 不持久，engine 会话（SQLite `opencode.db`）落在容器上，worker recycle 就丢会话。Den 的方案（`den-api/src/workers/daytona.ts`）：
+- **没有租户边界**：所有用户共享一个无 org 概念的 opencode 会话，谁都能读谁的 skill/plugin/connector。访问控制整体消失（当前由 `middleware/route-access.ts` 的 deny-by-default + `orgRoleRoute` 强制）。
+- **没有供应/编排**：云端 AI 实例（Daytona sandbox）无人创建、无人回收、无人 idle-stop，云工作区退化为"手动开容器"，成本不可控。
+- **没有统一模型出口**：推理入口（OpenWork Models）消失，成员各自去配置 provider；Org 级额度、DPA 管控、OpenRouter 聚合计费全部归零。这次改造的根因恰好是"每个人自己配 key → 组织无法管"。
+- **没有市场与桌面治理**：marketplace 能力注入、desktop policy（强制版本/功能开关）、desktop connect link（品牌化配置交接）都无从谈起。
 
-- 沙箱内跑 `checkpoint_loop` shell，周期性用 `tar` 把 `$OPENWORK_STATE_MANIFEST`（engine 状态 + workspace + runtime data）打到共享 volume 的 `checkpointDir`；`checkpoint_changed` 用 `find ... -newer $LAST_FLUSH_MARKER` 判断是否有变更，无变更跳过；`prune_checkpoints` 只留 `DEN_CKPT_KEEP` 份。
-- 每次 flush 前先 `PRAGMA wal_checkpoint(TRUNCATE)` 收敛 SQLite WAL，保证拷贝出的库自洽且小（[ee/apps/den-api/src/workers/daytona.ts:399-399]()）。
+一句话：Den 是把这个桌面/Agent 工具"变成可售卖的组织产品"的那一层。去掉 Den，OpenWork 就从"多人协作的 AI 工作流工具"退回成"单机 agent 框架"。
 
-<!-- snippet:     node -e 'const{DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.argv[1]);db.exec("PRAGMA wal_checkpoint(TRUNCATE)");db.close()' "$ENGINE_STATE_PATH/opencode.db" >/dev/null 2>&1 || true -->
+## 二、解决什么根本问题、根因
 
-- **刻意不持久化** `auth.json` 与 `log`，因为凭据每次启动会重新物化下发、日志是噪音（[ee/apps/den-api/src/workers/daytona.ts:402-402]()）。
-- 沙箱启动脚本在 `state_dirs_pristine`（无数据且无 RESTORE_MARKER）时 `hydrate_checkpoint` 解出最新 `ckpt-*.tar`，并写 `RESTORE_MARKER` 防重复恢复（`den-api/src/workers/daytona.ts:350,480,506`）。
-- 终止（TERM/INT）时 `trap on_term` 先 flush 再 kill server。
+根本问题不是"缺一个 API 服务器"，而是**单个 agent 无法被组织拥有、治理、并规模化供给算力**。拆开看根因：
 
-### 关键抽象五：凭据物化（provider materialization）
+1. **无租户 → 无法售卖**。开源个人工具没有 org/team/role 概念，就无法做 SSO、座位计费、精细权限、审计；CISO 不会让公司把它接进 IAM。要成为 Claude Cowork/Codex 的组织替代品，第一件事是引入**组织所有权模型**。
 
-worker 是通用底座，不该自带组织 LLM 凭据。cloud worker 变 `healthy` 后，`den-api` 调 `materializeCloudWorkerProviders` 把 org 的 LLM provider 配置、模型与密钥**以 env 写进 worker 实例**（经 `X-OpenWork-Host-Token` 打实例的 `/env` 端点）。
+2. **模型接入碎片化 → 组织无法治理/管控 AI 支出**。个人模式下每人配自己的 provider key；组织需要的是"统一的推理出口 + 额度 + 审计 + 合规开关"。这个根因直接催生了 inference 子系统：Den 为每个成员**签发一个 InferenceKey**，给组织**签发一个上游 OpenRouter 子 key**，推理网关据此把"成员身份、Org 配额、上游计费"三者绑定到每一次请求上。
 
-**关键 bug 教训**：物化缓存最初只以 `workerId` 为键——recycle 换新 sandbox 后新实例 env 是空的（仅共享卷上有 runtime config），den-api 仍答"cached"，导致每个 provider 报"API key is missing"但 picker 里仍有其名。修复改为 **workerId×instanceUrl 双键**（[ee/apps/den-api/src/llm/cloud-provider-materialization.ts:102-111]()）：
+3. **云端实例是"有状态的长期资产" → 无法被无状态服务编排**。一旦 Agent 跑在容器里，会话状态 / 工作区 / 引擎数据库就绑定到某个容器。容器要被回收、跨快照重建、成本控制（idle-stop）、版本升级怎么办？这是个"状态迁移"问题，根因是**容器状态默认不可迁移**。Den 用 checkpoint（定时把一个 tar 落到共享 volume）把它做成"状态可落盘、可还原"，再配一个**低频写状态机**（provisioning/recovery/healthy/stopped/failed）管理生命周期。
 
-```ts
- * Keying by worker alone was a bug: a recycle onto a new snapshot replaces the
- * sandbox, and the new instance starts with an empty env store ... With a worker-only
- * key den-api kept answering "cached" and never wrote the credential into the new instance
+4. **多云部署 → 必须抽象 provider**。控制面不能绑死某一朵云。provisioner 抽象成 provider-neutral 契约，Daytona/Render/stub 分别是实现。根因是"同一套编排心智，要能在不同云上跑"。
+
+5. **低频写状态 + 高频无状态转发 → 需要拆分"写路径"与"转发路径"**。worker 的 provisioning 是秒级到分钟级的低频状态机，但真正的会话流量是**高频无状态转发**。二者不能共用一条热路径，否则状态机写入会拖垮转发延迟，或转发风暴会打挂状态机。Den 把这个矛盾落成了**服务切分**：den-api 管低频状态机，den-gateway 做高频转发（只在需要时回调 den-api 解析一次实例，然后纯反向代理）。
+
+> 结论：Den 的根因层是一个"**组织所有权 → 可治理 → 可规模化供给算力**"的递进。数据面已有 agent 能力，控制面解决的是"有没有人拥有、管不管得住、能不能按组织供给"。
+
+## 三、设计思路
+
+Den 的设计可以归结为几条不断被源码印证的原则：
+
+- **server-consumption first / ejectable**：不与 OpenCode 平行造轮子；运行时就地消费。
+- **低频写状态机 + 高频无状态转发**：云实例生命周期走 DB 状态机，流量走网关转发。
+- **多云可部署**：provisioner 抽象为 provider 契约，Daytona/Render/stub 三实现。
+- **deny-by-default 的访问边界**：每条路由必须显式挂一个访问策略 marker，否则 CI 失败。
+- **fail-closed 治理**：DPA、managed models、版本控制、capability 全是"拿不到正确状态就拒绝"。
+
+### 多服务职责切分
+
+五个服务各管一摊，边界清晰：
+
+| 服务 | 职责 | 边界 |
+|------|------|------|
+| **den-api** | 认证/org/team/role/SSO/SCIM、worker 生命周期编排、inference 供应（发 key + 限流策略）、marketplace & plugin、desktop policy、计费 | 低频写状态机；唯一直接接触 den-db 的控制面服务 |
+| **den-gateway** | 承载用户流量到"具体 worker 实例"；解析 bearer → 实例 URL；纯反向代理 + 静态资源 | 高频无状态转发；不写 DB，只读 den-api 的 resolve |
+| **den-worker-runtime** | 云端 worker 的运行时（openwork-server + opencode），内嵌 bootstrap 脚本 | 被 provisioner 拉起；向 den-api 发 heartbeat |
+| **inference** | OpenAI 兼容推理网关，代理 OpenRouter，做 Org 配额限流与成本/用量埋点 | 高吞吐转发；读 den-db 但只读 key/limit |
+| **den-web** | 控制台 UI | 消费 den-api 的 /api/den |
+
+den-api 是唯一"刀开关"：`app.ts` 一次性把所有 surface 注册进来，同一个进程既做认证/组织又做 worker 编排又做 marketplace。它刻意保持"一个 Hono app 聚合全部控制面路由"，而不是拆成多个微服务——因为这些都是低频控制面操作，拆开只会增加网络跳数与事务复杂度。`:215-233` 一段把 16 个路由器全挂上，是这条"聚合"决策的直接脚注。
+
+[ee/apps/den-api/src/app.ts:215-233]()
+<!-- anchor: registerAdminRoutes(app) … registerTelemetryRoutes(app) -->
+
+den-api 对外的访问边界是**deny-by-default**：每条路由注册必须挂一个显式访问策略 marker（`publicRoute` / `userSessionRoute` / `orgRoleRoute(["admin"])` 等），漏掉的由 `test/route-access-policy.test.ts` 在 CI 拦下。这段注释把约束说得很直白。
+
+[ee/apps/den-api/src/middleware/route-access.ts:56-63]()
+<!-- anchor:  * Den API routes are deny-by-default: every `app.get/post/patch/delete/all/on` …  * `test/route-access-policy.test.ts` fails CI when a route omits a marker. -->
+
+组织角色是**数值层级 + 可叠加**：`owner(3) > super-admin(2) > admin(1) > member(0)`，`organizationRoleValueSatisfies` 用级别比较来判断"某个角色是否满足某个门禁"，owner 作为可注入的布尔被补进去（避免把 owner 硬编码进字符串再解析）。这个设计让"角色字符串"可带逗号分隔的多值（如直角色+admin 团队叠加），同时保持"单一内置角色才有可证明的序"；当角色字符串含多个角色时，`shouldRevokeSessionsForRoleChange` 直接 fail-closed 判定为"应吊销会话"。
+
+[ee/apps/den-api/src/organization-role-hierarchy.ts:1-73]()
+<!-- anchor: export const ORGANIZATION_OWNER_ROLE = "owner" … } -->
+
+团队能把成员"间接抬成 admin"：`effectiveOrganizationRole` 在成员命中一个 `grantsOrganizationAdmin` 的团队时，把 `admin` 追加到其角色串。SCIM 群组映射是"投影不是权威"，`listOrganizationAdminTeamGrants` 在判断一个团队映射是否授予 admin 时对 orphan 映射 fail-closed（`metadata_only` 模式或 `create_teams` 且成员确实在映射里才算数）。这是"团队叠加角色"与"IdP 群组不能偷偷拔高权限"两股力量的平衡点。
+
+[ee/apps/den-api/src/organization-team-roles.ts:23-75]()
+<!-- anchor: export function effectiveOrganizationRole(directRole: string, adminTeams: readonly OrganizationAdminTeam[]) { … } -->
+
+### checkpoint：让容器状态可迁移
+
+worker 云端实例是"有状态资产"。Den 把状态迁移做成一套 **checkpoint 协议**，核心在一个 provider-neutral 的 bootstrap 脚本里（`cloud-runtime/src/bootstrap/openwork-runtime.ts`）。关键设计：
+
+- **状态边界**：checkpoint 打的是"运行时要落盘的三样东西"——`runtimeWorkspacePath`（工作区）、`runtimeDataPath`（引擎配置/会话目录）、外加引擎数据库 `$HOME/.local/share/opencode/opencode.db`。注意引擎库**不在** volume 上而在容器 overlay 上，历史 bug 正是"忘了打包它 → 每次 recycle 用户从零开始"，注释里特意说明不硬编码 `/root`，而是在 shell 内解析 `$HOME` 以跟随镜像。
+- **打点时机**：`checkpoint_loop` 每 `DEN_CKPT_INTERVAL_SECONDS` 定时 `flush_checkpoint`；`on_term` 在 SIGTERM/SIGINT 时先 flush 一次再杀进程。这是"终止即保存"的兜底。
+- **增量判定**：`checkpoint_changed` 用 `find ... -newer <LAST_FLUSH_MARKER>` 判断自上次 flush 后是否有状态文件更新，没变就不打新 tar（省 IO）；`prune_checkpoints` 只保留最近的 `DEN_CKPT_KEEP` 个。
+- **WAL 折叠**：flush 前用 `node:sqlite` 对引擎库做 `PRAGMA wal_checkpoint(TRUNCATE)`，让拷出来的库自洽、更小。失败是 best-effort，决不让 flush 因库被锁而失败。
+- **排除项**：`auth.json` 和 `log` 目录被 `tar --exclude` 掉——凭据是"每次启动重新投递"的，不落共享盘，这也是安全边界。
+- **还原**：`hydrate_checkpoint` 只在 `state_dirs_pristine`（没有 restore marker 且数据/工作区目录为空）时解 tar，否则跳过（避免覆盖未落盘的新状态）。成功后写 `$RESTORE_MARKER`，供 `verifyRestoreMarker` 确认"这次真的是从 checkpoint 恢复的"。
+
+这套协议的精髓是**"还原幂等 + 覆盖安全"**：还原只在"目标目录纯净"时发生，且用 restore marker 让"是否真还原过"可被探测，从而让上层（recycle 决策）能区分"开新容器继续跑"与"从 checkpoint 恢复进度"。
+
+[ee/packages/cloud-runtime/src/bootstrap/openwork-runtime.ts:229-249]()
+<!-- anchor: hydrate_checkpoint() { … } -->
+
+checkpoint 的**消费方**在 den-api 的 daytona provider 里。`wakeWorkerOnDaytonaWithRuntime` 在唤醒一个 stopped sandbox 时先看镜像版本：如果镜像要换（`shouldRecycleDaytonaSandbox`），且 volume 上确有 checkpoint（`checkpointExists`），就走 `recycleDaytonaSandbox`——开一个**新 snapshot 的 sandbox**，`startOpenWorkProcessOnDaytonaSandbox` 拉起的 bootstrap 会 `hydrate_checkpoint`，然后用 `verifyRestoreMarker` 校验"真的还原了"（`requireRestoreMarker`），失败则回退去唤醒旧沙箱。这是"**镜像升级时不丢用户进度**"。
+
+[ee/apps/den-api/src/workers/daytona.ts:1195-1233]()
+<!-- anchor:   if (shouldRecycleDaytonaSandbox({ workerImageVersion, sandboxState: sandbox.state })) { …     return recycleDaytonaSandbox({ -->
+
+有趣的是 checkpoint 不是纯赢家：它把"更换 snapshot"从危险操作变成"可安全恢复操作"，代价是**必须防止状态机写成多头竞争**（见下文 heartbeat/claim），以及 checkpoint 本身有扇出与 IO 成本。Den 把这些成本压回低频路径——只有"回收/升级/唤醒"才触发，正常会话流量完全不碰。
+
+### 多云 provisioner
+
+`provisionWorker` 是一个**纯分发器**：看 `env.provisionerMode`，`render` 走 `provisionWorkerOnRender`，`daytona` 走 `provisionWorkerOnDaytona`，其余落 stub（用 `WORKER_URL_TEMPLATE` 拼一个假 URL，供离线/测试）。去 provision 对 render 是"暂停服务"，对 daytona 是"删沙箱 + 清数据卷"，stub 是 no-op。
+
+[ee/apps/den-api/src/workers/provisioner.ts:352-370]()
+<!-- anchor: export async function provisionWorker( … } -->
+
+其中 Render 实现直接从"启动一个 Web Service"到"等 deploy live → 等健康探测 → 附自定义域名 + 等 DNS"一整套 `waitForDeployLive/waitForHealth/attachRenderCustomDomain`。这暴露了两种 provider 的代价差异：**Render 是多租户平台，Den 只能"创建服务、轮询、挂域名"，没有状态可迁移**；**Daytona 提供 sandbox + volume + checkpoint，Den 能拿到"真正可迁移、可 idle-stop 的实例"**。这就是为什么 lifecycle / idle-stop / checkpoint 代码全部只在 daytona provider 里出现：Render 路径天生没有这些能力。
+
+这个"分发器 + 逐 provider 实现"很薄，因为它面对的是**宿主的差异而是统一契约**——真正的抽象在 `cloud-runtime/src/contract/provider.ts`（见"关键数据结构"）。provider 接口把 `SandboxRef` 定义为**不透明引用**（Den 只持久化、回传给同一 provider，不解释），把沙箱状态归一成 `creating/running/stopping/stopped/archived/missing/error`，把错误归一到明确 taxonomy，并要求 `create` 幂等（同一 `idempotencyKey` 要么返回既有实例要么抛 conflict，绝不造两个）。这套契约让"云上跑什么宿主"成为可替换项，而 Den 的 lifecycle policy（provision/wake/recycle/idle-stop/prewarm）只针对契约编写。
+
+[ee/packages/cloud-runtime/src/contract/provider.ts:159-176]()
+<!-- anchor: export interface SandboxProvider { … } -->
+
+### 推理供应与限流
+
+这是本模块最"产品化"的一块。Den 供应推理，inference 网关执行推理 + 限流，二者通过 den-db 共享数据。
+
+**供应侧（den-api）**：`setInferenceEnabled` 是一条清晰的"开/关"动作。开启时：① 给所在 org 在外层 OpenRouter 建一个**组织级子 key**（`ensureOrgUpstreamProviderKey`，用管理 key 调 OpenRouter 建账户级 key，只存 hash + 加密 key）；② 把 Org 的 metadata 写成 `inference: { enabled: true, tier }`；③ 同步给每个活跃成员**签发一个 InferenceKey**（bearer key，只存 hash/前缀），并给成员创建一个指向 `inferenceProxyBaseUrl/api/v1` 的 OpenWork LLM provider。关闭时则反向：吊销上游 org key、吊销所有成员 key、删除 OpenWork provider。这一对动作把"启用 OpenWork Models"从"配一个 key"变成"整套供应/吊销编排"。
+
+[ee/apps/den-api/src/inference.ts:644-667]()
+<!-- anchor: export async function setInferenceEnabled(input: { organizationId: OrgId; enabled: boolean; tier?: InferenceTier }) { …   return getInferenceStatus(input.organizationId) -->
+
+`INFERENCE_TIER_LIMITS` 定义三层时间窗额度（tier1/tier2，5 小时 / 周 / 月），并按 `limit * memberCount` 对 Org 放大。`syncInferenceLimitPolicies` 在每个成员的 limit policy 上维护当前 usage bucket：`five_hour` 用 `activity_based`（滚动，每次都从 now 起算），`weekly/monthly` 用 `anchored`（锚定在 policy 的 `anchor_at` 上，窗口端点由 `currentWindow` 推进到覆盖当前）。这个"分层锚定 vs 活动滚动"的区别，正是"额度何时清零"的产品语义。
+
+[packages/types/src/den/inference.ts:13-27]()
+<!-- anchor: export const INFERENCE_TIER_LIMITS: Record< … } as const; -->
+
+**执行侧（inference 网关）**：`handleApiRequest` 的认证先命中 `findActiveInferenceKey`（用成员 bearer 的 hash 查 `InferenceKeyTable`，做常时比较），拿到 `organization_id / org_membership_id / key id`，然后**先做限流**（`ensureUsableBuckets`），没余量就回 429 + `retry-after` + `x-ratelimit-*`。只要还有余量，就用**组织级的 OpenRouter provider key** 把请求转发到 OpenRouter（模型 alias 在前端被 `resolveModelAlias` 换成本身，`body.model = upstreamModel`），并为 trace/计量注入 `trace` 字段。
+
+[ee/apps/inference/src/proxy.ts:564-584]()
+<!-- anchor:     const limits = await dependencies.ensureUsableBuckets(inferenceKey.organization_id) …       }, 429) -->
+
+这个"**成员 bearer 认人 → Org 上游 key 扣钱 → 限流窗计量**"的三段链路，是推理供应的核心闭环。成员永远拿不到真实上游 key，只有 Den 发的 bearer；真实计费 key 只活在网关进程里，每次请求临时注入。这样组织能"按员额放大额度、按统一账单走上游、按 Org 审计用量"，而成员层面只知道自己有一个"OpenWork Models"入口。
+
+**用量计量（成本意识）**：`beginModelAnalytics` 在请求进来时读取 org 的 models analytics 设置，若开启就对流式/非流式响应做**有界增量解析**——只挑 `prompt_tokens/completion_tokens/cache_read_tokens/cost` 这几个字段，文本与工具参数绝不保留，单帧超过 1MB 就 stop。这对"按 token/美元计费但不过度采样"的 SaaS 用量场景很关键。
+
+[ee/apps/inference/src/task-analytics.ts:79-91]()
+<!-- anchor: export function beginModelAnalytics(input: { key: Key; request: Request; requestId: string; model: string | null; startedAt: number }) { … } -->
+
+**失败的另一个面**：inference 网关把"上游真实错误"翻译成"面向成员可理解的错误"（`upstreamError`：401→access_denied、402→quota、429→rate_limited、413→context length、408/504→timeout）。这层"错误语义化"很关键——成员不需要知道 OpenRouter 的 429 是因为谁，只需要知道"要不要找 admin"。同时网关**禁止**成员通过 payload 挑模型或用 OpenRouter 的 `openrouter:fusion/subagent` 等 server tool；`validateModelSelection` 对 top-level `models/fallbacks/preset/route` 和插件里 `model/analysis_models/allowed_models` 一律拒绝，防成员绕过统一模型治理。
+
+[ee/apps/inference/src/proxy.ts:156-167]()
+<!-- anchor: function validateModelSelection(json: JsonObject) { … } -->
+
+## 四、关键数据结构（理解所需）
+
+这里只列**承载设计意图**的形态，不逐个字段罗列。
+
+### provider 契约（云端宿主抽象）
+
+`SandboxProvider` 接口是"Den 生命周期策略"与"具体宿主"之间的唯一契约：`describe()/create()/find()/get()/inspect()/start()/stop()/destroy()/exec()/endpoint()` + `storage`。三件事被刻意设计成 Den 不理解的**不透明值**：`SandboxRef`（只持久化回传、不解释）、`SandboxState`（归一化枚举）、`StorageAttachment/VolumeRef`（挂卷，不关心是什么卷）。`ImageRef` 对 Daytona 是 snapshot 名、对 OCI 宿主是镜像 digest——Den 不区分。
+
+关键权衡：Den 把"状态归一到枚举、错误归一到 taxonomy"（`errors.ts`），因此**没有 provider 代码会在 Den 侧做"消息字符串匹配"**。这是让"换宿主"成为配置项而非代码分支的前提。
+
+[ee/packages/cloud-runtime/src/contract/provider.ts:42-49]()
+<!-- anchor: export type SandboxState = … | "error" -->
+
+### 生命周期失败归因（可观测的失败，而非异常）
+
+`CloudStartupFailure` 把一次启动失败结构化：`code`（如 `provisioning_timeout` / `sandbox_missing` / `storage_unavailable` / `web_access_required`）+ `stage`（`provisioning/recovery/runtime`）+ `reference`（用于关联日志）。Den 作为低成本"状态机"会把这个 failure 写到 Worker 行上，并只对失败过的 `onlyWhenStatus: "provisioning"` 才落 `failed` 状态，避免竞态。
+
+[ee/apps/den-api/src/workers/cloud-failure.ts:22-27]()
+<!-- anchor: export type CloudStartupFailure = { … } -->
+
+### worker 行 + 三 token（编排的身份载体）
+
+Worker 表存 `destination(local|cloud)`、`status(provisioning/healthy/stopped/failed)`、`sandbox_backend`、`image_version`、`cloud_failure_*`、`last_active_at`。为一个 worker 签三个 scope 的 token：`host`（宿主机/owner 期）、`client`（客户端/引擎期）、`activity`（心跳令牌）。这个"三 token"把"宿主连接的钥"与"客户端连接的钥"与"心跳的钥"分开，避免一把钥匙处处能用。
+
+[ee/apps/den-api/src/routes/workers/core.ts:274-276]()
+<!-- anchor: const hostToken = token() … const activityToken = token() -->
+
+### 推理的认证/额度载体
+
+- `InferenceKeyTable`：成员级 bearer（只存 `key_hash` + `key_prefix`），绑定 `organization_id + org_membership_id`。
+- `InferenceOrgUpstreamProviderKeyTable`：组织级 OpenRouter 子 key（`encrypted_api_key` + `external_key_hash`）。
+- `InferenceOrgLimitPolicyTable` / `InferenceOrgUsageBucketTable`：组织限流策略 + 当前计费桶（`window_start_at/end_at/limit_amount/used_amount`）。
+- `OrganizationEntitlements` / `OrganizationPlan`：SSO/desktopPolicies/orgControls/analytics 的 entitlement，`checkEntitlement` 在未满足时回 402 `enterprise_plan_required`。
+
+[ee/apps/den-api/src/entitlements.ts:18-91]()
+<!-- anchor: export type OrganizationEntitlements = Record<EntitlementKey, boolean> … } -->
+
+### 组织元数据（一个 JSON 列承载半个控制面）
+
+组织元数据是同一个 JSON 列：`limits`（members/workers 配额）、`plan`（tier/source）、`capabilities`（installLinks/mcpConnections/modelsAnalytics）、`inference`（enabled/tier）、`dpaSigned`、`allowedDesktopVersions`、`requireSso`、品牌字段。`normalizeOrganizationMetadata` / `evaluateManagedModelsPolicy` / `readInferenceMetadata` / `normalizeOrganizationCapabilities` 各自读这份 JSON 的不同键。这让"加一个 governance 特性"通常**不需要加表**，代价是并发下要用 `for update` + 在单事务内完成"读-校验-写"。
+
+[ee/apps/den-api/src/organization-limits.ts:14-45]()
+<!-- anchor: export type OrganizationLimits = { … } -->
+
+## 五、核心流程
+
+### 云工作区整体生命周期（状态机）
+
+云端 worker 是一个**低频写状态机**，由后台 loop 驱动，路由层只做"触发 + 读"。
+
+```mermaid
+flowchart TD
+  A[路由: POST /v1/workers destination=cloud] -->|续 cloud| B[Workers.destination=cloud status=provisioning<br/>签发 host/client/activity token]
+  B --> C[continueCloudProvisioning 在途去重]
+  C --> D{provisionerMode}
+  D -- render --> D1[Render: 建 web_service -> deploy live -> health -> 自定义域名]
+  D -- daytona --> D2[Daytona: 建/maintain sandbox -> checkpoint 探测 -> openwork-server 启动]
+  D -- stub --> D3[拼 WORKER_URL_TEMPLATE 假 URL]
+  D1 & D2 & D3 --> E{startup 成功?}
+  E -- 否 --> F[Mark failed: 结构化 CloudStartupFailure]
+  E -- 是 --> G[Worker.status=healthy<br/>materializeProviders: 把 LLM provider 推到实例]
+  G --> H[运行期: 引擎向 den-api 发 activity-heartbeat]
+  H --> I{超过 idle 阈值?}
+  I -- 否 --> H
+  I -- 是 --> J[stopWorkerOnDaytona -> Worker.status=stopped<br/>checkpoint 在终止时已 flush]
+  J --> K[下次用户访问 -> wake: 先看镜像版本]
+  K -->|镜像变了且有 checkpoint| L[recycle: 新 snapshot sandbox 还原 checkpoint]
+  K -->|镜像没变| M[wakeExisting: 启动 stopped sandbox]
+  style A fill:#eef,stroke:#88a
+  style J fill:#eee,stroke:#999
+  style L fill:#efc,stroke:#7a7
 ```
 
-这印证了本模块核心张力：**只要实例可被重建，控制面就必须"每次证明自己的物化仍有效"，缓存失效策略必须紧跟实例取代语义。**
+状态机由 **后台 loop** 驱动而非路由同步等待：`startCloudIdleStopLoop` 定期扫空闲 worker 并保留 `notExists(自动化运行中)` 的排除条件——一个计划内的 headless run 可以在 worker 的常规 heartbeat 落盘之前就进入运行态，idle-stop 不能把它误杀。这个"排除自动化在跑"的 SQL 条件说明设计者对"心跳未到 vs 真的空闲"的边界想得很清楚。
 
-## 关键数据结构（服务间共享的 payload）
+[ee/apps/den-api/src/workers/cloud-lifecycle.ts:349-381]()
+<!-- anchor: async function stopIdleCloudWorkers(options: StopIdleCloudWorkersOptions = {}) { … } -->
 
-### `ResolvePayload`（den-api → den-gateway）
+支撑状态机"不写坏"的两个机制都在小文件里：`withProvisionDeadline` 给 provider 动作套死线；`withProvisioningHeartbeat` 在动作期间每 30s 触摸 worker 行的 `updated_at`（`touchProvisioningWorker`），并保证**触摸失败只记日志不打断动作**——也就是说"missed beat 只冒被他人更早 re-claim 的风险，绝不会把健康 worker 写错成失败"。这与 `reconciler` 里的 claim 逻辑配对：reconciler 读 `updated_at < staleBefore` 的 provisioning 行来"接管"孤儿 claim，靠 `updated_at` 作乐观锁。
 
-`/v1/cloud/gateway/resolve` 的返回，是 gateway 把"用户 bearer"翻译成"worker 上游"的契约（[ee/apps/den-gateway/src/app.ts:12-22]()）：
+[ee/apps/den-api/src/workers/provisioning-heartbeat.ts:38-59]()
+<!-- anchor: export async function withProvisioningHeartbeat<T>(input: { … } -->
 
-<!-- snippet: type ResolvePayload = {
-  status: InstanceStatus
-  url: string | null
-  clientToken: string | null
-  hostToken: string | null
-}
-
-type InstanceResolution =
-  | { kind: "ready"; url: string; clientToken: string; hostToken: string }
-  | { kind: "not_ready"; status: NonReadyStatus }
-  | { kind: "error"; statusCode: number; error: string } -->
-
-```ts
-type ResolvePayload = { status: InstanceStatus; url: string | null; clientToken: string | null; hostToken: string | null }
-type InstanceResolution =
-  | { kind: "ready"; url: string; clientToken: string; hostToken: string }
-  | { kind: "not_ready"; status: NonReadyStatus }
-  | { kind: "error"; ... }
-```
-
-`status=ready` → 携 `url`+双 token 可代理；`not_ready`（provisioning/waking/failed）→ gateway 返回状态不代理；异常 → 502。gateway 对 ready 结果缓存 `resolveTtlMs`。**缓存键是 bearer（不是 user/worker）**，登出换令牌即失效。
-
-### `TokenScope` 校验（den-worker-proxy 读）
-
-`den-worker-proxy` 用 scope + 方法组合决定放行，读（GET/HEAD）允许 `client` 或 `host`、写仅允许 `host`（[ee/apps/den-worker-proxy/src/app.ts:205-205]()，调用点在 `:388`）：
-
-<!-- snippet: export function isProxyTokenAuthorized(method: string, tokenScope: WorkerTokenScope | "invalid" | null): tokenScope is WorkerTokenScope { -->
-
-- "数据面读、运维面写"的令牌语义被出口代理独立校验。
-
-## 核心流程：worker 从申请到被 agent 访问
-
-以最完整的 **cloud worker（Daytona）** 为例：
+### 跨服务时序：Agent 请求 → Den → Worker → 引擎
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor U as 用户(桌面/浏览器)
-    participant W as den-web
-    participant A as den-api
-    participant C as continueProvisioning
-    participant P as provisionWorker
-    participant D as Daytona 沙箱
-    participant WP as den-worker-proxy
-    participant G as den-gateway
-    participant DB as MySQL(den-db)
+  autonumber
+  participant C as 客户端 Agent (MCP/HTTP)
+  participant G as den-gateway
+  participant A as den-api
+  participant N as den-db
+  participant W as worker 实例 (den-worker-runtime)
+  participant B as 引擎 (opencode-server)
+  participant I as inference 网关
+  participant R as OpenRouter
 
-    U->>A: POST /v1/workers 云worker
-    A->>DB: 插 worker provisioning + 三类token
-    A->>C: continueCloudProvisioning 异步且去重
-    A-->>U: 202 返回 tokens 与 launch async
-    C->>P: provisionWorker 实例化
-    P->>D: daytona.create 沙箱 + 挂共享卷
-    P->>D: 注入 DEN_ env 启动 openwork-server
-    P->>DB: upsert 沙箱记录 预览与卷
-    C->>A: materializeProviders 注入LLM凭据
-    C->>DB: worker 置healthy + 落实例
-    loop 周期或终止时
-        D->>D: checkpoint_loop tar 到共享卷
-    end
-    D->>A: activity-heartbeat 心跳上报
-    U->>G: GET 网关 worker 路径 带bearer
-    G->>A: GET /v1/cloud/gateway/resolve
-    A->>DB: 解析 worker状态/沙箱/token
-    A-->>G: 返回 ready url 与双token
-    G->>WP: fetch workerProxyUrl 注入token
-    WP->>DB: 校验 token scope 并 DB限流
-    WP->>D: 刷新 signed preview 并代理
-    WP-->>G: 字节流回灌
-    G-->>U: 响应
+  C->>G: HTTP (Authorization: Bearer <session>)
+  G->>G: readBearerAuthorization + cache 命中? 未命中继续
+  G->>A: GET /v1/cloud/gateway/resolve (+X-OpenWork-Gateway-Key)
+  Note over G,A: 只有绑定的 gateway key 能调 resolve
+  A->>N: ensureWorker / resolveCloudRuntimeAccess 读 Worker 状态
+  alt worker 需要拉起
+    A->>A: startWake(workerId) [in-process de-dup]
+    A->>N: 置 status=provisioning (claim)
+    A->>W: wakeWorkerOnDaytona (daytona)
+    W->>B: hydrate_checkpoint / start openwork-server
+    B-->>W: healthy
+    A->>N: status=healthy + materializeProviders(推 LLM provider)
+  end
+  A-->>G: {status:ready, url, clientToken, hostToken, expiresAt}
+  G->>G: 缓存 resolution (TTL=resolveTtlMs)
+  G->>W: 反向代理 (Authorization=Bearer <clientToken>, x-openwork-host-token)
+  W->>B: 处理请求 (本地会话/工具)
+  B->>I: 模型推理 (/api/v1/chat/completions, Bearer <inferenceKey>)
+  I->>I: findActiveInferenceKey -> org/member -> ensureUsableBuckets 限流
+  I->>R: 转发 (OpenRouter org key, model=upstreamModel, trace=...)
+  R-->>I: SSE/JSON 响应
+  I->>I: relayChatStream 校验帧/计量 -> 回写 usage
+  I-->>B: 推理响应
+  B-->>W: 结果
+  W-->>G: 响应
+  G-->>C: 响应 (流量不经 den-api 状态机)
 ```
 
-> 两个关键观察：**(1)** 编排路径只发生在"申请/唤醒/回收"这些低频时刻，由 `continueCloudProvisioning`/`wakeCloudWorker` 推进；**(2)** 常态访问路径是"gateway 解析一次（TTL 缓存）→ 长驻 proxy 转发"，请求不回到状态机。低频写状态机 + 高频无状态转发，是 Den 吞吐的关键前提。
+要点：**两条数据路径完全分离**。① `resolve` 走 den-api（低频、按需、要 gateway key），只负责"告诉我这个 bearer 该去哪个实例、用什么 token"；② 真正的会话流量 `proxyToInstance` 走网关**直连** worker 实例，绝不再绕 den-api。这个分离就是"低频写状态机 + 高频无状态转发"的具象化——den-api 不在热路径上，被网关的 TTL 缓存隔开，只有实例不存在/已到期才回调。
 
-## 与其他模块的协同
+[ee/apps/den-gateway/src/app.ts:633-658]()
+<!-- anchor: async function handleProxy(input: { … } -->
 
-- **与 `den-db`（共享数据层）**：这是"微服务共享单库"的典型。den-api、inference、den-worker-proxy 都 `import` 同一 `den-db` 的 `createDenDb` 连同一库。因此**迁移/加表必须三服务齐步**——这正是 den-db 独立成 package 的原因：Drizzle schema 单一来源，避免各服务复制 schema 漂移。`den-db/test/migration-schema-parity.test.ts` 暗示对 schema 漂移敏感。
-- **与 `apps/server` 数据面**（跨模块结论，主 agent 已在 [`agent-runtime-opencode.md`](agent-runtime-opencode.md) 补全）：worker runtime 通过 `DEN_RUNTIME_PROVIDER`/`DEN_WORKER_ID` 等 env 识别自己是"Den 管理的云 worker"，以 `activity-heartbeat` 上报；控制面以 host/client token 访问其 `/workspaces`、`/runtime/*`、`/env` 端点。
-- **与 `inference`（按共享 key/bucket 协同）**：den-api 开启 inference 时为每个 member 造 `ow_inf_*` key、把 org 的 OpenRouter 上游 key 存好；inference 服务认 key、限流、扣桶、接收 OpenRouter OTLP webhook 入账。整个推理治理闭环（创建→认证→限流→结算）被控制在 `den-api` 的开关（`setInferenceEnabled`）下，符合"控制面是唯一写面"。
-- **与 `den-web`/`den-gateway`**：den-web 只读消费方（经 `/api/den/*` 反向代理到 den-api），gateway 是"会话→实例"翻译器。二者不写业务状态，典型的 consumer-first 服务。
+网关把"授权头"在转发到实例时**换成了 worker 的 clientToken/hostToken**（`upstreamRequestHeaders` 删除原 `authorization/cookie/x-openwork-host-token` 等，重设 `Authorization: Bearer <clientToken>` + `x-openwork-host-token: <hostToken>`）。因此**客户端拿到的自身 session token 绝不出现在对 worker 的请求里**，Worker 只认它的 connection token——这是另一个隔离点。
 
-## 关键设计决策
+[ee/apps/den-gateway/src/app.ts:531-544]()
+<!-- anchor: function upstreamRequestHeaders(headers: Headers, clientToken: string, hostToken: string) { … } -->
 
-### 决策一：为何拆这么多服务，而不是一个大单体
+### 推理供应/消费闭环
 
-权衡核心在"写面"与"读面"的分离：
+```mermaid
+flowchart LR
+  subgraph Den[den-api 控制面]
+    P[setInferenceEnabled enabled=true]
+    P --> K1[ensureOrgUpstreamProviderKey<br/>调 OpenRouter 建 org 子 key]
+    P --> K2[写 org metadata inference enabled/tier]
+    P --> K3[syncInferenceForOrganizationMembers<br/>每成员签发 InferenceKey + OpenWork provider]
+  end
+  subgraph G[inference 网关]
+    CR[POST /api/v1/chat/completions<br/>Bearer 成员 key]
+    CR --> A[findActiveInferenceKey<br/>常时比较 hash]
+    A --> B[ensureUsableBuckets<br/>窗额度 = limit*tmembers]
+    B -- 余量不足 --> RL[429 + retry-after + x-ratelimit-*]
+    B -- 余量足 --> C[注入 OpenRouter org key<br/>model=upstreamModel<br/>trace=...]
+    C --> D[转发 OpenRouter]
+    D --> E[SSE/JSON]
+    E --> F[relayChatStream 校验帧 + metrics 解析]
+    F --> U[回写 task-analytics usage]
+  end
+  P -.启停与额度共享 den-db.-> G
+  RL -.429 语义化给成员.-> CR
+```
 
-- **若做成单体**：认证/org/SCIM（写面，低频）、高 QPS 流量代理（gateway）、实例出口限流（worker-proxy）、模型网关（inference）全挤一个进程。任一抖动（worker 代理风暴）都会拖垮 SSO 或 marketplace；推理网关若带 Den 全部权限模型，风险面太大。
-- **选微服务**：把"需要写事务/org 上下文"的**唯一重型写面**（den-api）与"只需读少量表"的转发面剥开，转发面各自只持最小 DB 读集，天然降权。
-- **为何不再拆**：org/SCIM/inference/marketplace 留在 den-api，因为它们的操作需要同一事务与同一 org 上下文，硬拆只引入分布式事务。**边界恰好停在"要不要共享一个事务/上下文"上。**
+一个治理细节值得单独点出：限流不只是"回 429"，而是**先做额度检查再转发**，并且 `admittedAt`（进入限流时间的戳）被写进转发的 `trace.usage_started_at`——这样"等凭据的时间也计入该 Org 的计量窗口"，归属清晰。网关同时把 `retry-after` 与 `x-ratelimit-*` 头回给客户端，方便上层 SDK 重试。
 
-### 决策二：快照版本 → sandbox recycle 的"无感更新"
+[ee/apps/inference/src/proxy.ts:611-615]()
+<!-- anchor: const upstreamPath = c.req.path.replace … const choiceCount = typeof prepared.body.n -->
 
-Daytona worker 一旦存在沙箱，镜像（snapshot）无法原地热替换。Den 在版本不一致时对 stopped 沙箱整体 recycle（[ee/apps/den-api/src/workers/daytona.ts:1153-1156]()、`1202-1225`）：新 snapshot 建新沙箱 → 启动 → `verifyRestoreMarker` 确认 checkpoint 已恢复 → 删旧沙箱；失败则回退"唤醒旧沙箱"。**权衡**：不做 recycle 就只能停服/迁移、用户会话因镜像升级丢失；做了 recycle 则版本升级无感，但要求 checkpoint 机制严格正确（RESTORE_MARKER 防误恢复 + 物化缓存按 instance 失效）。
+### 组织上下文解析（每次请求的租户锚点）
 
-### 决策三：`den-controller` 废弃并入 `den-api` 的教训
+`resolveOrganizationContextMiddleware` 是"租户确定"的唯一入口：它把"ApiKey scoped org"（或 `X-OpenWork-Org-Id` 头）与 session 的 `activeOrganizationId` 做优先级合并，拿不到就 fallback 到用户 org 集合解析，命中后把 context 塞给下游。这段代码体现了三类身份来源（session / api-key / header）的**优先级与互斥**，以及"session 里缓存 active org 以减少后续解析"的权衡。
 
-`ee/apps/den-controller/README.md` 仅剩迁移存根，声明被 `den-api` 取代（[ee/apps/den-controller/README.md:1-3]()）：
+[ee/apps/den-api/src/middleware/organization-context.ts:12-115]()
+<!-- anchor: export const resolveOrganizationContextMiddleware: MiddlewareHandler<{ … await next() -->
 
-<!-- snippet-base64:IyBEZXByZWNhdGVkOiBgZGVuLWNvbnRyb2xsZXJgCgpgZWUvYXBwcy9kZW4tY29udHJvbGxlcmAgaGFzIGJlZW4gcmVwbGFjZWQgYnkgYGVlL2FwcHMvZGVuLWFwaWAgKGBkZW4tYXBpYCwgZm9ybWVybHkgYGRlbi1jb250cm9sbGVyYCku -->
+## 六、与其他模块的协同
 
-教训：控制面的"认证 + 组织 + worker 生命周期"天然共享同一会话/org 上下文与同一事务边界，最初拆出 controller 反而制造"两个进程读同一 org 会话状态"的耦合。合并回 den-api = 承认**控制面脑子（写面）本质是一个进程**，剩下只有读壁的服务值得拆。这是"微服务边界不在领域而在事务/上下文"的实证。
+### 依赖与共享状态
 
-### 决策四：token/min-port 约定的代价
+Den 控制面**几乎只通过 den-db 共享状态**，服务间不直接通信（除了 gateway→den-api 的 resolve 调用）。这是"服务切分"能成立的关键：一份 MySQL 兼作事实源 + 跨服务消息总线。
 
-Den 靠强约定 + ENV 串接服务：固定端口（den-api 8790 / gateway 8788 / worker-proxy 8789 / inference 8791）、`DEN_API_BASE`、共享 `DEN_GATEWAY_KEY`、`INFERENCE_PROXY_BASE_URL`、DB 双模式等。**好处**：本地起齐四服务无需服务发现。**代价**：任何端口/token/URL 变化要跨服务同步，生产拓扑隐式写死在默认值——"ejectable 相对脆弱的点"。
+| 共享物 | 写入方 | 读取方 | 说明 |
+|--------|--------|--------|------|
+| `WorkerTable` / `WorkerTokenTable` | den-api（routes/workers、cloud routes、reconciler、cloud-lifecycle） | den-api 自身、inference 不读 | worker 生命周期 + 三 token |
+| `InferenceKeyTable` / `InferenceOrgUpstreamProviderKeyTable` | den-api（inference.ts 供应） | inference 网关（keys.ts 认证 + 取上游 key） | 成员 bearer + 组织 OpenRouter 子 key |
+| `InferenceOrgLimitPolicyTable` / `InferenceOrgUsageBucketTable` | den-api（syncInferenceLimitPolicies） | inference 网关（limits.ts 限流窗） | 额度登记 + 使用桶 |
+| `OrganizationTable.metadata`（JSON 列） | den-api（org 元数据、inference、limits、capabilities） | den-api + inference（读 tier） | 半个控制面都在这一个 JSON 列 |
+| `LlmProvider*` | den-api（inference.ts 写成员 OpenWork provider；cloud-provider-materialization 推到实例） | 客户端 & worker 运行时 | 成员"看得见的模型提供商" |
 
-## 亮点与问题
+### 与 worker 运行时的协作（去中心但受控）
+
+worker 运行时（den-worker-runtime）是**被 provisioner 拉起的客户端**，而不是被 den-api 轮询的服务端。它启动时会：① 从 bootstrap 注入的 `DEN_WORKER_ID / DEN_ACTIVITY_HEARTBEAT_URL / DEN_ACTIVITY_HEARTBEAT_TOKEN` 拿到身份与心跳端点；② 启动后向 den-api 的 `/v1/workers/:id/activity-heartbeat` 上报心跳（`activity.ts`）。心跳让 den-api 的 idle-stop 有据可依。这个方向是**"worker 向控制面汇报"**，不是"控制面扫描 worker"。
+
+[ee/apps/den-api/src/workers/daytona.ts:150-153]()
+<!-- anchor: function workerActivityHeartbeatUrl(workerId: WorkerId) { … } -->
+
+### LLM provider 推送到实例（materialize）
+
+`materializeCloudWorkerProviders` 是"den-api 把组织/成员配置好的 LLM provider **写进云端 worker 实例**"的桥。它把 provider + credential 打包成 env + runtime config，用 worker 的 client token（`fetchPreviewNoRedirect`/`fetchWithConnectRetry`）POST 到实例。缓存按 `worker:instance` 双 key（**单按 worker key 是 bug**，因为 recycle 到新 snapshot 后新实例 env 是空的，`cached` 会一直不写，导致"API key missing"）。这个修正说明作者踩过"实例身份 vs worker 身份混淆"的坑。每条 worker 心跳或 resolve 都会触发一次 materialize。
+
+[ee/apps/den-api/src/llm/cloud-provider-materialization.ts:127-132]()
+<!-- anchor: const materializedFingerprintByWorkerInstance = new Map<string, string>() … result: Extract<CloudProviderMaterializationResult, { ok: false }> -->
+
+### 与 gateway 的契约
+
+den-gateway 是 den-api 的"前台"，二者唯一握手是 `/v1/cloud/gateway/resolve`：需要 `X-OpenWork-Gateway-Key`，dession 之外再加一层 gateway 密钥守卫，且仅当 `cloudAvailable`（org mode + daytona provisioner 存在）才放行。这个"网关必须持有 gateway key 才能换取实例路由"的设计，让**gegway 成为受信任的反向代理**，不会沦为任意 SSRF 跳板。
+
+[ee/apps/den-api/src/routes/cloud/index.ts:755-948]()
+<!-- anchor: app.get( …    probeSignedPreview: signedPreviewProbe, -->
+
+### 与 entitlement / capability / web 访问的协同
+
+`getOpenWorkWebAccess`（`openwork-web-runtime-access.ts`）在 cloud routes 与 worker tokens 里反复出现：**"有没有 OpenWork Web access"是 cloud 实例能否被使用的前置门禁**。它与"deployment-level 的 org mode + provisioner"（`cloudAvailable`）叠加：前者是"组织是否订阅了 Web 能力"，后者是"这个部署能否起 daytona 实例"。两者都 fail-closed。这与 entitlement（`checkEntitlement` 402）、org capability（`metadata.capabilities`）一起，构成"组织级 feature 开关"的完整表达。
+
+### 跨模块结论（【待主 agent 验证】）
+
+- 【待主 agent 验证】推理的"额度 = tier limit × 活跃成员数"由 den-api 在 `syncInferenceLimitPolicies` 里写死到 bucket，而 inference 网关的 `getEffectiveLimits` 又**实时重算**一次（读 org metadata tier + 成员数）。这存在"两处同源但各自实现"的重复逻辑；若成员数在两次计算之间变化，网关注入的每个 bucket 的 limit 可能与 den-api 写的不一致。需要核对谁才是权威。
+- 【待主 agent 验证】`cloud-provider-materialization` 的 `requestTimeoutMs = 8_000` 且写失败会缓存失败（`materializationFailureByWorkerInstance`），而 read 失败不缓存。这个"只在写阶段缓存失败、读阶段立即重试"的策略，与 den-api 的 worker 心跳/recover 流是否会产生过大的重复 materialize，需结合 evals 验证。
+- 【待主 agent 验证】"云实例按人（created_by_user_id）一个"：`databaseCloudWorkerStore.getCloudWorker` 的注释明确指出 legacy 共享行会**给第一次点击者保留、其他人新建实例**，且 admin 删除用户会置空 `created_by_user_id` 从而孤儿化实例（注释标注 follow-up：`src/user-deletion.ts`）。这是"一用户一实例"模式下未完全收敛的边界，是否已修复需查 user-deletion.ts。
+
+## 七、关键设计决策（权衡与代价）
+
+### 决策一：低频写状态机集中到 den-api，高频转发交给 den-gateway
+
+**取舍**：把"worker 生命周期"（provisioning/healthy/stopped/failed）与"用户会话流量"分开两条数据路径。den-api 只被 ask "这个 bearer 该去哪个实例"（且被 gateway 用 TTL 缓存隔开），真正的流量走 gateway → worker 实例直连，**永不绕回 den-api 状态机**。
+
+**代价/为什么不做别的**：
+- 若让 den-api 同时扛转发，则每次会话请求都会碰 DB 状态（或必须把状态缓存到 den-api 内存），高频流量会放大状态机写入压力，且 den-api 成为单点瓶颈/故障放大点。**放弃的一种替代方案**是"den-api 直接反向代理到实例"——简单，但把"低频控制面服务"变成"热路径"，违背 server-consumption 与可伸缩意图。
+- gateway 的开销：需要维护一个"resolution 缓存 + 到期失效"+ 对实例做 connect 阶段错误重试（`fetchWithConnectRetry` 对 `UND_ERR_CONNECT_TIMEOUT/ECONNREFUSED` 等 connect-phase 错误重试一次）。$this$ 是"多一层代理"换"状态机不被流量污染"的代价。
+- 若把状态机拆成独立服务（如真正的 den-controller 微服务），会更"标准"，但每个控制面操作都得跨网络 + 保证事务，复杂度和延迟不划算。项目选择"进程内聚合 + DB 做状态"，用 `cloudProvisioningInFlight`/`ensureCloudWorkerInFlight`/`wakeInFlight` 这几个**进程内去重 Map** + DB 乐观锁（`updated_at` 比较）来保多副本安全。这是一个"简单优先、靠 DB 兜底、进程内 Map 只做单副本优化"的务实选择。
+
+[ee/apps/den-api/src/routes/workers/shared.ts:557-559]()
+<!-- anchor: // Conditional updates are the multi-replica safety; this in-process map is … const promise = runCloudProvisioning(input, options) -->
+
+### 决策二：用 checkpoint 把"换镜像"从危险变安全，但把并发安全交给"claim + heartbeat"
+
+**取舍**：Daytona 默认容器可停(stopped)；要跨 snapshot 更新，Den 选择"新容器 + 还原 checkpoint"而非"把旧容器原地升级"。这需要 checkpoint（把引擎态落成 tar 到共享 volume）和"还原是否成功可探测"（restore marker）。
+
+**代价/为什么不做别的**：
+- 若只在被 stopped 的容器上原地改（不换镜像），则**无法升级运行时**（snapshot 一变就要新容器）。放弃"原地升级"换来"可安全升级"，代价是 checkpoint 引入 IO/扇出、以及**必须防多副本同时写一个 worker**。
+- 并发安全的解法是组合：`claimWorker`/`reserveWake`/`reserveIdleStop` 用 **`updated_at` 做比较的乐观更新**（`自动化更新只影响改了的状态`），`withProvisioningHeartbeat` 每 30s 触摸 `updated_at`防被 reconciler 误判为孤儿，`wakeInFlight`/`cloudProvisioningInFlight` 做单副本去重。这套"DB 乐观锁 + 进程内 Map"比"全局分布式锁"轻，但**要求所有副本时间戳一致且时钟不过分漂移**（依赖 DB `updated_at`）。若多副本时钟漂移，claim 可能失败——这是在"简单"与"强一致"之间偏向简单。
+- checkpoint 不以"内存快照"实现（`ProviderCapabilities.memorySnapshotRestore` 只是能力声明），而是"工作区 + 引擎态 tar"。因此"唤醒恢复的是**磁盘态**而非**运行中的内存态**"，运行中的 RAG 缓存/长对话上下文在进程内可能丢，需要重新加载——这是"状态可迁移"与"零丢失"之间的折衷。
+
+[ee/apps/den-api/src/workers/daytona.ts:1186-1245]()
+<!-- anchor: export async function wakeWorkerOnDaytonaWithRuntime( … } -->
+
+### 决策三：推理供应走"成员 bearer + 组织上游 key"双层，而不是直接分发上游 key
+
+**取舍**：成员拿到的只是 Den 签发的 bearer `InferenceKey`；真实 OpenRouter 组织子 key 只活在网关进程里，每请求临时注入。好处是"成员永远接触不到可计费 key"，整个 org 的 AI 用量统一记到组织账单；风控（禁止挑模型/禁 server tool / DPA 关闭 managed models）都在网关一处收紧。
+
+**代价/为什么不做别的**：
+- **放弃"直接给成员一个 OpenRouter key"**：那样组织无法按员额放大额度、无法审计到成员、无法在 DPA 时一键关闭，也无法"成员离开组织即吊销"。用"成员 bearer"换取了"吊销=吊销一个表行"的简单性（`revokeMemberInferenceKeys`、`syncInferenceAfterMemberChange` 一条路吊销）。
+- 代价是网状复杂度：供应侧要建 org 上游 key + 逐成员发 key + 维护 membership 变更时的增/删；执行侧每次请求要读 org 上游 key、算额度、注入 trace。`setInferenceEnabled` 里的"外部 create 不能原子回滚"（`ensureOrgUpstreamProviderKey` 注释）暴露了"先调 OpenRouter 再锁 DB"的时序脆弱性——Den 用 `withManagedModelsAdmission` 的 `for update` 串行化 admission，并接受"已发出的外部 key 若锁输就留着待清理"。
+- 更深一层：整个推理供应被 `assertManagedModelsAllowed`（DPA 关闭、policy unavailable 403/503）**fail-closed 包裹**，所以"组织签了 DPA → 公司提供的 OpenWork Models 不可用，但仍可用自带 key 的 provider 和 AI Gateway"。这是 B2B 合规硬性开关，宁可让 feature 不可用，也不在 DPA 下偷偷走。
+
+[ee/apps/den-api/src/inference.ts:555-557]()
+<!-- anchor: // An already-transmitted external create cannot be rolled back atomically. … await withManagedModelsAdmission(organizationId, async (tx) => { -->
+
+## 八、亮点与问题
 
 ### 亮点
 
-- **"低频写状态机 + 高频无状态转发"分层**：网关/代理不写业务表，控制面把编排收敛到一进程，吞吐与安全边界干净。
-- **checkpoint 机制**：把"容器不可持久"变成"状态可迁移"，支撑无感升级/复活，工程取舍写得很清楚（WAL 收敛、凭据不落卷、RESTORE_MARKER 防重复恢复）。
-- **唯一写面 + 只读消费者的共享库**：`den-db` 单一 Drizzle schema，三服务共用，控制面永是唯一写源。
-- **自带韧性**：`createDenDb` 只读查询瞬时断连自动重试一次，gateway 解析失败/上游失败逐级降级（502/not_ready），编排多处"尽力而退"。
-- **物化缓存双键**：workerId×instanceUrl 紧跟实例取代语义，直面"实例可重建"的信任边界。
+- **provider 契约把"宿主差异"压到最小**：Den 生命周期策略只对着 `SandboxProvider` 接口写，`SandboxRef/State/ImageRef` 全是不透明值，无 provider 代码在 Den 侧做字符串匹配。换宿主成为配置项而非代码分支。
+- **checkpoint 的"覆盖安全"设计**：只在 `state_dirs_pristine` 时还原 + restore marker 可探测 + `verifyRestoreMarker` 兜底，把"dangerous recycle"变成"safe recycle"。这是很多自托管平台缺的一块。
+- **推理"成员身份 + 组织账单 + 层额度"三合一**：最符合 SaaS 成本治理的形态；`five_hour` 用滚动、`weekly/monthly` 用锚定，额度清零语义清晰。
+- **deny-by-default 访问边界 + 大量 fail-closed 开关**：SSO 门禁、DPA 开关、capability、desktop 版本控制、网关密钥——安全问题的答案统一是"拒绝"，很少"尽力而为"。
+- **错误语义化 + 可观测失败**：网关把上游 4xx/5xx 翻成面向成员的文案；云启动失败用结构化 `CloudStartupFailure`（code+stage+reference）落库，可排查、可展示。
 
-### 问题 / 风险
+### 问题与改进点
 
-- **共享单库的演进成本**：三服务直接 import 同一 schema，跑 migration 必须齐步、顺序部署，否则一旧一新即字段漂移。`migration-schema-parity` 测试是补丁，未消除"部署编排必须原子"的约束。
-- **服务间强约定脆弱**：固定端口 + ENV 串接免服务发现，但自托管端口/URL 冲突时排查成本高；ejectable 并不彻底——云供应商细节开关化了，服务间拓扑约定仍写死在默认值。
-- **上下文扩 ad 一致窗口**：worker 状态机推进靠"条件更新 + 进程内并发去重"，扩 den-api 多副本而未做租约时，内存去重失效（仅剩 DB 条件兜底），是"当前够用、横向扩容即暴露"的隐患。去重 Map 定义在唤醒与供应两个入口（[ee/apps/den-api/src/workers/cloud-lifecycle.ts:53-53]()、[ee/apps/den-api/src/routes/workers/shared.ts:84-84]()）：
+- **重复逻辑**：`syncInferenceLimitPolicies`（den-api）与 `getEffectiveLimits`（inference 网关）各自实现"tier limit × memberCount"。同源但两份实现，属"两处都正确才正确"。
+- **dev 依赖与可迁移性边界**：checkpoint 还原的是"磁盘态"，不含运行中进程内存（RAG 缓存、上下文窗口）；换镜像升级后长对话上下文可能要重新建立。以`memorySnapshotRestore` 能力声明看，这属于"刻意不做"而非"遗漏"。
+- **多副本安全依赖 DB 时间戳**：claim/心跳/stop 都靠 `updated_at` 比较；多副本时钟不一致时会 miss claim。靠"进程内 Map + DB 兜底"是务实但非强一致。
+- **单点聚合**：den-api 一个进程挂 16 个 surface + 全部后台 loop（`server.ts` 同进程起 scim/github-sync/cloud-idle-stop/reconcile/automation-scheduler），好处是简单，坏处是任何特性出问题都可能影响整个控制面的启动/稳定性（有停机 withTimeout 但仍共享进程）。`den-api-deployment-incident-runbook` 明确这是生产单点。
+- **云实例按人但会有孤儿**：`getCloudWorker` 注释自述"admin 删除用户会置空 created_by_user_id 从而孤儿化实例"，且 legacy 共享行为第一次点击者保留，是"一用户一实例"模型的历史包袱，需专门 cleanup（路由里已有 `deleteCreateRaceLoser` 收敛 create race，但删除孤儿仍需 follow-up）。
 
-<!-- snippet: const wakeInFlight = new Map<WorkerId, Promise<void>>() -->
-
-<!-- snippet: const cloudProvisioningInFlight = new Map<WorkerId, Promise<void>>() -->
-- **物化与 checkpoint 的一致性前提**：RESTORE_MARKER 仅是本卷文件标记，多人共享卷若无线索锁，并发 hydrate/recycle 可能互相踩。当前依赖"同一 org 单 worker 语义"规避，属隐含假设。
-
-## 待办
-
-- `den-api/src/mcp/{index.ts,invoke.ts,native-capabilities.ts,marketplace-capabilities.ts}` 可补充"双工具如何经同一 catalog 分发"的字节级证据（见 [`mcp-injection.md`](mcp-injection.md)）。
-- `den-worker-proxy` 的 `refreshPromises` 并发刷新去重用例可在审计时补充。
-- 数据面 `apps/server` 侧 `/env`、`/workspaces`、`/runtime/*` 实现已由 [`agent-runtime-opencode.md`](agent-runtime-opencode.md) / [`server-proxy-api.md`](server-proxy-api.md) 补全。
+[ee/apps/den-api/src/routes/cloud/index.ts:256-260]()
+<!-- anchor: // Cloud is per-user. Legacy shared rows already have created_by_user_id set … // tracked separately. -->

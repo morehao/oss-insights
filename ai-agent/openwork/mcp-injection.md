@@ -1,409 +1,348 @@
-# MCP 双工具注入 + 企业能力（marketplace / SSO / SCIM / inference）
-
-> 本篇承接《Den 控制平面服务架构 + den-db 数据模型》。现在聚焦：能力如何被**描述**、如何被**注入**到外部 agent，以及组织如何**治理**这些能力（身份/市场/推理）。这是"把同一套 skills / MCP / 连接服务复用到任意 agent"这一产品定位的**落地机制**。
-
-> 核心机制：系统经 `/mcp/agent` 端点只暴露两个伞工具 `search_capabilities` + `execute_capability`，一切能力（REST catalog、External MCP、marketplace、原生能力）都并入这两个工具，工具面永不增长。
-
+---
+type: capability-gateway-dive
+title: OpenWork Den 控制面的 MCP 注入面 + 能力目录模块深度解读
+description: 拆解 OpenWork ee/apps/den-api/src/mcp 这一「MCP 注入面 + 能力目录」网关：它如何把 Den 的组织级能力（外部 MCP/连接、marketplace 能力、native 能力、远端会话、codemode、Agent 插件）压缩成 search_capabilities + execute_capability 两个伞工具，保证工具面永不增长、跨 agent 复用；覆盖两工具契约、能力目录注册/检索、外部 MCP 连接、认证授权分层与 server-consumption-first 设计哲学。
+tags: [openwork, mcp, capability-catalog, den, search-execute, oauth, marketplace, mcp-gateway]
 ---
 
-## 在项目中的角色：产品复用的唯一落地点
+# OpenWork 的 MCP 注入面 + 能力目录网关
 
-OpenWork 的核心主张是"同一份信任与能力，放进任何一个 agent harness（Codex / Claude Code / Cursor / OpenCode）都能用"。这个主张在代码里**没有一个"能力库"对象**，而是一个**恒定的 MCP 端点**：`/mcp/agent`。
+> 源码根：`/Users/morehao/Documents/study/ai-agent/openwork`（pinned `v0.18.44`，pnpm monorepo）。
+> 本解读聚焦 Den 控制面（第 ③ 层）的 `ee/apps/den-api/src/mcp/**` 与 `ee/apps/den-api/src/capability-sources/**` 两棵子树。
 
-这个端点只注册两个工具 `search_capabilities` + `execute_capability`，工具面**永不增长**。所有真实能力——Den 的 REST 目录（catalog）、External MCP 连接、原生 Google Workspace 能力、 marketplace 插件能力——都被并进这两个伞工具。这就是贯穿全模块的**Two-tool MCP rail contract**。
+## 一句话定位
 
-去掉它会怎样：失去跨 agent 复用。每个 harness 就要各自定义清单、各自分发凭据、各自维护 schema 同步，能力一旦发布就无法"一点回收"；前端桌面把开关关掉、组织把 grant 撤掉，也不会同步影响已接线的 agent。`/mcp/agent` 是能力注入的**单一关口**，也是回滚/治理的**单一杠杆**。
+这一段代码是 **OpenWork 把「组织级能力」做成一扇永不扩大的门** 的地方。桌面/服务端把 OpenCode 引擎跑起来（第 ① 层），`/opencode` 做透明代理（第 ② 层），而这一层负责回答一个问题：**任意 agent（Codex / Claude Code / Cursor / OpenCode）拿着一把连上来的 MCP 连接，怎样发现并调用 Den 里的全部能力，又不让工具列表随时间膨胀。**
 
-这个中枢的自我描述在 [ee/apps/den-api/src/mcp/agent.ts:337-354]() 的注释里写得最直白：
+答案不是"把每个 REST 端点注册成一个 MCP 工具"，而是只暴露两个伞工具：`search_capabilities` + `execute_capability`。所有 Den 侧能力（外部 MCP 连接、marketplace 插件能力、native Google/微软连接、远端会话、codemode 脚本、admin 工具、内置技能）都被"拍卖"成一条条**带名字的能力记录**（capability），存入一个**能力目录**（capability catalog），由这两个工具负责**检索**与**执行**。工具面恒定 2 个，能力目录里的条目可以无限涨。
 
-<!-- snippet-base64:LyoqCiAqIFRoZSBtaW5pbWFsLCBoYXJuZXNzLWZhY2luZyBNQ1Agc3VyZmFjZTogZXhhY3RseSB0d28gdG9vbHMsIGZ1bGwgc3RvcC4KICoKICogYC9tY3BgIChpbmRleC50cykgc3RheXMgZXhhY3RseSBhcyBpdCBpcyDigJQgZXZlcnkgY2F0YWxvZyBvcGVyYXRpb24KICogaW5kaXZpZHVhbGx5IHJlZ2lzdGVyZWQsIH4xMjkgdG9vbHMgdG9kYXkuIFRoYXQncyB1bmNoYW5nZWQgYW5kIHN0aWxsCiAqIHVzZWZ1bCBmb3Igc2NyaXB0cy9hZG1pbiB0b29saW5nIHRoYXQgd2FudCB0byBjYWxsIGEga25vd24gb3BlcmF0aW9uIGJ5CiAqIG5hbWUgZGlyZWN0bHkuCiAqCiAqIGAvbWNwL2FnZW50YCBpcyBhICpkaWZmZXJlbnQqIGVuZHBvaW50IGZvciBhICpkaWZmZXJlbnQqIGNvbnN1bWVyOiB0aGUKICogZGVza3RvcCBhcHAncyAiT3BlbldvcmsgQ2xvdWQgQ29udHJvbCIgY29ubmVjdGlvbiwgd2hpY2ggaXMgd2hhdCBhbgogKiBPcGVuQ29kZS9DbGF1ZGUgQ29kZS9Db2RleC1zdHlsZSBoYXJuZXNzIGFjdHVhbGx5IHNlZXMuIEl0IHJlZ2lzdGVycyBvbmx5CiAqIGBzZWFyY2hfY2FwYWJpbGl0aWVzYCBhbmQgYGV4ZWN1dGVfY2FwYWJpbGl0eWAsIGJvdGggYmFja2VkIGJ5IHRoZSBleGFjdAogKiBzYW1lIGNhdGFsb2cgYW5kIHRoZSBleGFjdCBzYW1lIGBpbnZva2VNY3BPcGVyYXRpb25gIGV4ZWN1dGUgcGF0aCB1c2VkIGJ5CiAqIHRoZSByaWNoIGVuZHBvaW50IOKAlCBubyBuZXcgYXV0aCwgbm8gbmV3IHBvbGljeSwgbm8gbmV3IGV4ZWN1dGlvbiBsb2dpYy4KICogQSBoYXJuZXNzIGNvbm5lY3RlZCBoZXJlIGNhbiBvbmx5IGRpc2NvdmVyIGFuZCBjYWxsIGNhcGFiaWxpdGllcyB0aHJvdWdoCiAqIHRoZXNlIHR3byB0b29sczsgdGhlIG90aGVyIH4xMjcgb3BlcmF0aW9ucyBhcmUgbm90IGluZGl2aWR1YWxseSBjYWxsYWJsZQogKiBvbiB0aGlzIGVuZHBvaW50LgogKi8K -->
-```ts
-/**
- * The minimal, harness-facing MCP surface: exactly two tools, full stop.
- *
- * `/mcp` (index.ts) stays exactly as it is — every catalog operation
- * individually registered, ~129 tools today.
- */
+```text
+harness (Codex/Claude Code/Cursor/OpenCode)
+   └─ 单一 MCP 服务器 "openwork-den-api-agent"   ← 工具面恒定 2 + 几个条件工具
+        ├─ search_capabilities   (检索能力目录)
+        └─ execute_capability    (执行能力记录)
+             ▲
+        capability-registry（能力目录注册表，7 类 capability source）
+             ├─ catalog       ── OpenAPI 派生 REST 操作
+             ├─ native        ── native:<connId>:<tool>
+             ├─ externalMcp   ── mcp:<connId>:<tool>
+             ├─ marketplace   ── plugin:<pluginId>:<configObjectId>
+             ├─ builtinSkill  ── skill:<name>
+             ├─ remoteSession ── remote-session:<action>
+             └─ admin         ── (<allowlisted admin>)
 ```
 
-关键事实：系统里**有两套 MCP 端点并存**，这是理解整套架构的钥匙：
+## 在项目中的角色
 
-| 端点 | 消费者 | 工具数 | 角色 |
-|---|---|---|---|
-| `/mcp`（rich，`index.ts`） | 脚本 / admin 工具，按名直呼已知操作 | ~129 个 catalog 操作 + search 伞 | 向后兼容的"富目录" |
-| `/mcp/agent`（minimal，`agent.ts`） | 桌面 "OpenWork Cloud Control" 连接，即 OpenCode/Claude Code/Codex 真正看到的 | 恰好 2 个伞工具 | 面向 harness 的能力面 |
+这里直接引用源码里的自我声明 —— 它是整个注入面的"立此存照"：
 
-`/mcp/agent` 不新建认证、不新建策略、不新建执行逻辑——它复用与富端点**完全相同的** `getCatalog` 和 `invokeMcpOperation`（见 [ee/apps/den-api/src/mcp/agent.ts:349-353]() 注释）。差异只在"暴露多少"。
+`/mcp`（index.ts）把 ~129 个 catalog 操作**逐个**注册成独立工具，供脚本/admin 工具直接按名调用；`/mcp/agent` 则**始终只注册** `search_capabilities`、`execute_capability`、`create_skill`，并**条件注册** Code Mode 与 Artifact 呈现工具；其余 ~127 个操作在这个端点上**不可单独调用**。[ee/apps/den-api/src/mcp/agent.ts:363-381]()
 
-[ee/apps/den-api/src/mcp/index.ts:59-63]() 同时为两个端点都注册了 OAuth protected-resource 元数据，但只在 `/mcp/agent` 接受公开 JWT（见 [ee/apps/den-api/src/mcp/index.ts:42-46]() 注释），这正是为"任意 harness 都能拿公开签名 token 接入"铺路。
+<!-- anchor:  * The minimal, harness-facing MCP surface: two capability-routing tools, one …  * operations are not individually callable on this endpoint. -->
 
----
+两个端点属于**两个不同的消费者**：`/mcp` 是"先知道要调什么、按名直连"的老入口；`/mcp/agent` 是桌面 App 的 "OpenWork Cloud Control" 连接，也就是**真正的 Codex/Claude Code/OpenCode 式 harness 所看到的那一面**。注入面的所有设计张力，几乎全部集中在 `/mcp/agent` 这一侧。
 
-## 解决什么问题、根因：为何用"两工具契约"而非"每能力一 MCP"
+### 若摘除这个模块，系统会发生什么
 
-### 根因：能力数量不可控
+1. **能力数量对 agent 呈爆炸式增长。** Den 是 OpenAPI 驱动的（`catalog.ts` 从 `openapi.json` 派生工具），REST 面有 100+ 操作；marketplace 与外部 MCP 连接数量随组织增长。把这些全部平铺成顶层 MCP 工具，会立刻打爆 Bedrock 的 64 字符工具名上限（`catalog.ts:12-14` 专门为此留了预算）、撑爆 `tools/list`，并逼 agent 在数百个工具里做选择——工具选择质量急剧下降。
+2. **跨 agent 复用失效。** 设备 A 用 Codex 连上的外部 MCP 工具，字面名依赖 `mcp:<connectionId>:<toolName>`，`connectionId` 是 Den 内部 ID；同理 marketplace 用 `plugin:<pluginId>:<configObjectId>`。若没有统一的能力名称解析 + 执行分发，每个 agent 都得自己维护一套"名字→真实调用"的映射。
+3. **授权与连接状态分裂成 N 套。** 外部 MCP 连接是"grant + per-member 凭证"双维度模型（`external-capabilities.ts:64-70`"Access is never implicit"）。没有唯一的 `execute_capability` 入口把 grant 校验、`needs_connection` 卡、tool policy 阻断集中在一处，每个暴露点都得各自重复这份安全校验，极易漏。
+4. **远端会话（远程聊天）无从谈起。** `remote-session:create/send/read` 只有在"伞工具"里才有意义——它是长生命周期副作用，靠 agent 用显式 `execute_capability` 驱动，而不是塞进批量脚本（`capability-registry.ts:698-701` 明确注释"Deliberately absent from the confined-script tool tree in v1"）。
 
-Naive 的做法是把每个 REST 操作都映射成一个独立 MCP 工具——`/mcp` 端点就是这样做的（约 129 个）。这在"能力是有限的、预先声明的"世界里没问题；但在 OpenWork 里能力是**运行时动态生长**的：
+## 解决什么根本问题、根因
 
-- 一个 org 连上 Notion / Linear / Stripe，其 `tools/list` 实时返回几十个工具（`external-capabilities.ts`）。
-- 一个 org 发布到 marketplace 的每个 plugin 的每个 config object 都是一个可执行单元（`marketplace-capabilities.ts`）。
-- 原生 Google Workspace 能力又叠一层（`native-capabilities.ts`）。
+根因是一个**能力数量与工具数量的错配**。OpenWork 主张"同一套 skills、MCP 连接、已连接服务，通过一个 MCP 注入面复用到任意 agent"。可是组织本身是个**增长面**：REST 端点随产品迭代涨，marketplace 插件、外部 MCP 连接、native provider 连接随管理员与成员的操作涨。若"每个能力 = 一个顶层 MCP 工具"，那么：
 
-如果把这三者都平铺成独立工具，**工具总数线性爆炸**，而且每个 harness 的 token 窗口、模型 tool-selection 召回都扛不住。更糟的是，External MCP 的工具数量在运行时才知道，根本没法提前注册。
+- **工具面会单调增长且不可预测**——`tools/list` 每次都可能变，agent 的工具选择（tool selection）在这个动态面里几乎不可能稳定；
+- **能力数量由"上游变化"驱动而非"使用需求"驱动**——agent 被迫看见它根本用不到的工具。
 
-根因总结：**能力是"动态目录 + 数据"而非"静态清单"**，静态注册的模型必然崩。破局点是：把"描述能力"和"调用能力"拆成两个协议原语，用**一个搜索伞 + 一个执行伞**覆盖任意规模的能力。
+因此需要一个**稳定面（工具）+ 动态目录（能力）+ 检索/执行两点可达**的解耦。[ee/apps/den-api/src/mcp/search.ts:4-16]() 把这点写得很直白：`search_capabilities` 是"search+execute 的 facade"，`/mcp` 端点里匹配只是信息性（每个 catalog 操作也单独注册了），而 `/mcp/agent` 里匹配是"发现可调用的**唯一**途径"——该端点除了 `search_capabilities` 和一个通用 `execute_capability` 什么也不暴露。
 
-文档 [docs/marketplace-capabilities-architecture.md:40-40]() 给出设计铁律：
+<!-- anchor:  * `search_capabilities` is the "search" half of a search+execute facade laid …  *   caller to construct a valid `execute_capability` call without guessing. -->
 
-<!-- snippet-base64:VGhlIE1DUCB0b29sIHN1cmZhY2UgZG9lcyBub3QgZ3Jvdy4gVGhlIHJhaWwgc3RpbGwgZXhwb3NlcyBleGFjdGx5IHR3byB0b29sczogYHNlYXJjaF9jYXBhYmlsaXRpZXNgIGFuZCBgZXhlY3V0ZV9jYXBhYmlsaXR5YC4K -->
-```
-The MCP tool surface does not grow. The rail still exposes exactly two tools: `search_capabilities` and `execute_capability`.
-```
+换句话说，根因是 **"开放的模型在动态的巨型工具面上做选择"不可持续**。解法是把它改造成"模型只在 **2 个稳定工具** 上做选择，再由目录注册表把这 2 个工具转译到任意数量的能力上"。这是经典的"**窄接口、宽实现**"（narrow interface, wide implementation）模式，也是 MCP 社区对"工具面失控"的主流回应。
 
-### 放弃了什么替代方案
+## 设计思路
 
-1. **每能力注册一个 MCP 工具**（rich 端点路径）：工具数爆炸，运行时能力无法预注册，且每次新连接都要重新协商工具清单。弃用，保留为 `/mcp` 的兼容富目录。
-2. **多 MCP server，各管一类能力**（如 `memory-mcp`、`marketplace-mcp`）：外部 agent harness 各自实现的 MCP 配置拼接逻辑不同，多 server 会显著抬高接入门槛，破坏"单行配置接入"。文档 [docs/mcp-ui-control-profile.md:15-15]() 反而强调"一行配置搞定"。
-3. **把能力数据直接硬编码进 agent 的 SKILL.md/工具里**：无法治理、无法撤销、无法做 grant 过滤，与"组织共享"相悖。
+### 总体：server-consumption-first + 可拆离 + 两工具伞契约 + 目录注册而非能力库对象
 
-两工具契约的代价也很明确：**可发现性转移到了模型身上**——模型必须先调 `search_capabilities` 才能知道能调什么，多一次往返。为此 agent 指令里反复强调"先 search，再 execute，别猜名字"，见 [ee/apps/den-api/src/mcp/agent.ts:120-120]()。
+设计哲学在 [docs/marketplace-capabilities-architecture.md:13-38]() 有完整陈述，核心是"`/mcp/agent` 的工具面不增长，仍然只暴露两个工具"。
 
----
+<!-- anchor:  Every plugin published to an org marketplace is automatically discoverable via …  The MCP tool surface does not grow. The rail still exposes exactly two tools: -->
 
-## 设计思路：核心模式
+具体拆成四条：
 
-三个贯穿性模式：
+1. **server-consumption-first（消费控制面，不发明平行行为）。** 外部 MCP 连接的发现、marketplace 能力的检索、native 能力的调用，都**复用已有的 Den 侧机制**（`catalog.ts` 的 OpenAPI 派生、`external-mcp-connections.ts` 的 grant 模型、plugin-system 的 `store.ts`），而不是在 MCP 层另造一套。典型证据：`external-capabilities.ts:55-71` 注释强调"merges org-level External MCP Connections … **without touching that catalog or the rich /mcp endpoint at all**"。
+2. **ejectable（可拆离）。** 能力目录是一个独立、可替换的层。`capability-registry.ts:784-818` 把 `createCapabilityRegistry(sources)` 作为构造器，把 7 类 source 作为参数注入——加一种能力源、删一种能力源，都不动两工具的固有逻辑。这是"目录注册而非能力库对象"的直接体现：每个 source 只暴露 `parseName / search / enumerate / execute` 四个方法（`capability-registry.ts:202-208`），没有"能力对象"这种一对一的实体。
+3. **两工具伞契约。** `search_capabilities` 负责把"我要什么"翻译成 `CapabilityMatch[]`；`execute_capability` 负责把 `name + path/query/body` 翻译成真实调用。两者共用同一套 `CapabilityMatch` 形状（`search.ts:23-49`），保证"搜索出来的一定能被执行"。
+4. **目录注册而非能力库对象。** 能力不是内存里"注册进去的 Tool 对象"，而是**带名字 + 描述 + 参数形状的数据**。搜索是**每次实时跑**的（跨 source fan-out），执行是**按名字 parse + 分发**的。这样能力目录天然是可审计、可加权限过滤、可反映连接实时状态的"活目录"，而不是一份静态清单。
 
-### 伞工具 + 命名空间分派（namespace dispatch）
+### 权衡：为什么放弃"每个能力注册成工具"
 
-所有外部能力都以**带前缀的名字**出现在搜索结果为执行参数里，execute 时按前缀分派：
+关键替代方案是"目录注册成真实 MCP 工具对象"。它的代价是上节提到的工具面膨胀 + Bedrock 命名冲突 + 跨 agent 名字不稳定。设计者用两处代码把这个代价显式挡在门外：
 
-- REST catalog 操作：无前缀，直接用缩短后的工具名（`catalog.ts`）
-- External MCP：`mcp:<connectionId>:<toolName>`（[ee/apps/den-api/src/mcp/external-capabilities.ts:64-77]()）
-- Native 原生连接：`native:<connectionId>:<toolName>`（[ee/apps/den-api/src/mcp/native-capabilities.ts:14-27]()）
-- Marketplace：`plugin:<pluginId>:<configObjectId>`（[ee/apps/den-api/src/mcp/marketplace-capabilities.ts:210-223]()）
+- `catalog.ts:12-14` 为 Bedrock 64 字符上限预留 `MAX_CLIENT_PREFIX`（`openwork-cloud_` 15 字符），并强制 `structuralShorten()` 把生成式 operationId（如 `deleteV1ConnectorInstancesByConnectorInstanceIdAccessByGrantId`）压成模型可读的 `deleteConnectorInstancesAccess`，避免任意截断产生难以辨识的哈希名。
+- `catalog.ts:354-360` 干脆在 catalog 构建期**抛错**，若工具名仍超 49 字符上限，强制开发者修 `structuralShorten()` 而不是把坏名字运到生产。
 
-这些名字不是 MCP 注册工具名（所以无视 64 字符工具名长度限制），而是 execute 的**路由键**。execute 处理器（[ee/apps/den-api/src/mcp/agent.ts:517-616]()）按 `parseXxxCapabilityName` 依次试分派。
+而"两工具"方案把这 49 字符的紧约束**从每个工具身上拿掉**，让能力名（`mcp:`/`plugin:`/`native:`/`remote-session:` 字符串）**不必是合法工具名**，于是可以携带稳定 ID，跨 agent 复用。`marketplace-capabilities-architecture.md:85-88` 明言："These names are data in search results and execute arguments. They are not registered MCP tool names, … the same pattern External MCP Connections use today."
 
-[ee/apps/den-api/src/mcp/external-capabilities.ts:42-48]() 注释说明命名空间的意义：
+这个边界的代价是：**agent 必须多一轮 search 才能执行**。设计者用强 prompt（`agent.ts:170-188` 的 `AGENT_MCP_INSTRUCTIONS`）把它压下来——"search 2-4 个关键词变体再说没有"、"只在 search_capabilities 返回了确切名字时才用 execute_capability"、"成功的 search_capabilities 本身就是授权证明，别叫用户重连"。这是"用指令层换工具面恒定"的典型交易。
 
-<!-- snippet-base64:ICogTWVyZ2VzIG9yZy1sZXZlbCBFeHRlcm5hbCBNQ1AgQ29ubmVjdGlvbnMgKGNhcGFiaWxpdHktc291cmNlcy8pIGludG8gdGhlCiAqIHNhbWUgc2VhcmNoX2NhcGFiaWxpdGllcy9leGVjdXRlX2NhcGFiaWxpdHkgc3VyZmFjZSBhcyB0aGUgUkVTVC1kZXJpdmVkCiAqIGNhdGFsb2cgKGNhdGFsb2cudHMpLCB3aXRob3V0IHRvdWNoaW5nIHRoYXQgY2F0YWxvZyBvciB0aGUgcmljaCBgL21jcGAKICogZW5kcG9pbnQgYXQgYWxsLiBBIGNvbm5lY3RlZCBleHRlcm5hbCB0b29sIGlzIG5hbWVzcGFjZWQKICogYG1jcDo8Y29ubmVjdGlvbklkPjo8dG9vbE5hbWU+YCBzbyBleGVjdXRlX2NhcGFiaWxpdHkgY2FuIHRlbGwgaXQgYXBhcnQKICogZnJvbSBhIFJFU1Qgb3BlcmF0aW9uIG5hbWUgYW5kIGRpc3BhdGNoIHRvIHRoZSByZWFsIE1DUCBjbGllbnQKICogKGV4dGVybmFsLW1jcC1jbGllbnQudHMpIGluc3RlYWQgb2YgaW52b2tlTWNwT3BlcmF0aW9uLgo= -->
-```
- * Merges org-level External MCP Connections (capability-sources/) into the
- * same search_capabilities/execute_capability surface as the REST-derived
- * catalog (catalog.ts) ... A connected external tool is namespaced
- * `mcp:<connectionId>:<toolName>` so execute_capability can tell it apart
- * from a REST operation name and dispatch to the real MCP client
- * (external-mcp-client.ts) instead of invokeMcpOperation.
-```
+## 关键数据结构（理解必需的最小集合）
 
-### 搜索 = 多源 top-K 合并（search is a bounded fan-out）
+**`CapabilityMatch`** —— 两工具的共用契约。`search_capabilities` 输出它，`execute_capability` 消费它。注意 `invocation.argumentsField: "body"` 告诉"通用 execute 调用方"外部 MCP 参数必须放哪个槽位；`schemaDigest` 用于在 search 与 execute 之间检测 schema 漂移。[ee/apps/den-api/src/mcp/search.ts:23-49]()
 
-`search_capabilities` 的实现（[ee/apps/den-api/src/mcp/agent.ts:443-494]()）并行查询六个来源后按分数合并、截断：
+<!-- anchor:  export type CapabilityMatch = { …  mcpApp?: { resourceUri: string } -->
 
-- REST catalog（`searchCapabilities`，DB-free 纯内存打分）
-- Native Google 能力（`searchNativeCapabilities`）
-- Admin 能力（仅 allowlist 平台 admin，`searchAvailableAdminCapabilities`）
-- 内置 skills（`searchBuiltinSkillCapabilities`）
-- External MCP（`searchExternalCapabilities`，**实时 tools/list 探测**）
-- Marketplace（`searchMarketplaceCapabilities`，**纯 DB 无网络**）
-
-[ee/apps/den-api/src/mcp/agent.ts:490-492]() 是合并核心：
-
-<!-- snippet-base64:ICAgICAgICBjb25zdCBtYXRjaGVzID0gWy4uLnJlc3RNYXRjaGVzLCAuLi5uYXRpdmVNYXRjaGVzLCAuLi5hZG1pbk1hdGNoZXMsIC4uLmJ1aWx0aW5Ta2lsbE1hdGNoZXMsIC4uLmV4dGVybmFsTWF0Y2hlcywgLi4ubWFya2V0cGxhY2VNYXRjaGVzXQogICAgICAgICAgLnNvcnQoY29tcGFyZUNhcGFiaWxpdHlNYXRjaGVzKQogICAgICAgICAgLnNsaWNlKDAsIGJvdW5kZWRMaW1pdCkK -->
-```ts
-        const matches = [...restMatches, ...nativeMatches, ...adminMatches, ...builtinSkillMatches, ...externalMatches, ...marketplaceMatches]
-          .sort(compareCapabilityMatches)
-          .slice(0, boundedLimit)
-        return capabilitySearchToolResult(matches, externalCoverageHint)
-```
-
-这是刻意的不均质设计：**搜索 External MCP 是实时探测**（每搜一次要对最多 16 个连接做 `tools/list`），而 marketplace 是纯 DB 索引。文档 [docs/marketplace-capabilities-architecture.md:176-180]() 点出对比：
-
-<!-- snippet-base64:U2VhcmNoIGlzIERCLW9ubHksIGJvdW5kZWQgYnkgYGxpbWl0YCwgYW5kIG1ha2VzIG5vIGxpdmUgbmV0d29yayBjYWxscy4gVGhpcyBjb250cmFzdHMgd2l0aCBFeHRlcm5hbCBNQ1AgQ29ubmVjdGlvbnMsIHdoZXJlIHNlYXJjaCBtYXkgY2FsbCBgdG9vbHMvbGlzdGAgdGhyb3VnaCBgZWUvYXBwcy9kZW4tYXBpL3NyYy9jYXBhYmlsaXR5LXNvdXJjZXMvZXh0ZXJuYWwtbWNwLWNsaWVudC50c2AuCgpEZWR1cGUgYWdhaW5zdCBsb2NhbGx5IGluc3RhbGxlZCBjb3BpZXMgaXMgTk9UIHNlcnZlci1zaWRlIHBvc3NpYmxlIGluIFBoYXNlIDEuIERlbiBkb2VzIG5vdCBrbm93IHdoYXQgYSBkZXNrdG9wIGNvcGllZCBpbnRvIGAub3BlbmNvZGUvYC4gRGVmZXIgZGVkdXBlOyBtYWtlIGR1cGxpY2F0ZXMgZGlzdGluZ3Vpc2hhYmxlIHdpdGggbWFya2V0cGxhY2UvcGx1Z2luIHByb3ZlbmFuY2UgaW4gc3VtbWFyaWVzIGFuZCBleGVjdXRlIHBheWxvYWRzLgoKLS0tCg== -->
-```
-Search is DB-only, bounded by `limit`, and makes no live network calls.
-This contrasts with External MCP Connections, where search may call `tools/list`
-```
-
-### 能力者身份 = member（不是 org）
-
-关键设计：搜索/执行 External MCP 与 marketplace 能力时，权限作用域是**调用者 member**（grants + per-member credentials），不只是 org。原因：per_member 模式下每个成员用自己的 OAuth 账户连不同的 provider，agent 必须"以成员身份"执行。
-
-[ee/apps/den-api/src/mcp/external-capabilities.ts:50-57]() 注释点出：
-
-<!-- snippet-base64:ICogRXZlcnl0aGluZyBoZXJlIGlzIHNjb3BlZCB0byB0aGUgQ0FMTElORyBNRU1CRVIsIG5vdCBqdXN0IHRoZSBvcmc6CiAqIC0gT25seSBjb25uZWN0aW9ucyB0aGUgbWVtYmVyIGhhcyBiZWVuIGdyYW50ZWQgKG9yZy13aWRlLCBkaXJlY3QsIG9yIHZpYQogKiAgIGEgdGVhbSkgYXJlIHNlYXJjaGFibGUvZXhlY3V0YWJsZS4gQWNjZXNzIGlzIG5ldmVyIGltcGxpY2l0LgogKiAtIEZvciBjcmVkZW50aWFsTW9kZSAicGVyX21lbWJlciIgY29ubmVjdGlvbnMsIGNhbGxzIHJ1biB3aXRoIHRoZQogKiAgIG1lbWJlcidzIG93biBjb25uZWN0ZWQgYWNjb3VudDsgaWYgdGhleSBoYXZlbid0IGNvbm5lY3RlZCBvbmUgeWV0LAogKiAgIHNlYXJjaCBzdXJmYWNlcyB0aGUgY29ubmVjdGlvbiBhcyBuZWVkc19jb25uZWN0aW9uIChzbyB0aGUgYWdlbnQgY2FuCiAqICAgdGVsbCB0aGUgaHVtYW4gd2hhdCB0byBkbykgaW5zdGVhZCBvZiBzaWxlbnRseSBoaWRpbmcgaXQuCiAqLwo= -->
-```
- * Everything here is scoped to the CALLING MEMBER, not just the org:
- * - Only connections the member has been granted (org-wide, direct, or via
- *   a team) are searchable/executable. Access is never implicit.
- * - For credentialMode "per_member" connections, calls run with the
- *   member's own connected account; if they haven't connected one yet,
- *   search surfaces the connection as needs_connection ...
-```
-
-这个模式贯穿三处：External 执行（[ee/apps/den-api/src/mcp/external-capabilities.ts:950-993]() 先查 `memberCanUseExternalMcpConnection`）、marketplace 可见性（[ee/apps/den-api/src/mcp/marketplace-capabilities.ts:579-611]() 的 `filterVisibleRows`）、native 能力。
-
----
-
-## 关键数据结构：两个工具 + explore 上下文
-
-### `search_capabilities`
-
-输入（[ee/apps/den-api/src/mcp/agent.ts:436-440]()）：
-- `query: string`（必填，关键词）
-- `limit?: number`（1-20，默认 5）
-- `type?: "all"|"api"|"admin"|"mcp"|"marketplace"|"skills"`（来源过滤）
-
-输出（`capabilityMatchOutputSchema`，[ee/apps/den-api/src/mcp/agent.ts:70-87]()）每条 match 携带足够的"调用形状"，让外部 agent 无需猜就能构造 `execute_capability`。核心字段 `CapabilityMatch`（[ee/apps/den-api/src/mcp/search.ts:22-40]()）：
-
-<!-- snippet-base64:Y29uc3QgY2FwYWJpbGl0eU1hdGNoT3V0cHV0U2NoZW1hID0gei5vYmplY3QoewogIG5hbWU6IHouc3RyaW5nKCksCiAgbWV0aG9kOiB6LnN0cmluZygpLAogIHBhdGg6IHouc3RyaW5nKCksCiAgc2NvcmU6IHoubnVtYmVyKCksCiAgc3VtbWFyeTogei5zdHJpbmcoKSwKICBwYXRoUGFyYW1zOiB6LmFycmF5KHouc3RyaW5nKCkpLAogIHF1ZXJ5UGFyYW1zOiB6LmFycmF5KHouc3RyaW5nKCkpLAogIGhhc0JvZHk6IHouYm9vbGVhbigpLAogIGJvZHlTY2hlbWE6IHoudW5rbm93bigpLm9wdGlvbmFsKCksCiAgYXJndW1lbnRzU2NoZW1hOiB6LnVua25vd24oKS5vcHRpb25hbCgpLAogIHNjaGVtYURpZ2VzdDogei5zdHJpbmcoKS5vcHRpb25hbCgpLAogIGludm9jYXRpb246IHoub2JqZWN0KHsgYXJndW1lbnRzRmllbGQ6IHoubGl0ZXJhbCgiYm9keSIpIH0pLm9wdGlvbmFsKCksCiAga2luZDogei5zdHJpbmcoKS5vcHRpb25hbCgpLAogIHN0YXR1czogei5zdHJpbmcoKS5vcHRpb25hbCgpLAogIGhpbnQ6IHouc3RyaW5nKCkub3B0aW9uYWwoKSwKICBjb25uZWN0aW9uU3RhdHVzOiBjb25uZWN0aW9uU3RhdHVzT3V0cHV0U2NoZW1hLm9wdGlvbmFsKCksCn0pLnBhc3N0aHJvdWdoKCkKCg== -->
 ```ts
 export type CapabilityMatch = {
-  name: string
-  method: string
-  path: string
-  score: number
-  summary: string
-  pathParams: string[]      // e.g. ["workerId"] —— execute 时放进 path
-  queryParams: string[]     // execute 时放进 query
-  hasBody: boolean          // 是否要 JSON body
-  bodySchema?: unknown      // 原生 REST JSON mutation 的精确 schema
-  argumentsSchema?: unknown // External MCP 返回的实时工具参数 schema
-  invocation?: { argumentsField: "body" } // 告诉执行者 MCP 参数要放进 body
+  name: string; method: string; path: string; score: number; summary: string
+  pathParams: string[]; queryParams: string[]; hasBody: boolean
+  bodySchema?: unknown; querySchema?: unknown
+  argumentsSchema?: unknown            // 外部 MCP 提供方 live tools/list 的 schema
+  invocation?: { argumentsField: "body" }  // 参数必须通过 execute_capability.body 传入
+  scriptPath?: string                   // codemode 脚本路径
+  kind?: string                         // "connection_status" | "mcp_app" | 具体 objectType...
+  mcpApp?: { resourceUri: string }      // 标准 MCP App 绑定
 }
 ```
 
-`search_capabilities` 的注解（[ee/apps/den-api/src/mcp/agent.ts:38-43]()）声明为只读、幂等、安全，让模型可放心重复调用：
+**`ParsedCapability`** —— 能力名解析产物。`execute_capability` 的第一件事是**按名字前缀解析它属于哪类**，从而决定分发到哪个 source。[ee/apps/den-api/src/mcp/capability-registry.ts:86-93]()
 
-<!-- snippet-base64:ZXhwb3J0IGNvbnN0IFNFQVJDSF9DQVBBQklMSVRJRVNfQU5OT1RBVElPTlM6IFRvb2xBbm5vdGF0aW9ucyA9IHsKICByZWFkT25seUhpbnQ6IHRydWUsCiAgZGVzdHJ1Y3RpdmVIaW50OiBmYWxzZSwKICBpZGVtcG90ZW50SGludDogdHJ1ZSwKICBvcGVuV29ybGRIaW50OiB0cnVlLAp9Cg== -->
+<!-- anchor:  export type ParsedCapability = …  | { kind: "admin"; name: string; toolName: string } -->
+
 ```ts
-export const SEARCH_CAPABILITIES_ANNOTATIONS: ToolAnnotations = {
-  readOnlyHint: true,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: true,
+export type ParsedCapability =
+  | { kind: "catalog"; name: string }
+  | { kind: "native"; name: string; connectionId: string; toolName: string }
+  | { kind: "externalMcp"; name: string; connectionId: string; toolName: string }
+  | { kind: "marketplace"; name: string; configObjectId: string; pluginId: string }
+  | { kind: "builtinSkill"; name: string }
+  | { kind: "remoteSession"; name: string; action: RemoteSessionAction }
+  | { kind: "admin"; name: string; toolName: string }
+```
+
+**`CapabilitySource`** —— 目录注册表的"一行"。每个能力源都实现同样的四个方法，这是把"能力目录"从"能力库对象"区分开的关键，也是可拆离性的落点。[ee/apps/den-api/src/mcp/capability-registry.ts:202-207]()
+
+<!-- anchor:  export type CapabilitySource = { …  execute: (ctx: CapabilityRegistryContext, parsed: ParsedCapability, input: CapabilityExecuteInput) => Promise<ExecuteCapabilityToolResult> -->
+
+```ts
+export type CapabilitySource = {
+  kind: CapabilitySourceKind            // 7 类之一
+  parseName: (name: string) => ParsedCapability | null
+  search: (ctx, query, limit) => Promise<CapabilityMatch[]>
+  enumerate: (ctx) => Promise<CapabilityLeaf[]> | CapabilitySourceExclusion
+  execute: (ctx, parsed, input) => Promise<ExecuteCapabilityToolResult>
 }
 ```
 
-### `execute_capability`
+**`CapabilityRegistryContext`** —— 一次 `/mcp/agent` 请求的"授权 + 编排上下文"。它把**已解析成员身份**（`member`，决定外部 MCP / native / marketplace 的可见范围）、**组织开关**、**平台 admin 判定**、**codemode 命名空间**一次性注入，避免各 source 重复解析。[ee/apps/den-api/src/mcp/capability-registry.ts:110-122]()
 
-输入（[ee/apps/den-api/src/mcp/agent.ts:509-515]()）：`name`（必填，search 返回的精确名）、`schemaDigest?`（External MCP schema 摘要，用于漂移检测）、`path/query/body`。注解（[ee/apps/den-api/src/mcp/agent.ts:44-49]()）标记为可能破坏性、非幂等——语义上接近"任意写操作"。
+<!-- anchor:  export type CapabilityRegistryContext = { …  resolveNamespaceContext: () => Promise<CodemodeConnectionNamespaceContext> -->
 
-### 兜底 schema：编目名缩短（catalog.ts）
-
-REST 目录的工具名是从 OpenAPI operationId 生成的，受 AWS Bedrock 64 字符工具名硬限制。`catalog.ts` 用**结构化缩短**（去 `V1` 版本标记、去 `By<Param>Id` 路径参数重述）加 FNV-1a 稳定 hash 去冲突（[ee/apps/den-api/src/mcp/catalog.ts:49-64]()）。不能靠截断硬塞——超长就直接在构建期 throw，防止坏名字上线（[ee/apps/den-api/src/mcp/catalog.ts:325-331]()）。
-
-[ee/apps/den-api/src/mcp/catalog.ts:11-14]() 记录约束来源：
-
-<!-- snippet-base64:Ly8gdW5kZXIgNjQgc28gdGhlIHByZWZpeGVkIG5hbWUgc3RpbGwgdmFsaWRhdGVzIG9uIEJlZHJvY2suCmV4cG9ydCBjb25zdCBCRURST0NLX01BWF9UT09MX05BTUVfTEVOR1RIID0gNjQKZXhwb3J0IGNvbnN0IE1BWF9DTElFTlRfUFJFRklYID0gIm9wZW53b3JrLWNsb3VkXyIubGVuZ3RoIC8vIDE1CmV4cG9ydCBjb25zdCBNQVhfVE9PTF9OQU1FX0xFTkdUSCA9IEJFRFJPQ0tfTUFYX1RPT0xfTkFNRV9MRU5HVEggLSBNQVhfQ0xJRU5UX1BSRUZJWCAvLyA0OQo= -->
 ```ts
-export const BEDROCK_MAX_TOOL_NAME_LENGTH = 64
-export const MAX_CLIENT_PREFIX = "openwork-cloud_".length // 15
-export const MAX_TOOL_NAME_LENGTH = BEDROCK_MAX_TOOL_NAME_LENGTH - MAX_CLIENT_PREFIX // 49
+export type CapabilityRegistryContext = {
+  app: Hono; env: unknown
+  catalog: readonly McpToolOperation[]
+  principal: McpPrincipal                       // 来自 auth.ts 已验 token
+  organizationId: DenTypeId<"organization">
+  member: McpMemberIdentity | null              // grant 校验所需（memberId + teamIds）
+  redirectUriBase: string
+  generatedArtifactViewsEnabled: boolean
+  externalMcpConnectionsEnabled: boolean        // 组织 kill-switch
+  remoteSessionsEnabled: boolean
+  resolvePlatformAdmin: () => Promise<boolean>
+  resolveNamespaceContext: () => Promise<CodemodeConnectionNamespaceContext>
+}
 ```
 
-### 受控能力清单：policy.ts（哪些 REST 操作能上 rail）
-
-不是所有 Den 操作都暴露给 MCP。`policy.ts` 用三层拦截：`BLOCKED_TAGS`（Admin/Authentication/System/Webhooks 全拒）、`SAFE_INCLUDED_TAGS`（白名单）、`BLOCKED_OPERATION_IDS`（黑名单，如 `postApiKeys`、`deleteOrg`，见 [ee/apps/den-api/src/mcp/policy.ts:25-37]()）。`x-mcp` 显式标注可覆盖默认推导（[ee/apps/den-api/src/mcp/policy.ts:55-79]()）。
-
-[ee/apps/den-api/src/mcp/policy.ts:50-79]() 决策顺序：
-
-<!-- snippet-base64:ZXhwb3J0IGZ1bmN0aW9uIGlzTWNwT3BlcmF0aW9uQWxsb3dlZChpbnB1dDogewogIG1ldGhvZDogc3RyaW5nCiAgcGF0aDogc3RyaW5nCiAgb3BlcmF0aW9uOiBPcGVuQXBpT3BlcmF0aW9uCn0pIHsKICBjb25zdCBleHBsaWNpdCA9IGlucHV0Lm9wZXJhdGlvblsieC1tY3AiXQogIGlmIChleHBsaWNpdCA9PT0gZmFsc2UgfHwgZXhwbGljaXQgPT09ICJmYWxzZSIpIHsKICAgIHJldHVybiBmYWxzZQogIH0KCiAgY29uc3Qgb3BlcmF0aW9uSWQgPSBpbnB1dC5vcGVyYXRpb24ub3BlcmF0aW9uSWQKICBpZiAoIW9wZXJhdGlvbklkIHx8IEJMT0NLRURfT1BFUkFUSU9OX0lEUy5oYXMob3BlcmF0aW9uSWQpKSB7CiAgICByZXR1cm4gZmFsc2UKICB9CgogIGlmIChpbnB1dC5wYXRoLnN0YXJ0c1dpdGgoIi9hcGkvYXV0aCIpIHx8IGlucHV0LnBhdGguaW5jbHVkZXMoIi93ZWJob29rcyIpIHx8IGlucHV0LnBhdGguaW5jbHVkZXMoIi9hZG1pbiIpKSB7CiAgICByZXR1cm4gZmFsc2UKICB9CgogIGNvbnN0IHRhZ3MgPSBpbnB1dC5vcGVyYXRpb24udGFncyA/PyBbXQogIGlmICh0YWdzLnNvbWUoKHRhZykgPT4gQkxPQ0tFRF9UQUdTLmhhcyh0YWcpKSkgewogICAgcmV0dXJuIGZhbHNlCiAgfQoKICBpZiAoZXhwbGljaXQgPT09IHRydWUgfHwgZXhwbGljaXQgPT09ICJ0cnVlIikgewogICAgcmV0dXJuIHRydWUKICB9CgogIHJldHVybiB0YWdzLnNvbWUoKHRhZykgPT4gU0FGRV9JTkNMVURFRF9UQUdTLmhhcyh0YWcpKQp9Cg== -->
-```ts
-  const explicit = input.operation["x-mcp"]
-  if (explicit === false || explicit === "false") return false
-  const operationId = input.operation.operationId
-  if (!operationId || BLOCKED_OPERATION_IDS.has(operationId)) return false
-  if (input.path.startsWith("/api/auth") || input.path.includes("/webhooks") || input.path.includes("/admin")) return false
-  const tags = input.operation.tags ?? []
-  if (tags.some((tag) => BLOCKED_TAGS.has(tag))) return false
-  if (explicit === true || explicit === "true") return true
-  return tags.some((tag) => SAFE_INCLUDED_TAGS.has(tag))
-```
-
-**这是伞工具攻击面收窄的关键机制**：伞工具本身"什么都能调"，但它背后调用的 catalog 已经在构建期被 `isMcpOperationAllowed` 过滤过——写/删/凭证类操作天然上不了 rail。
-
----
+**`McpPrincipal`**（`auth.ts:29-34`）—— 已认证主体，只是 `userId + organizationId + scopes + payload`，不含"成员身份"；成员身份需另行 `resolveMcpMemberIdentity`（`external-capabilities.ts:95-118`）。这个分离是授权分层的关键：**token 证明"你是谁"，member 证明"你在本组织的可见范围"，二者不混。**
 
 ## 核心流程
 
-### 全链路：外部 agent → search → execute → 转发到 External MCP
+### 请求到达与认证/授权分层（`/mcp/agent`）
 
-这是整个模块的心脏。外部 agent（如 OpenCode）连上 `/mcp/agent`，先 `search_capabilities` 找到能力，再 `execute_capability` 触发；若目标是 External MCP 连接，Den 会用 enterprise-mcp-client 去下游 provider 实时 `tools/list`、`callTool`，并做成员身份授权、schema 漂移提示、连接状态兜底。
+单次请求的认证、授权在 `agent.ts:392-445` 里密集完成，顺序是：**验 token → 拒绝 standalone SSE → JSON-RPC preflight → 解析 catalog → 解析成员身份 → 取组织元数据 → 判断 app-host 能力 → 建能力上下文**。
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant H as 外部 agent（OpenCode/Codex/Cursor）
-    participant A as /mcp/agent (agent.ts)
-    participant S as search (多源合并)
-    participant Db as den-db
-    participant C as enterprise-mcp-client / runtime
-    participant P as 下游 External MCP（Notion/Stripe...）
-
-    H->>A: MCP initialize → tools/list
-    A->>A: 注册 search_capabilities + execute_capability（仅此两工具）
-    A-->>H: needClientContext 就绪，返回两工具 schema
-
-    H->>A: callTool(search_capabilities, {query:"create task"})
-    A->>A: resolveMcpMemberIdentity(userId→orgMembership+teams)
-    par 六路并行搜索
-        S->>Db: REST catalog 纯内存打分
-        S->>C: 对 ≤16 个已授权连接实时 tools/list（共用一个绝对 deadline）
-        S->>Db: marketplace 纯 DB 索引 (indexed searchText)
-        S->>H: native/admin/skills 各源
-    end
-    A-->>H: matches[]，含外部工具 (name=mcp:<conn>:<tool>, argumentsSchema, schemaDigest)
-
-    H->>A: callTool(execute_capability,{name:"mcp:<conn>:<tool>", body:{...}, schemaDigest})
-    A->>A: parseExternalCapabilityName → 识别前缀 mcp:
-    A->>Db: getExternalMcpConnection + memberCanUseExternalMcpConnection(grant/team)
-    A->>C: listExternalMcpTools(conn, redirectUri, 成员身份, deadline)
-    C->>P: initialize + toolsList（实时取最新 schema）
-    A->>A: 计算 schemaDigest；若与调用方 schemaDigest 不符→拼 advisory schemaGuidance
-    par 本地校验 & 转发（校验不阻塞）
-        A->>A: validateExternalMcpToolArguments（仅产出告警）
-        A->>C: callExternalMcpTool——已在校验前启动
-        C->>P: callTool(arguments)（OpenWork 永远尝试下游调用）
-    end
-    P-->>C: 结果（或 isError / schema 拒绝）
-    C-->>A: 结果 或 ExternalMcpDiagnostic
-    A-->>H: 成功→toolResult；失败→(error/connectionStatus/action 兜底) 附着 schemaGuidance
-```
-
-### 关键时序细节：schema 先服务后校验，网络故障不污染
-
-`agent.ts` 的 execute 里，对 External MCP 是**先发起 provider 调用，再做本地 schema 校验**，校验失败只产生 advisory 警告而不断言（[ee/apps/den-api/src/mcp/external-capabilities.ts:1082-1111]()）：
-
-<!-- snippet-base64:ICAgIC8vIE1DUCB0b29sIGFyZ3VtZW50cyBhcmUgYWx3YXlzIGFuIG9iamVjdCBhdCB0aGUgcHJvdG9jb2wgYm91bmRhcnkuIFN0YXJ0CiAgICAvLyB0aGUgcHJvdmlkZXIgY2FsbCBiZWZvcmUgYWR2aXNvcnkgdmFsaWRhdGlvbiBzbyBhIHByb3ZpZGVyIHdpdGggYW4KICAgIC8vIGluYWNjdXJhdGUgb3IgdW5zdXBwb3J0ZWQgYWR2ZXJ0aXNlZCBzY2hlbWEgc3RpbGwgZ2V0cyB0aGUgcmVxdWVzdC4KICAgIGNvbnN0IGZvcndhcmRlZEFyZ3VtZW50cyA9IGlzUmVjb3JkKGlucHV0LmFyZ3MpID8gaW5wdXQuYXJncyA6IHt9CiAgICBjb25zdCBwcm92aWRlckNhbGwgPSBjYWxsRXh0ZXJuYWxNY3BUb29sKHsKICAgICAgY29ubmVjdGlvbiwKICAgICAgcmVkaXJlY3RVcmksCiAgICAgIHRvb2xOYW1lOiBpbnB1dC50b29sTmFtZSwKICAgICAgYXJnczogZm9yd2FyZGVkQXJndW1lbnRzLAogICAgICBtZW1iZXIsCiAgICAgIGxpZmVjeWNsZURlYWRsaW5lOiBkZWFkbGluZSwKICAgIH0pCgogICAgY29uc3QgdmFsaWRhdGlvbiA9IHZhbGlkYXRlRXh0ZXJuYWxNY3BUb29sQXJndW1lbnRzKHRvb2wuaW5wdXRTY2hlbWEsIGlucHV0LmFyZ3MpCiAgICBpZiAoIXZhbGlkYXRpb24ub2sgJiYgdmFsaWRhdGlvbi5lcnJvciA9PT0gImludmFsaWRfYXJndW1lbnRzIikgewogICAgICBzY2hlbWFXYXJuaW5ncy5wdXNoKHsKICAgICAgICBjb2RlOiAiYXJndW1lbnRzX3NjaGVtYV9taXNtYXRjaCIsCiAgICAgICAgbWVzc2FnZTogIlRoZSBhcmd1bWVudHMgZG8gbm90IG1hdGNoIHRoZSBwcm92aWRlcidzIGFkdmVydGlzZWQgYXJndW1lbnRzU2NoZW1hLCBidXQgT3Blbldvcmsgc3RpbGwgZm9yd2FyZGVkIHRoZSBjYWxsIGJlY2F1c2UgdGhlIHByb3ZpZGVyIG1heSBhY2NlcHQgdGhlbS4iLAogICAgICAgIGlzc3VlczogdmFsaWRhdGlvbi5pc3N1ZXMsCiAgICAgICAgc3VnZ2VzdGVkQWN0aW9uOiAiSWYgdGhlIHByb3ZpZGVyIGNhbGwgZmFpbGVkLCBjb3JyZWN0IHRoZSBsaXN0ZWQgaXNzdWVzIGFuZCByZXRyeSB3aXRoIGNoYW5nZWQgYXJndW1lbnRzLiBEbyBub3QgcmV0cnkgc29sZWx5IGJlY2F1c2Ugb2YgdGhpcyB3YXJuaW5nIHdoZW4gdGhlIHByb3ZpZGVyIGNhbGwgc3VjY2VlZGVkLiIsCiAgICAgIH0pCiAgICB9IGVsc2UgaWYgKCF2YWxpZGF0aW9uLm9rKSB7CiAgICAgIHNjaGVtYVdhcm5pbmdzLnB1c2goewogICAgICAgIGNvZGU6ICJhcmd1bWVudHNfc2NoZW1hX3VuYXZhaWxhYmxlIiwKICAgICAgICBtZXNzYWdlOiB2YWxpZGF0aW9uLm1lc3NhZ2UsCiAgICAgICAgc3VnZ2VzdGVkQWN0aW9uOiAiVXNlIHRoZSBwcm92aWRlciByZXN1bHQgYXMgdGhlIHNvdXJjZSBvZiB0cnV0aC4gSWYgdGhlIGNhbGwgZmFpbGVkLCB0aGUgcHJvdmlkZXIgYWRtaW5pc3RyYXRvciBtYXkgbmVlZCB0byByZXBhaXIgdGhlIGFkdmVydGlzZWQgaW5wdXRTY2hlbWEuIiwKICAgICAgfSkKICAgIH0KCiAgICBzY2hlbWFHdWlkYW5jZSA9IGFkdmlzb3J5U2NoZW1hR3VpZGFuY2Uoc2NoZW1hV2FybmluZ3MpCg== -->
-```ts
-    // MCP tool arguments are always an object at the protocol boundary. Start
-    // the provider call before advisory validation so a provider with an
-    // inaccurate or unsupported advertised schema still gets the request.
-    const forwardedArguments = isRecord(input.args) ? input.args : {}
-    const providerCall = callExternalMcpTool({ ... })
-    ...
-    const validation = validateExternalMcpToolArguments(tool.inputSchema, input.args)
-```
-
-这是刻意的容错权衡：provider 可能 schema 失真，OpenWork 选择"尽力转发 + 结果为主"而不是教条式拒绝。若 provider 返回 `invalid_capability_arguments`，才用 `invalidCapabilityArguments` 让 agent 修正后**带改动**重试一次（[ee/apps/den-api/src/mcp/external-capabilities.ts:1133-1140]()），并 `sameArgumentsRetryable: false` 防止空转。
-
-### marketplace 能力如何进入可搜索目录
-
-marketplace 能力**没有自己的 MCP server**，它只是又一个"数据源"被并入 `search_capabilities`。进入方式是**实时 DB join**（非拷贝注册）：
+下面按授权分层展开（这是本项目最值得抄的部分）：
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant H as 外部 agent
-    participant Pub as 发布者<br>(org admin / GitHub connector)
-    participant S as store.ts (plugin-system)
-    participant Db as den-db<br>(config_object / plugin / marketplace)
-    participant M as marketplace-capabilities.ts
-    participant A as agent.ts /mcp/agent
-
-    Pub->>S: publish/sync plugin（或从 GitHub import）
-    S->>Db: 写 ConfigObject + ConfigObjectVersion + Plugin 行
-    S->>Db: 写 configObject/plugin/marketplace 三种 grant 行
-    H->>A: callTool(search_capabilities, query)
-    A->>M: searchMarketplaceCapabilities({org, member, query, limit})
-    M->>Db: listActiveCapabilityRows(org)（join 全链，状态须 active）
-    M->>Db: filterVisibleRows(member grants 级联)
-    M->>Db: 评分 title/desc/searchText——纯内存，无网络
-    M-->>A: MarketplaceCapabilityMatch（name=plugin:id:config）
-    A-->>H: 与外部 MCP / catalog 结果按分数交错排序后返回 top-K
+flowchart TD
+    A([agent 连上 /mcp/agent]) --> B["verifyMcpRequest 验 token"]
+    B --> C{token 有效?}
+    C -- 否 --> D["401 + challenge<br>invalid_token"]
+    C -- 是 --> E{scope 含 mcp:read/write?}
+    E -- 否 --> F["403 insufficient_mcp_scope"]
+    E -- 是 --> G{resource 匹配当前路由?}
+    G -- 否 --> H["401 wrong_mcp_resource"]
+    G -- 是 --> I{grant 存活且具成员?}
+    I -- 否 --> J["401/403<br>revoked/membership"]
+    I -- 是 --> K["resolveMcpMemberIdentity<br>得 memberId+teamIds"]
+    K --> L["createCapabilityRegistryContext<br>注入 member + 各开关"]
+    L --> M["agent.ts 注册 2 工具<br>search/execute_capability"]
+    M --> N["handlers.fetch 分发到 McpServer"]
 ```
 
-[ee/apps/den-api/src/mcp/marketplace-capabilities.ts:335-376]() 的 `listActiveMarketplaceRows` 是核心 join；而**身份可见性**由 `filterVisibleRows`（[ee/apps/den-api/src/mcp/marketplace-capabilities.ts:579-611]()）完成，它按 configObject → plugin → marketplace 三级 grant 级联过滤，命中任一级即可见。
+**授权分层（从 token 到能力）总结**：
 
-值得注意：marketplace 搜索**不打本地安装的插件**，无法服务端去重（文档 [docs/marketplace-capabilities-architecture.md:178-178]() 承认此限制），只用 provenance 区分。
+1. **HTTP 层认证**（`auth.ts:323-469`）：验 Bearer token，区分 JWT（公网 OAuth，`DEN_MCP_OAUTH_RESOURCE` 单受众）与 opaque（desktop 一方 token）。scope 门禁在 `auth.ts:365-375`。
+2. **资源受众门禁**（`auth.ts:387-395`）：`hasAcceptedResource` 检查 token 的 aud/resource 是否归属当前路由，公网 JWT 只在 `/mcp/agent` 被接受（`auth.ts:240-242`）。
+3. **grant/session 存活 + 成员校验**（`auth.ts:409-467`）：`getMcpGrantLiveness` / `getMcpSessionLiveness` 判 token 是否被吊销，再 `hasActiveMcpMembership` 判成员仍在组织内。
+4. **成员可见范围**（`external-capabilities.ts:106-118`）：`resolveMcpMemberIdentity` 把 `userId + orgId` 解析成 `orgMembershipId + teamIds`，供外部 MCP grant、native、marketplace 的可见性计算使用。
+5. **能力级授权**（分散在各 source）：外部 MCP 用 `memberCanUseExternalMcpConnection` + `evaluateToolPolicy`（`external-capabilities.ts:1131-1150`）；marketplace 用 grant 级联（`filterVisibleRows`）；admin 用 `resolvePlatformAdmin`（`capability-registry.ts:766-770`）。
+6. **REST catalog 工具的暴露级过滤**（`policy.ts:53-81`）：`isMcpOperationAllowed` 按 blocked tag/路径/operationId 拦截（如 `Authentication`、`Admin`、`System`、`Webhooks` 标签，路径含 `/api/auth`、`/admin`、`/webhooks`），保证既不把 auth/管理面暴露成 agent 工具，也不把证书生成类操作交给 agent。
 
----
+[ee/apps/den-api/src/mcp/auth.ts:365-375]() scope 门禁：token 缺 `mcp:read`/`mcp:write` 直接 403。
+
+<!-- anchor:  const scopes = readScopes(payload) …     }, bearerChallenge({ metadataUrl: options.metadataUrl, error: "insufficient_scope", message })) -->
+
+[ee/apps/den-api/src/mcp/auth.ts:387-395]() 资源受众门禁：token 是为别的 resource 签发的，直接拒绝。
+
+<!-- anchor:  if (!hasAcceptedResource(payload, source, options)) { …     }, bearerChallenge({ metadataUrl: options.metadataUrl, error: "invalid_token", message })) -->
+
+[ee/apps/den-api/src/mcp/policy.ts:53-81]() 目录暴露过滤：`x-mcp` 显式开关优先，否则按 blocked/安全 tag 判定。
+
+<!-- anchor:  export function isMcpOperationAllowed(input: { …  return tags.some((tag) => SAFE_INCLUDED_TAGS.has(tag)) -->
+
+### 检索流程：`search_capabilities` 的 fan-out
+
+`search_capabilities` 不是在一张表里做全文搜索，而是**7 类 source 各自搜一遍再按评分归并**。这是"能力目录"真正的运行时形态。[ee/apps/den-api/src/mcp/capability-registry.ts:784-805]()
+
+<!-- anchor:  export function createCapabilityRegistry(sources: Record<CapabilitySourceKind, CapabilitySource>) { …  .slice(0, input.limit) -->
+
+```mermaid
+flowchart LR
+    A["search_capabilities<br>query/limit/type"] --> B["searchCapabilitySourceFilter type"]
+    B --> C["Promise.all 跑 7 个 source.search"]
+    C --> C1["catalog: OpenAPI 操作<br>过滤 native + deferred views"]
+    C --> C2["native: 按连接遍历"]
+    C --> C3["externalMcp: 有界并发 live-probe"]
+    C --> C4["marketplace: DB-only 检索"]
+    C --> C5["builtinSkill / remoteSession / admin"]
+    C --> D["flat + compareCapabilityMatches 排序"]
+    D --> E["slice limit"] --> F["包装 structuredContent+hint"]
+```
+
+**关键取舍**：外部 MCP 检索是**唯一会出网**的 source。为防止"把无界组织连接列表变成无界远程握手"，`external-capabilities.ts:146-166` 先按名称与 query 相关性**选出一批候选连接**（上限 `EXTERNAL_MCP_SEARCH_CONNECTION_LIMIT = 16`），再用固定并发（`= 8`）的 worker pool 在**单一绝对 deadline** 内 probe，任一连接失联都不能拖死其它 provider（`external-capabilities.ts:590-635`）。所有成功/失败结果都**按 score 上限归并**（`mergeBoundedExternalCapabilityMatches`），所以"一个慢连接"顶多多延迟一次 deadline，不会把结果集撑爆，也不会让 `tools/list` 的失败吞掉同连接里真实可用的工具。
+
+`searchExternalCapabilities` 的成员门禁 + 连接选择：无成员直接返回空，先按相关性选连接再 probe。[ee/apps/den-api/src/mcp/external-capabilities.ts:825-851]()
+
+<!-- anchor:  export async function searchExternalCapabilities(input: { …  const selectedConnections = selectExternalMcpSearchConnections(connections, queryTokens) -->
+
+### 执行流程：`execute_capability` 的 parse + 分发
+
+`execute_capability` 是"按名字前缀解析 → 路由到对应 source → 由 source 完成真实调用"。这是整个注入面**唯一的执行窄口**。[ee/apps/den-api/src/mcp/capability-registry.ts:811-820]()
+
+<!-- anchor:    execute: async ( …  if (parsed) return source.execute(ctx, parsed, input) -->
+
+```mermaid
+flowchart TD
+    A["execute_capability<br>name/path/query/body"] --> B["按 kind 逐个 parseName"]
+    B --> C{解析到哪类?}
+    C -- catalog --> D["invokeMcpOperation<br>内部转发 Den REST"]
+    C -- native --> E["invokeMcpOperation<br>+ nativeConnectionId"]
+    C -- externalMcp --> F{parse 为 mcp:名称}
+    F -- tool=* --> G["probe 返回连接卡"]
+    F -- 真实 tool --> H["executeExternalCapability"]
+    H --> H1["grant + toolPolicy 校验"]
+    H1 --> H2["listExternalMcpTools 取实时工具"]
+    H2 --> H3{requireSchemaMatch? 漂移?}
+    H3 -- 漂移(严格) --> H4["blocked 需重搜"]
+    H3 -- 允许转发 --> H5["先发 provider 调用<br>再异步 advisory 校验"]
+    H5 --> H6["provider 结果 + schemaGuidance"]
+    C -- marketplace --> I["executeMarketplaceCapability<br>按 objectType 分派"]
+    C -- builtinSkill --> J["返回 SKILL.md 内容"]
+    C -- remoteSession --> K["executeRemoteSessionCapability"]
+    C -- admin/失败 --> L["unknown_capability 提示重搜"]
+```
+
+**外部 MCP 执行的"先发调用、后校验"是核心权衡**：`external-capabilities.ts:1261-1290` 明确注释"先把参数对象开送 provider，再跑 advisory 校验，因为 provider 的 advertised schema 可能不准或不支持"。结果是：本地 schema 校验失败只作为 `schemaGuidance`（advisory）附带在结果里，**不阻断 provider 调用**——如果 provider 成功了就接受结果，失败才用警告去修正参数。这避免了"Den 以过时 schema 拦下本可成功调用"的误伤。
+
+`executeExternalCapability` 的成员门禁 + grant 校验：[ee/apps/den-api/src/mcp/external-capabilities.ts:1092-1138]()
+
+<!-- anchor:  export async function executeExternalCapability(input: { …    return { ok: false, error: "forbidden", message: `You have not been granted access to "${connection.name}".` } -->
+
+### 目录注册（enumerate）：两工具的动态面
+
+除了"搜索+执行"，每个 source 还有 `enumerate`——它产出**脚本可用的工具树**（`buildCapabilityToolTree`，供 `execute_capability_script` 的 codemode 引擎使用）。`createCapabilityRegistry.buildToolTree` 把 7 类 source 的 `enumerate` 结果展开成 namespace→tools 的 `BuiltCodemodeTools`（`capability-registry.ts:822-843`）。这是"目录注册"的另一半：search 是给模型选能力，enumerate 是给**受控脚本**（codemode）提供同等能力，但同样走统一目录，不新增顶层 MCP 工具。
 
 ## 与其他模块的协同
 
-### 与 den-db / den-control-plane(见 [server-proxy-api.md](server-proxy-api.md) 与 [agent-runtime-opencode.md](agent-runtime-opencode.md) 的协同说明)
+### 依赖的下游（capability-sources 子树）
 
-- **grants 是复用**：marketplace 可见性与 External MCP 授权都调用 `resolvePluginArchGrantRole({grants, memberId, teamIds})`（[ee/apps/den-api/src/mcp/marketplace-capabilities.ts:250-256]()；文档 [docs/marketplace-capabilities-architecture.md:163-163]()），同 den 控制平面的 grant 模型。**不新增权限表**——文档明确 Phase 1 无 schema 变更（[docs/marketplace-capabilities-architecture.md:234-234]()）。
-- **encryptedTextColumn**：marketplace 执行 payload 的 `rawSourceText`/`normalizedPayloadJson` 走既有加密列透明解密（文档 [docs/marketplace-capabilities-architecture.md:196-196]()），与 den-db 加密机制复用。
-- **den-control-plane 的一致性**：`/mcp/agent` 用 `memberFacingMcpConnectionsEnabled`（org metadata kill switch）做开关，与 External MCP 同一切换层（[ee/apps/den-api/src/mcp/agent.ts:396-396]()，文档 §7）。开关关闭时 execute 返回 `unknown_capability`——**关掉的组织与不存在在字节上等价**，避免信息泄漏。
+`mcp/` 大量依赖 `capability-sources/` 里的"连接与凭证"设施，整个注入面的安全性建立在它之上：
 
-### 与 enterprise-mcp-client（External MCP 转发客户端）
+| mcp 模块消费什么 | 来源 | 作用 |
+|---|---|---|
+| `listUsableExternalMcpConnections` / `memberCanUseExternalMcpConnection` | `external-mcp-connections.ts:1448,1541` | grant 门禁：org 全量 / 直接 / team 三种来源的可见连接 |
+| `externalMcpConnectionReadyForMember` / `readyExternalMcpConnectionsForMember` | `external-mcp-connections.ts:1465,1497` | 连接就绪度（shared 凭证 or per-member 已连） |
+| `callExternalMcpTool` / `listExternalMcpTools` | `external-mcp-client.ts:925,1032` | 真正与外部 MCP provider 通信的 SDK 客户端 |
+| `ExternalMcpDiagnostic`（phase/actionOwner/operatorAction） | `external-mcp-diagnostics.ts:40-60` | 把任意失败归一成"哪个阶段 + 谁该修 + 怎么修"的可中继诊断 |
 
-`/mcp/agent` 只是 facade，真正的下游调用在 `packages/enterprise-mcp-client`。[ee/apps/den-api/src/mcp/external-capabilities.ts:701-709]() 通过 runtime 胶水调到 enterprise-mcp-client 的 `listTools`/`callTool`，并把 provider 的 OAuth 状态机、生命周期 deadline、凭据持久化全部委托给它。
+`external-mcp-diagnostics.ts:40-60` 是"连接失败如何变成对 agent 可行动的指引"的关键：每个诊断都带 `phase`（如 `MCP_TOOL_EXECUTION`、`AUTH_TOKEN_ACQUISITION`）、`actionOwner`（openwork / network_admin / provider_admin / organization_admin / member）、`operatorAction`（一句人话）。这正是 `ExternalConnectionStatus` 里 `action` 卡片的原料——agent 把失败**原样转述**成"请组织管理员去 Connectors 检查 OAuth issuer"，而不是让模型瞎编 reconnect 指令。
 
-[ee/apps/den-api/src/mcp/external-capabilities.ts:41-49]() 注释把分层说清楚：
+### `capability-sources/external-mcp-connections.ts` 的授权模型
 
-<!-- snippet-base64:LyoqCiAqIE1lcmdlcyBvcmctbGV2ZWwgRXh0ZXJuYWwgTUNQIENvbm5lY3Rpb25zIChjYXBhYmlsaXR5LXNvdXJjZXMvKSBpbnRvIHRoZQogKiBzYW1lIHNlYXJjaF9jYXBhYmlsaXRpZXMvZXhlY3V0ZV9jYXBhYmlsaXR5IHN1cmZhY2UgYXMgdGhlIFJFU1QtZGVyaXZlZAogKiBjYXRhbG9nIChjYXRhbG9nLnRzKSwgd2l0aG91dCB0b3VjaGluZyB0aGF0IGNhdGFsb2cgb3IgdGhlIHJpY2ggYC9tY3BgCiAqIGVuZHBvaW50IGF0IGFsbC4gQSBjb25uZWN0ZWQgZXh0ZXJuYWwgdG9vbCBpcyBuYW1lc3BhY2VkCiAqIGBtY3A6PGNvbm5lY3Rpb25JZD46PHRvb2xOYW1lPmAgc28gZXhlY3V0ZV9jYXBhYmlsaXR5IGNhbiB0ZWxsIGl0IGFwYXJ0CiAqIGZyb20gYSBSRVNUIG9wZXJhdGlvbiBuYW1lIGFuZCBkaXNwYXRjaCB0byB0aGUgcmVhbCBNQ1AgY2xpZW50CiAqIChleHRlcm5hbC1tY3AtY2xpZW50LnRzKSBpbnN0ZWFkIG9mIGludm9rZU1jcE9wZXJhdGlvbi4KICoK -->
-```
- * Merges org-level External MCP Connections (capability-sources/) into the
- * same search_capabilities/execute_capability surface as the REST-derived
- * catalog ..., without touching that catalog or the rich `/mcp`
- * endpoint at all.
-```
+`listUsableExternalMcpConnections`（`external-mcp-connections.ts:1448-1463`）把"直接可用"（`directlyUsableExternalMcpConnections`）与"来源可用"（`sourcedUsableExternalMcpConnections`，即由插件/迁移带来的连接）**按 id 去重合并**。这个"按 member 的 grant 收敛可见连接集合"是 `searchExternalCapabilities` 与 `probeExternalConnectionStatus` 的共同前置。成员可见范围是 **org 全量 grant、直接 grant、team grant 的并集，绝不因存在 grant 就隐式放行**——这是 `external-capabilities.ts:64-70` 反复强调的"Access is never implicit"。
 
-### 与 desktop/server 侧注入（openwork-runtime-config / cloud-plugins）
+### 与 plugin-system（`/routes/org/plugin-system/`）的边界
 
-桌面侧（apps/server）与云端 rail 是两个并行注入面：
+marketplace source（`marketplace-capabilities.ts`）是**纯读**的：它靠 `filterVisibleRows`（`marketplace-capabilities.ts:638-669`）按 `resolvePluginArchGrantRole` 做 grant 级联过滤，靠 `getActiveMember` 判成员，靠 `latestVersion` / `exactVersion` 取版本。它**不修改** plugin/access，只读 DB。它的执行语义按 `objectType` 分流：
 
-- **云端能力面**：`/mcp/agent`（本模块），能力在 Den 侧，harness 通过 `execute_capability` 远程用。
-- **桌面本地注入**：`openwork-runtime-config.ts` 把 OpenCode agent 定义、plugins、MCP 写入 `OPENCODE_CONFIG` 文件；`cloud-plugins.ts` 把 marketplace 插件**拷贝进 `.opencode/`**（`installCloudPlugin`，[apps/server/src/cloud-plugins.ts:536-647]()）。
+- `workflow/script` → 走 `executeWorkflow`（codemode），执行结果再回填 `status:"executed"` + artifact 摘要；
+- `command` → 替换 `$ARGUMENTS` 返回模板（**不在服务端运行命令**）；`skill/context/agent/custom` → 返回最新版本 `rawSourceText`（instructional）；`mcp` → 返回声明的 server spec + readiness 提示（`mcpHint`），**不自动 provisioning**；`tool/hook` → 返回 `needs_install` 或 `unsupported`。
 
-文档 [docs/marketplace-capabilities-architecture.md:17-17]() 把两者定位成互补而非替代：
+这份 `objectType → 执行语义` 的映射在 `marketplace-capabilities-architecture.md:55-73` 有权威表格，和代码实现一致。
 
-<!-- snippet-base64:SW5zdGFsbGF0aW9uLCBtZWFuaW5nIGNvcHlpbmcgZmlsZXMgaW50byBgLm9wZW5jb2RlL2AsIGJlY29tZXMgYW4gb3B0aW1pemF0aW9uIGZvciBvZmZsaW5lIHVzZSBhbmQgcGlubmluZywgbm90IGEgcmVxdWlyZW1lbnQgZm9yIHVzaW5nIG9yZy1wdWJsaXNoZWQgY29udGVudC4K -->
-```
-Installation, meaning copying files into `.opencode/`, becomes an optimization for offline use and pinning, not a requirement for using org-published content.
-```
+### 与 Workflow / Artifact 呈现的边界
 
-cloud-plugins 把 Claude Code 的 `plugin.json + .mcp.json + skills/` 解析成统一的 `CloudPluginResolved`，从而复用同一套 install 管线（[apps/server/src/claude-plugin-bundle.ts:1-12]() 注释；落地见 `installCloudPlugin`）。这是"一套语义、双端落地"的关键桥梁。
+`workflow` 类 marketplace 能力执行完会产出 artifact。`/mcp/agent` 上 artifact 的呈现走**独立条件工具**（`save_artifact_view`、`render_workflow_artifact`、`render_artifact_<id>`），由 `workflow-artifact-app.ts` / `generated-artifact-views.ts` 提供，**不属于** `execute_capability` 的能力目录范畴。`agent.ts:170-188` 的指令区明确区分："Skills 教怎么干活，Workflows 是保存的流程，Artifact views 是 Workflow 结果的呈现，Automations 是触发 Workflow 的调度。"【待主 agent 验证：`workflow-artifact-app.ts` 与 `generated-artifact-views.ts` 的 App 呈现协议是否与 `mcp-apps` 包的 `ui://` resource 模型在 v0.18.44 完全对齐。】
 
----
+### 与 `/mcp`（rich）与 `/mcp/admin` 的并列
 
-## 关键设计决策：权衡与替代代价
+- `/mcp`（`index.ts`）：仍然是每个 catalog 操作独立注册（~129 工具），供脚本/admin 按名直连。`getCatalog` 有 5 分钟缓存（`index.ts:20-40`），`/mcp/agent` 通过 `getCatalog` **共享同一个缓存**，不重复 fetch/rebuild。
+- `/mcp/admin`：`admin-tools.ts` 是只读的 Den 分析工具集（平台 admin 白名单），硬编码只读 SQL 守卫 + 行上限 + 超时竞速。它走独立的 `admin` route 与 `DEN_MCP_APP_HOST_SCOPE` 无关。【待主 agent 验证：`/mcp/admin` 的认证是否复用了 `auth.ts` 的 `getMcpResourceContext(request, "admin")` 分支——`auth.ts:64-83` 只在 `route === "agent"` 才切到公网 OAuth resource，`admin` 沿用 parent resource，二者 token 面不同。】
 
-### 两工具契约 vs 一能力一工具的攻击面 / 可发现性权衡
+### 与 Desktop 的连接建立
 
-这是整个模块的第一性决策。
+Desktop 引擎通过 `apps/server/src/routes/cloud-mcp.ts` 的 token mint（`POST /v1/mcp/token`）与 `apps/app/src/react-app/domains/connections/cloud-mcp-reconciler.ts` 挂到 `/mcp/agent`。`/mcp/agent` 上那个 `openwork://connect/mcp-servers/index.json` 资源（`connect-mcp-server-index.ts`）把"成员可用连接"作为发现索引暴露；App host（有 `mcp:app-host` scope）能看到**全部就绪连接**，普通 client 只看到 `exposeDirectly` 的连接（`connect-mcp-server-index.ts:32-40`）。【待主 agent 验证：Desktop 是否通过 `x-openwork-mcp-client-capabilities: mcp-app-host-v1` 头声明自己为 App host，`agent.ts:428-430` 据此+scope 决定 `connectMcpAppHostSupported`。】
 
-**两工具契约（采纳）**：工具面恒定，能力动态生长（External MCP tools 运行时才知道、marketplace 插件无限增长）都不会让 harness 重新协商工具清单。攻击面和配置成本被钉死在两个工具上。**代价**：① 可发现性从"平台静态列出"转移到"模型动态搜索"，多一次往返、依赖模型的搜索能力；② **伞 = 放大镜**——一旦 `execute_capability` 或 `search_capabilities` 本身出漏洞，攻击者可触及所有能力源（详见 §8 安全问题）。每个执行分支都得在 [ee/apps/den-api/src/mcp/agent.ts:517-616]() 内做独立授权利检查。
+## 关键设计决策
 
-**一能力一 MCP（放弃，rich 端点是残留）**：可发现性最好（tools/list 直接给全）、模型召回最准。但能力爆炸、运行时能力无法提前注册、每次新 External MCP 都要重握手，且对任意新 harness 的接入成本非线性上升。OpenWork 保留 `/mcp` 富目录供脚本/admin 直呼已知操作（[ee/apps/den-api/src/mcp/index.ts:108-124]()），同时在 `/mcp/agent` 收敛到两工具——**两种模式并存**是用"两套端点"缓解"两种世界不可调和"的手段，见 [ee/apps/den-api/src/mcp/agent.ts:337-354]() 注释。
+### 决策一：两工具伞契约，而非"每能力一个工具"
 
-### SSO/SCIM 兼容层的取舍：站在 better-auth 之上而非自研协议引擎
+- **选它**：把工具面固定在 2 个，能力目录自然增长。
+- **代价**：agent 多一轮 search；工具描述不能再"一对一携带"每个能力的细节，只能靠目录匹配 + 强指令；`tools/list` 对模型的价值大幅下降。
+- **替代方案（被放弃）**：目录注册成真实 MCP 工具对象。代价是工具面膨胀、Bedrock 命名冲突（`catalog.ts:12-14`）、跨 agent 名字不稳定。
+- **为何值得**：OpenWork 是面向组织分享与复用工作流的，能力面天生爆炸；把爆炸面从"模型的即时选择面"移到"目录检索面"，是唯一能在成本上跑得通的方案。
 
-SSO 没有自研 SAML/OIDC 协议栈，而是把 `better-auth` 的 provider 能力封装成 org 维度的连接对象（[ee/apps/den-api/src/sso.ts:1-130]()）：路由只做 schema 校验、entitlement 校验、审计、域名验证 token（`routes/org/sso.ts`），真正的 SAML SP / OIDC 回调转发给 `auth.api`（如 `sso.ts` 的 `getSsoAcUrl`/`getSsoMetadataUrl`，[ee/apps/den-api/src/sso.ts:63-73]()）。SCIM 侧也在 better-auth 之上存"provider"（`scim.ts`），并加了自己的 token 哈希持久化（[ee/apps/den-api/src/scim-token-storage.ts:6-17]()，`SHA-256 + timingSafeEqual`）。
+### 决策二：外部 MCP 搜索"必出网但绝不失控"
 
-取舍：**能秒级复用成熟协议实现（better-auth 的 server 已处理断言签名、续期、发现），把工程弹性留给业务连接层**（域名验证、组→团队映射 `scim-groups.ts`、drift reconciliation）。代价是**受制于 better-auth 的能力边界**（如 SCIM group mapping 的 `metadata_only` vs `create_teams` 由上层自实现，[ee/apps/den-api/src/scim.ts:43-43]()）；以及新协议特性若 better-auth 不支持就得等或绕。文档 `microsoft-entra-sso-scim.md` 的存在说明这是"接 IdP 而非造 IdP"的产品取态。
+- **选它**：`search_capabilities` 唯一出网的 source 用**候选连接预筛 + 固定并发 worker pool + 单一绝对 deadline + 按结果上限归并**（`external-capabilities.ts:590-635`），一个慢连接至多多等一个 deadline，不拖死其它 provider，也不撑爆结果集。
+- **代价**：搜索延迟是不确定的（有人在 deadline 内返回，有人被截断）；`externalMcpSearchCoverageHint` 会提示"只检了 N/M 个连接"（`external-capabilities.ts:644-646`），把不完整暴露给用户。
+- **替代方案**：搜索不出网（像 marketplace 那样 DB-only）。可它会让 agent 在**看不到外部 MCP 工具**的情况下盲搜。设计者选了"出网但有界"来换取"搜得到真实工具"，并用缓存（`external-tools-search-cache.ts`）+ 覆盖提示来兜底。
 
-### 推理 supply：按成员签发 key + 上游反向计费
+### 决策三："先发 provider 调用，再异步本地校验"
 
-OpenWork Models（inference）的取舍在于**信任与计费边界**：
+- **选它**：外部 MCP 执行不因本地 schema 校验失败而阻断，schema drift 只作为 advisory `schemaGuidance` 附带（`external-capabilities.ts:1261-1290`）。
+- **代价**：可能白跑一次下游调用；也可能在 `requireSchemaMatch`（严格模式，用于 Remote MCP App）下被 `policy_blocked` 拦下（`external-capabilities.ts:1240-1248`）。
+- **替代方案**：先本地校验、不通过就不发。误伤面更大——provider 的 advertised schema 常常不准或不支持，Den 会以过时 schema 拦下本可成功的调用。设计者用两个 `require*` 选项区分"宽松转发"（交互式执行）与"严格绑定"（Remote MCP App 的不可变 revision），在误伤与安全之间划了一道可配置的边界。
 
-- 上游用 OpenRouter 的 manage API 为每个 org **签发一个 org 级 upstream key**（[ee/apps/den-api/src/inference.ts:400-438]()，`createOpenRouterOrgApiKey`），把计费锚在 org。
-- 每个成员又拿一个内部 key（`ow_inf_<random>`，[ee/apps/den-api/src/inference.ts:39-41]()），库只存 `sha256` 哈希（[ee/apps/inference/src/keys.ts:3-9]()、[ee/apps/den-api/src/inference.ts:35-37]()），无法明文找回。
-- **限额 = 按 tier × 成员数**的用量桶（[ee/apps/inference/src/limits.ts:50-52]()、[ee/apps/den-api/src/inference.ts:347-347]()），按 five_hour/weekly/monthly 三窗口锚定；proxy 每次请求前 `ensureUsableBuckets` 校验（[ee/apps/inference/src/proxy.ts:49-52]()）。
-- 成员被删/换 org 时**自动 revoke 其 key 并删其 OpenWork provider 行**（`repairMemberInferenceAccessIfNeeded`、`syncInferenceAfterMemberChange`，[ee/apps/den-api/src/inference.ts:241-314]()），避免孤儿 key。
-
-代价：**签发、吊销、限额、上游 key 生命周期是一整套自建状态机**，绑定 OpenRouter 作为唯一上游（`buildOpenWorkProviderConfig` 里 `npm: "@openrouter/ai-sdk-provider"`，[ee/apps/den-api/src/inference.ts:96-108]()），换上游 provider 得重做。这是"功能优先、单一上游"的道德代价——换来的是**成员 key 可独立吊销、限额可按成员数伸缩、计费可归因到 org**。
-
----
-
-## 亮点与问题（含安全）
+## 亮点与问题
 
 ### 亮点
 
-1. **单一治理杠杆**：所有能力（REST/External/native/marketplace/skills）都从 `/mcp/agent` 注入，org 关掉 `capabilities.mcpConnections` 即全域停用，且关闭与不存在字节等价（`external-mcp-rollout` kill switch；[ee/apps/den-api/src/mcp/agent.ts:396-396]()），不泄漏黑盒是否存在能力。
-2. **成员身份 + grant 级联**：External 与 marketplace 都按调用成员授权，per_member 凭据让"以用户自己身份连 provider"成为可能（[ee/apps/den-api/src/mcp/external-capabilities.ts:56-56]()；[ee/apps/den-api/src/mcp/marketplace-capabilities.ts:579-611]()）。
-3. **拓扑防爆**：External MCP 搜索被 `selectExternalMcpSearchConnections` + worker pool + 唯一 deadline 限幅（[ee/apps/den-api/src/mcp/external-capabilities.ts:142-156]()、`collectBoundedExternalMcpSearchMatches:562-608`），一个不可达 provider 不会拖垮全部；搜索被裁剪时返回 coverage hint 让 agent 知道结果可能不全（[ee/apps/den-api/src/mcp/external-capabilities.ts:616-619]()）。
-4. **schema 漂移的软处理**：先转发后校验，schemaDigest 只做 advisory，provider 结果为准（[ee/apps/den-api/src/mcp/external-capabilities.ts:1082-1111]()）。这承认了 MCP 动态 schema 的不可靠，避免了"因本地 schema 过时而误杀真实 provider"。
-5. **双端并行的注入面**：云端 `execute_capability` 玩法 + 桌面 `installCloudPlugin` 本地拷贝玩法，走同一套 marketplace 语义与 grants，覆盖"联网即用"与"离线 pin 定"两种使用（§6.3）。
+- **窄接口 + 宽实现的工程化**：两工具伞契约把"工具面恒定"从口号变成代码约束——`/mcp` 端点在 `index.ts` 仍是逐个注册，`/mcp/agent` 则只注册伞工具（`agent.ts:533-596`）。两套并存互为对照，放大了"同一能力库、两种消费方式"的意图。
+- **连接健康即能力（connection_status 作为一等公民）**：外部 MCP 的一个连接若"被授予但未连接"，搜索会把它作为 `kind: "connection_status"` + `needs_connection` 的伪匹配返回（`external-capabilities.ts:546-568`），让它携带可行动的连接卡（`connectionAction`）而**不是**静默隐藏。这让 agent 能告诉人类"该去 connect 了"，符合"relay 而不是自创凭证"的设计。
+- **失败归一化到"谁该修、怎么修"**：诊断模型把任意 provider 失败变成 `phase + actionOwner + operatorAction`，`ExternalConnectionStatus.action` 再把它转成结构化卡片（`external-connection-proxy.ts` 与 `external-capabilities.ts:450-544`）。这让模型当"转述者"而非"修理工"，显著降低幻觉与越权。
+- **组织 kill-switch 的"字节一致"停机语义**：marketplace 与外部 MCP 共用 `memberFacingMcpConnectionsEnabled` 开关（`marketplace-capabilities-architecture.md:199-237`），关掉的组织的检索结果与执行行为对模型**完全等同不存在**（`unknown_capability`），避免"门禁开着但搜不到 / 门禁关着但能执行"的错位。
+- **ejectable 的目录注册表**：`createCapabilityRegistry(sources)` 以 source 数组为构造参数（`capability-registry.ts:784`），新增一类能力（如 remote-session、marketplace）只需新增一个 source 文件 + 注册进 `CAPABILITY_SOURCES`（`capability-registry.ts:774-782`），连 `agent.ts` 的两工具逻辑都不用改。这是把"能力目录"做成"插件化扩展点"的范本。
 
-### 问题与安全隐患
+### 问题 / 代价
 
-1. **伞 = 单一缺口放大**（最重）。`execute_capability` 是一个能路由到 REST/IAM/native/External/marketplace 的万能执行闸。任何一处分支的授权疏忽（grant 判断、member 解析、catalog 过滤漏网）都会同时放大到所有源。缓解依赖多层自检：catalog 构建期 `isMcpOperationAllowed`、execute 期每个分支独立 `parse+授权`、policy 黑名单。但这是"一条链"——单点设计缺陷会横向放大。文档 [docs/marketplace-capabilities-architecture.md:318-323]() 承认 marketplace 内容本质是第三方文本，是指令注入面，仅靠 provenance 框架和"agent 不自动打开工具输出 URL"缓解。
-2. **搜索结果不可缓存**：External MCP 每搜必实时 `tools/list`（有 bounds 但仍有网络成本），反复搜索是高成本操作；无结果缓存（`external-capabilities.ts` 无缓存层）。文档把 marketplace 设计成 DB-only 就是对这种高成本源的"对仗替代"。
-3. **去重缺失**：marketplace 搜索不打本地安装副本，同一 skill 云端与本地可能重复出现，靠 provenance 字符串区分（文档 [docs/marketplace-capabilities-architecture.md:178-178]()）。作为 MVP 诚实的限制，但对用户体验是噪音。
-4. **`execute_capability` 的攻击语义**：其注解 `destructiveHint` + `openWorldHint`（[ee/apps/den-api/src/mcp/agent.ts:44-49]()）意味着"可写、可跨世界"，agent 的 tools.deny 无法识别伞内的"所有能力"——这是为什么 `mcp.ts` 需要专门诊断 openwork-cloud 工具的 deny（[apps/server/src/mcp.ts:26-29]()，`OPENWORK_CLOUD_DIAGNOSTIC_TOOL_IDS`）并把"工具被 deny"作为 health 检查项（[apps/server/src/cloud-mcp-health.ts:81-81]() `cloud_tools_denied`）。安全模型从"细粒度工具权限"退化为"两个工具的宽度权限"，治理粒度粗。
-5. **OAuth callbacks / 凭据的生命周期复杂度**：External MCP OAuth 的 shared vs per-member 回调、issuer 变更要清 token、authorization transaction TTL（[packages/enterprise-mcp-client/src/oauth-provider.ts:293-350]() 的 `saveCodeVerifier`/`codeVerifier`），状态机很重，容易被误配而把凭据发给错 issuer（为此每次 issuer 变更清 client 注册，`inference`/[docs/external-mcp-oauth.md:74-76]()）。
+- **模型必须多一轮 search，且高度依赖强指令**：`AGENT_MCP_INSTRUCTIONS`（`agent.ts:170-188`）写得极其冗长，几乎是"行为手册"。这把大量正确性责任压在 prompt 上——prompt 是线性文本，随能力源增长会越来越难维护，且对非 OpenWork 定制的 agent 未必稳定遵守。
+- **`search_capabilities` 的评分是轻量 token 计数**（`search.ts:76-97`：name +5/+3、summary +2、extra +1），没有语义理解。对"能做什么"这类开放查询，召回质量上限不高；`searchExternalCapabilities` 出网的候选连接预筛也靠**连接名**与 query 相关性，连接名对不上就搜不到它的工具，需要 `externalMcpSearchCoverageHint` 兜底。
+- **外部 MCP 出网搜索带来不确定延迟与不完整**：deadline 截断 + 并发上限意味着大组织里结果可能不全，需要 agent 意识到 `coverageHint` 并缩小 query 重搜。
+- **能力名暴露内部 ID**：`mcp:<connectionId>:<toolName>`、`plugin:<pluginId>:<configObjectId>` 直接挎内部 ID。这让"名字"在跨 org、跨环境时不可移植，也把 Den 的行内标识绑定进 agent 的记忆。设计者接受了这点（为了保证唯一与稳定），但换来的是"能力名不可长期缓存"。
+- **`/mcp` 与 `/mcp/agent` 双面共存**：两套并存有维护成本——新增一个 REST 操作，得同时确认它会被 `/mcp` 逐个注册、且 /mcp/agent 的目录能正确暴露/过滤，否则两面行为不一致。
+- **`execute_capability_script`（codemode）是第二个"能力入口"**：虽然它复用同一目录，但它允许 agent 写 JS 编排多工具（`agent.ts:893-953`），等于在"窄工具面"之外开了个"宽脚本口"。其受限子集（禁 import/require/class/fetch/定时器）靠运行时约束，`firstUnattendedUnsafeCapability`（`codemode-tools.ts:118-130`）仅在 unattended 模式下严格限制为 `authority === "den" && readOnly`，交互式则放宽到外部 MCP——这个边界是安全风险相对最集中之处。

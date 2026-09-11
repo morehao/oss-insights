@@ -37,7 +37,7 @@ graph TB
     subgraph pack[webworker-packer（构建期）]
         P1["compose 好的 profile → gzip 基础镜像 tar"]
         P2["数据树 → 有序 overlay tars"]
-        P3["reachability sweep：lower 每个可达模块到 wrapper 契约"]
+        P3["reachability sweep<br>lower 每个可达模块到 wrapper 契约"]
     end
     subgraph img[镜像布局契约 image-layout.ts]
         L1["DEFAULT_ROOT=/dsh"]
@@ -69,20 +69,22 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant Page as 页面（lib/client.js）
-    participant W as Web Worker（lib/worker.js）
+    participant W as Worker（lib/worker.js）
     participant IMG as VFS 镜像（内存挂载）
     participant BOOT as dsh-app-boot（镜像内）
     participant T as postMessage tunnel
 
-    Page->>Page: chooseWorkerHostSource（chooser / 查询选择）
+    Page->>Page: chooseWorkerHostSource()
     Page->>W: 初始化 frame（base + overlay URL）
-    W->>IMG: 下载 → 解压 → 挂载（home/workspace 应用 overlay）
+    W->>IMG: 下载 → 解压 → 挂载
+    Note over IMG: home/workspace overlay
     W->>W: 装 module-loader + process shim
     W->>BOOT: 经镜像内 dsh-app-boot boot 插件树
     BOOT-->>W: tree 就绪
     W->>T: 以纯 HTTP 形态服务页面（fetch/tunnel）
     T-->>Page: index-injection 表 + 资源
-    Page->>T: loadBundle 按需取组合（tunnel-only source map 内嵌）
+    Page->>T: loadBundle 按需取组合
+    Note over T: tunnel-only source map 内嵌
 ```
 
 启动分成独立的两阶段：`chooseWorkerHostSource({ image?, fixtureManifest? })` 可选地拥有 boot 屏障与 fixture manifest（无 `preview-fixture` 时在 source chooser 等待，有效查询直接选定，两条路径都返回有序 overlays）；`connectWorkerHost(worker, { image?, overlays? })` 是公开的基础连接器，`apps/web` 两个都调用并提供静态捆绑的 Worker[[packages/experimental/webworker-runtime/README.md:31-31]()]()
@@ -109,6 +111,34 @@ Worker 里没有编译器，这是它的立身之本。模块加载器（`module
 <!-- anchor: - **`lib/worker.js` (worker bundle)** — the assembly plus this package's -->
 
 一句话：**worker 是「浏览器里最接近 Node 的执行环境」，但每个"不真实"的地方都有明确的分叉点与 fail-loud 策略**，而不是静默降级。
+
+### 文件句柄的两处保真：bigint 身份与 chmod
+
+`FileHandle` 是路径 API 之外的一条独立语义通道：它能对已被 unlink 的文件继续操作，也能在被硬链接共享的元数据上生效。要让 Node 兼容层在这条通道上不失真，**身份**与**元数据变更**都必须挂在文件身份上，而不是挂在路径上——本周期补齐的正是这两点。
+
+身份必须是 bigint，而且要一路走到句柄。VFS 内部的文件身份本来就是 `bigint`：hard link 共享同一个 `identity`，打开的描述符也保留它（[packages/experimental/webworker-runtime/src/storage/memory.ts:23-24]()
+<!-- anchor: /** Stable identity shared by hard links and retained by open descriptors. */ … identity?: bigint -->）。这不是随手挑的大整数：`dsh-fs-local` 用 `{ bigint: true }` stat 每个目标、对 `mode` 做 BigInt 运算，并用 `dev:ino:size:mtimeNs:ctimeNs` 拼版本令牌，所以 `ino`/`mtimeNs` 一旦退化成 number 或常量，stale-write guard 就再也分不清两个修订（[packages/experimental/webworker-runtime/src/storage/types.ts:43-50]()
+<!-- anchor: * Stats as Node returns them under `{ bigint: true }`. … * unable to tell two revisions apart. -->）——**bigint 在这里不是"更大的数字"，而是版本令牌的载体；掉一位精度就等于丢掉一次写冲突检测。**
+
+句柄这条路上原本没有这个出口：`FileHandle.stat()` 不接受 options、只回 plain stats，于是 `{ bigint: true }` 在句柄 API 上无处可去。现在句柄的 bigint 分支经 `fileBigIntStats()` 直接读 `identityOfFile(node)`、并以 `fileLinkCount(node)` 充当 `nlink`（[packages/experimental/webworker-runtime/src/storage/memory.ts:444-452]()
+<!-- anchor: /** @returns BigInt stats for an open file, including its device and inode identity. */ … this.fileLinkCount(node), -->），Node 兼容层则把 `options.bigint === true` 分派到描述符的 `statBigInt()`（[packages/experimental/webworker-runtime/src/node/builtin_modules/implemented/fs.ts:448-456]()
+<!-- anchor: chmod: async (mode: number | string) => { … : descriptor('fstat').file.stat(), -->）。走身份而不是走路径的收益是双重的：同一个文件在 `handle.stat({ bigint: true })` 与 `statSync(path, { bigint: true })` 下给出同一组 `dev:ino`；最后一个名字被 unlink 之后，句柄依然能报告身份——这恰恰是 `FileHandle` 存在的理由。
+
+chmod 同样改身份，而且要广播到所有硬链接名。新增的 `chmodFile(node, mode)` 把 `mode & 0o777` 写回 `FileNode`，并向该身份下的每一个路径名发布 `chmod` 事件（[packages/experimental/webworker-runtime/src/storage/memory.ts:429-435]()
+<!-- anchor: /** Change one file identity's permission bits and notify every linked path. */ … for (const path of node.paths) this.publish({ kind: 'chmod', path, mode: -->）；句柄侧 `chmod()` 与路径侧 `chmodSync()` 共用它，并复用抽出的 `numericMode()` 以接受 Node 用八进制字符串写 mode 的习惯（[packages/experimental/webworker-runtime/src/node/builtin_modules/implemented/fs.ts:39-40]()
+<!-- anchor: const numericMode = (mode: number | string): number => … typeof mode === 'string' ? Number.parseInt(mode, 8) : mode -->）。把广播逻辑从 `chmodSync` 里抽出来的价值不在复用本身，而在于**两条入口不可能漂移**：若只在路径入口发 watcher 事件，句柄 chmod 就会变成"改了但没人知道"，这类不一致只在并发 watcher 场景下才暴露。代价是每个文件身份要常驻 `mode` 与 `identity`，且一次变更要对 N 个硬链接名做事件扇出——相对 Unix 语义里最容易漏掉的那部分（unlink 后仍可操作、硬链接共享元数据），这个代价是划算的。
+
+### 静态 sweep 下的 `node:*` 命名纪律
+
+平台分叉表只有一份，却被两个消费者读：构建期把它变成 bundler alias，`node/builtins.ts` 把同样的模块变成 loader 的静态表——one list, two consumers（[packages/experimental/webworker-runtime/src/module-proxies.ts:6-7]()
+<!-- anchor: * The build turns these into bundler aliases, and `node/builtins.ts` turns the … * same modules into the loader's static table — one list, two consumers. -->）。而 packer 的 reachability sweep 是**静态**的：它报告静态命名的 import、re-export 与 dynamic import，经 `require` 的调用，以及模块作用域里 `createRequire(import.meta.url)('pkg')` 这类直接调用（[packages/experimental/webworker-packer/README.md:32-32]()
+<!-- anchor: 3. **Reachability sweep** — the runtime loader's own resolution walks from every -->）。两条叠加起来就是一条容易被低估的约束：**只要某个被扫到的包在代码里"点名"了 `node:*`，哪怕 worker 永远不走那条分支，这张镜像也可能装不起来。**
+
+纪律因此是"给这个名字一个替身，而不是把请求藏起来"——`node:net` 至今仍以 `mock/` 条目留在表里：它不实现任何 socket，只保证这个模块名有个着落、真被调用时才 fail loud（[packages/experimental/webworker-runtime/src/module-proxies.ts:62-62]()
+<!-- anchor: 'node:net': './node/builtin_modules/mock/net.ts', -->）。`implemented/` 与 `mock/` 的分界不看实现难度，而看"worker 里有没有真实数据源"：前者把语义架在 VFS / tunnel / wasm / 浏览器原语上，后者静默挂载、只在调用抵达时报告能力缺失（[packages/experimental/webworker-runtime/src/module-proxies.ts:11-13]()
+<!-- anchor: * tunnel, a wasm codec, a browser primitive); … * when a call finally reaches it. External npm replacements live in -->）。
+
+> **演进说明(0.1.5)**：本周期有一次教科书式的往返。`dsh-http-proxy` 的 agent factory 为那些经 Node 核心 HTTP 模块上报的 SDK 点名了 `node:https`，静态 sweep 于是让预览镜像变得 unpackable；第一版解法是照 `node:net` 的样子注册一个 `node:https` 占位（`35bc2d1d45`）。随后该 agent factory 本身被移除，已无模块点名 `node:https`，占位、映射与测试一并回退（`2795940323`）——所以 **HEAD 的分叉表里并没有 `node:https` 条目**。一进一退正好画出纪律的两条边：占位只在"确实被静态扫到"时才该存在，"没人 import 就不留死代码"同样是这张表可信的前提。Worker 自己的出站请求走 tunnel 与 `fetch`，代理策略及进程树/Worker 的继承语义见 [networking-proxy.md](networking-proxy.md)。
 
 ## 全局关联
 

@@ -1,6 +1,22 @@
+---
+type: 项目解读
+title: DeepSeek Harness（dsh）深度解读
+description: DeepSeek 官方 agent harness「一切皆插件 + 事件溯源日志」总览解读——无特权内核与 Cordis 插件树、会话事件溯源与已发布格式迁移链、主循环与 durable inbox、受控工具管道、沙箱/子进程可交换后端、多 agent 与 Agent Teams、工作区文件能力面、浏览器客户端、桌面形态、出站代理与 profile/bundle/patch 部署分发。
+tags: [deepseek-harness, dsh, agent-harness, cordis, plugin-runtime, event-sourcing, session-log, capability-seam, sandbox, subagent, desktop, mcp]
+---
+
 # DeepSeek Harness (`dsh`)
 
 > 本解读按 **ai-agent ⊗ framework** 类规格产出（ai-agent 主类型 + framework 副类型叠加，因 dsh 向插件作者开放 SDK/扩展接口）。判定依据：README 自述「agent harness / everything is a plugin」+ 顶层 `packages/*/` 插件式扩展接口 + vendored Cordis 插件运行时。由 DeepSeek AI 开源。
+>
+> **本版增量更新（0.1.2-rc.1 → 0.1.5-rc.2 / 2026-09-11）**：本次增量一次跨 **6 个发布版本**（0.1.3-alpha.1 / 0.1.3-alpha.2 / 0.1.5-alpha.1 / 0.1.5-alpha.2 / 0.1.5-rc.1 / 0.1.5-rc.2；**0.1.4 被整段跳过**），上游 diff 达 1490 commits、约 17 万行新增。依 `dsh-v0.1.2-rc.1..HEAD` git diff 与 `verify-references --diff` 预检清单比对更新，主题可归为五条主线：
+>
+> **(1) 会话格式进入「已发布不可变世代 + 相邻迁移链」**——`feat(session)!: add released format migration` 把"只写当前版、旧版拒绝"改成不可变世代 + N→N+1 相邻转换链（流式 stage），assistant 流内嵌 v2、system prompt 在 v3 提升为 **surface node zero**，「谁拥有当前 writer 版本号」收敛到代码常量 + 生成式 catalog + release record 三方权威。见 [session-format-migration.md](session-format-migration.md)。
+> **(2) 多形态分发**——新增 **Electron 桌面端**（`apps/desktop` + `apps/desktop-host`，mac 签名公证 / Windows 签名 / 自动更新 / IPC 优化）与 **原生 addon 家族 `node-addon-system`**（`native/landlock-run` 迁入 `native/system`、Landlock 走 capability subpath、新增预编译 Node-API flock）。见 [desktop-app.md](desktop-app.md)。
+> **(3) 文件能力面贯通**——`workspace-path` 定义 Session/绝对文件资源地址、`api/workspace-files` 双面文件 API、**有界字节区间读取**下沉到 fs seam（fs-local / fs-e2b 可取消窗口）、`/api/file` 只认 `bytes` range + 扩展名 allowlist、`tool-present` 交付不可变产物。见 [workspace-files.md](workspace-files.md)。
+> **(4) 浏览器客户端成型**——Client resource registry + 保留订阅、侧栏 tab / fullscreen 外壳 / **可逆 dock 引擎**、惰性 workspace 文件树、文档预览管线（文本 / Markdown / HTML / 图片 / PDF / 代码六类渲染器）、交付下载卡片、统一反馈对话框。见 [web-client.md](web-client.md)。（窗口内曾合入把 `mermaid`/`graphviz`/`svg`/`html` 代码栅栏直接渲染成图的能力，随即被完整回滚，未进入任何发行版——详见 [web-client.md](web-client.md)。）
+> **(5) 运行时与地面加固**——**Inbox 由内存服务改为 durable projection**、附件从"图片专用"泛化为通用文件、subprocess 原生 containment 收敛（本周期提交数最多的子系统）、**所有出站请求统一走配置代理**。见 [agent-loop-runtime.md](agent-loop-runtime.md)、[session.md](session.md)、[attachments.md](attachments.md)、[subprocess.md](subprocess.md)、[networking-proxy.md](networking-proxy.md)。
+> 各版本逐条变更一览见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > **本版增量更新（0.1.2-alpha.4 → 0.1.2-rc.1 / 2026-09-03）**：依上游 alpha.5 → rc.1 两版 git diff 比对更新。本次增量的代码面高度聚焦存储层（约 1300 行变更含测试夹具、全落在 storage-domain / storage-json / session-projection-cache），主题是 **schema 演进从「一刀切版本拒绝」软化为「owner 显式背书的跨版本读兼容 + 失效派生数据 backup-and-skip」**：(1) `DomainSpec`/`KvUnitDescriptor` 新增 `compatibleVersions` 白名单——per-record 布局读侧接受旧版本戳（`acceptedStamps` = 当前版 + 兼容列表）、legacy 整文件 bootstrap 也校验 stored version，owner 靠把旧版缺的字段声明为 optional 来背书；`single` 布局仍 exact-version 拒绝；(2) `DomainSpec.invalidRecords: 'backup-and-skip'` + `KvUnit.backupRecord`——某条记录 schema 校验失败时移走 `<key>.json.bak.<stamp>`、按缺席续开，绝不因坏缓存 brick 整个 boot；(3) projcache 域 spec 演进为 `version:5 + compatibleVersions:[3,4] + invalidRecords:'backup-and-skip'`，谱系位 `isSeeded`/`inheritedEventCount` 变可选（缺席读作 unseeded）。主体更新在 [data-model.md](data-model.md)；各版本变更一览见 [CHANGELOG.md](CHANGELOG.md)。
 >
@@ -28,37 +44,46 @@ DeepSeek Harness（`dsh`）是一个 TypeScript 编写的 agent harness（智能
 | 能力 | 说明 | 子文档 |
 |------|------|--------|
 | 无特权内核 / 插件运行时 | 一切皆插件，主循环也可替换，注册是可逆副作用 | [architecture.md](architecture.md) |
-| 会话事件溯源日志 | append-only 事件日志作为唯一事实源，`Model-visible means logged` | [session.md](session.md) |
-| 主 Agent 循环 + Runtime | turn/step 双层、waterfall 事件拦截、inbox 唤醒 | [agent-loop-runtime.md](agent-loop-runtime.md) |
-| 受控工具管道 | scoped 注册、guard/approval/spill 三段把关 | [tools.md](tools.md) |
-| 系统提示词组装 | 插件 section 按 order 排序拼装 + tool-schema 并入 | [system-prompt.md](system-prompt.md) |
-| 沙箱 + 可交换后端 | 六族 capability seam + Landlock 原生沙箱 + E2B 级联迁移 | [sandbox-capability-seams.md](sandbox-capability-seams.md) |
-| 多 Agent / Subagent | 统一接口下 spawn/fork/ACP/Claude Code 多 transport 委派 | [subagent.md](subagent.md) |
-| Agent Teams 协调域 | 隐式根 Lead + 持久邮件队列 + 版本化任务板（实验面） | [agent-teams.md](agent-teams.md) |
-| 技能体系 + MCP | 外部指令注入与外部工具桥接 | [skill-mcp.md](skill-mcp.md) |
-| LLM 适配器 seam | 消息/流式词汇 + 多 provider 路由注册表 | [llm.md](llm.md) |
+| 会话事件溯源日志 | append-only 事件日志作为唯一事实源，`Model-visible means logged`；inbox、catalog、投影全部由日志重建 | [session.md](session.md) |
+| 会话格式的已发布世代 | 不可变 generation + 相邻 N→N+1 流式迁移链，writer 常量 / 生成式 catalog / release record 三方权威（0.1.3 起） | [session-format-migration.md](session-format-migration.md) |
+| 主 Agent 循环 + Runtime | turn/step 双层、waterfall 事件拦截、durable inbox 投影唤醒、实时流帧与模型切换通知 | [agent-loop-runtime.md](agent-loop-runtime.md) |
+| 受控工具管道 | scoped 注册、guard/approval/spill 三段把关；`str_replace_editor` 已退出 base/sdk/minimal 三个默认组合（改为显式 opt-in，代码仍在） | [tools.md](tools.md) |
+| 系统提示词组装 | 插件 section 按 order 排序拼装 + tool-schema 并入；persona 前缀 / cwd 后缀的缓存友好布局，v3 起落为 surface node zero | [system-prompt.md](system-prompt.md) |
+| 沙箱 + 可交换后端 | 六族 capability seam + Landlock 原生沙箱（node-addon-system）+ E2B 级联迁移 + 有界字节窗口 | [sandbox-capability-seams.md](sandbox-capability-seams.md) |
+| 子进程运行时 | `ctx.subprocess` seam + 平台原生 runner（进程组 / Windows job object）容纳逃逸后代，流式结算与错误形状保真 | [subprocess.md](subprocess.md) |
+| 多 Agent / Subagent | 统一接口下 spawn/fork/ACP/Claude Code 多 transport 委派；父方拥有的 child catalog 可观察 | [subagent.md](subagent.md) |
+| Agent Teams 协调域 | 隐式根 Lead + 持久邮件队列 + 版本化任务板（0.1.5-alpha.2 起随发行版公开，仍标 experimental） | [agent-teams.md](agent-teams.md) |
+| 技能体系 + MCP | 外部指令注入与外部工具桥接；技能候选共享模糊名排序、MCP 工具发现游标去重 | [skill-mcp.md](skill-mcp.md) |
+| LLM 适配器 seam | 消息/流式词汇 + 多 provider 路由注册表；两阶段 `prepareCall`、模型目录与发现 | [llm.md](llm.md) |
+| 出站网络代理 | 所有出站请求按策略走配置代理，进程树 / Worker 继承同一路由，本机流量豁免 | [networking-proxy.md](networking-proxy.md) |
 | 凭据系统 | 双键空间（CredentialRef/CredentialKey）+ 持久化记录 + 可交互授权 | [credentials.md](credentials.md) |
-| 上下文管理与压缩 | compaction capability seam + token 预算 | [memory-compaction.md](memory-compaction.md) |
-| 持久化数据模型 | 事件日志 JSONL 单一后端（zstd 帧 + chunk 打包）、schema「不迁移只拒绝」（rc.1 起 per-record 域可声明 `compatibleVersions` 跨版本读兼容 + `invalidRecords:'backup-and-skip'` 失效抢救）、storage-json single/per-record + projection-cache 冷读播种 | [data-model.md](data-model.md) |
-| 部署形态 | profile/bundle/patch 分层、web/headless 双形态、sdk-minimal/ACP/SDK app bundle | [deployment.md](deployment.md) |
-| 持久化附件 | 不可变内容寻址对象库 + `ImageAttachmentRef`、全量先验后写 | [attachments.md](attachments.md) |
-| Remote 控制器体系 | Typert `@Remote`/`@RemoteScope` 声明式 API + 构建期生成双契约，session/workspace/settings/credentials 四控制器取代 apiproxy RPC | [remote-controllers.md](remote-controllers.md) |
+| 上下文管理与压缩 | compaction capability seam + token 预算；派生 system head 作为消息重放 | [memory-compaction.md](memory-compaction.md) |
+| 持久化数据模型 | 事件日志 JSONL 单一后端、session-persistence handle 化 seam + **跨进程写所有权租约**、per-record 域可声明 `compatibleVersions` + `invalidRecords:'backup-and-skip'`、projection-cache 冷读播种、chunked-list 持久长列表 | [data-model.md](data-model.md) |
+| 工作区文件能力面 | Session/绝对资源地址 + 双面文件 API + 有界字节区间读取 + 不可变交付（present）+ 本地应用打开 | [workspace-files.md](workspace-files.md) |
+| 浏览器客户端 | Client resource registry（保留订阅）+ slot roster + 侧栏 tab/dock 引擎 + 文档/图表预览 + 交付卡片 | [web-client.md](web-client.md) |
+| 部署形态 | profile/bundle/patch 分层、web/headless/**desktop** 三形态、sdk-minimal/ACP/SDK app bundle | [deployment.md](deployment.md) |
+| 桌面形态 | Electron 壳 + 独立 Host 进程、跨平台打包/签名/公证、自动更新通道、原生 addon 分发 | [desktop-app.md](desktop-app.md) |
+| 持久化附件 | 不可变内容寻址对象库；0.1.3 起从 `ImageAttachmentRef` 泛化为**通用文件**制品与投影，prompt admission 上收 service | [attachments.md](attachments.md) |
+| Remote 控制器体系 | Typert `@Remote`/`@RemoteScope` 声明式 API + 构建期生成双契约，session/workspace（含 workspace-files）/settings/credentials 控制器取代 apiproxy RPC | [remote-controllers.md](remote-controllers.md) |
 | Webhook 子系统 | 无状态 fire-and-forget 规则运行时 + GitHub 适配器，外部投递→普通 root Session | [webhook.md](webhook.md) |
 | Inspector（experimental） | CDP 跨 Host/浏览器双域检视，Worker 隔离 + 快照投影 | [inspector.md](inspector.md) |
-| WebWorker（experimental） | 浏览器 worker 跑整棵插件树 + VFS 镜像打包 | [webworker.md](webworker.md) |
+| WebWorker（experimental） | 浏览器 worker 跑整棵插件树 + VFS 镜像打包，代理 / 文件句柄语义对齐 Node | [webworker.md](webworker.md) |
 
 ### 技术栈一览表
 
 | 层面 | 技术 |
 |------|------|
-| 语言 | TypeScript（主）、C11（Landlock 沙箱 addon `landlock-run`） |
+| 语言 | TypeScript（主）、C11（原生沙箱 / Node-API addon，统一收进 `native/system`） |
 | 插件运行时 | vendored [Cordis](https://github.com/cordiverse/cordis)（DI / fiber 生命周期 / 可逆 effect / 事件 dispatch） |
-| 持久化 | 会话日志 JSONL（zstd 压缩帧，0.1.2-alpha 起唯一事件后端）；KV 层 storage（json single/per-record + sqlite 双后端） |
-| 沙箱 | Landlock / bwrap / Seatbelt / Windows ACL / E2B（POC） |
+| 持久化 | 会话日志 JSONL（zstd 压缩帧，0.1.2-alpha 起唯一事件后端）+ 会话格式世代迁移链（`packages/session/session-format*`）；KV 层 storage（json single/per-record + sqlite 双后端） |
+| 会话格式 | `SESSION_FORMAT_VERSION` 为唯一 writer 权威；生成式 catalog 校验相邻迁移可达；release record 声明已发布格式（当前第 3 代，0.1.5-alpha.1 发布） |
+| 沙箱与执行 | Landlock / bwrap / Seatbelt / Windows ACL / E2B；`node-addon-system` 提供预编译 Node-API addon（Landlock、flock） |
+| 子进程 | 平台原生 runner（POSIX 进程组 / Windows job object）承接逃逸后代容纳 |
 | 外部协议 | MCP（stdio / streamable-http）、ACP（Agent Client Protocol） |
+| 网络 | 统一出站代理策略（`packages/util/http-proxy`），子进程 / Worker 继承父路由 |
 | 凭据 | `$DSH_HOME/.credentials.yaml`（版本化文档 + 0600 + 跨进程写锁）、OAuth/device-code 授权（rc.1） |
-| 分发 | pnpm workspace + npm（`@deepseek-ai/dsh` bin） |
-| 前端 Web UI | 浏览器端插件 roster（`dsh-client-*`）+ VitePress 文档站 |
+| 分发 | pnpm workspace + npm（`@deepseek-ai/dsh` bin）+ Electron 桌面安装包（mac 签名公证 / Windows 签名 / 自动更新） |
+| 前端 Web UI | 浏览器端插件 roster（`dsh-client-*`）+ Client resource registry + VitePress 文档站 |
 
 ## 架构：五大支柱
 
@@ -72,28 +97,36 @@ DeepSeek Harness（`dsh`）是一个 TypeScript 编写的 agent harness（智能
 graph TB
     subgraph 部署与装配[architecture]
         CLI["dsh bin<br>(apps/cli)"]
+        DESK["Electron 桌面壳<br>(apps/desktop + desktop-host)"]
         BOOT["app-boot:<br>loadProfile → applyEntryPatches → boot"]
         TREE["Cordis 插件树<br>(vendor/cordis)"]
     end
     subgraph 能力面[contracted 词汇与 seam]
         LLM["ctx.llm<br>消息/流式词汇 + adapter 注册表"]
         SP["ctx.systemPrompt<br>section/tool-schema 组装"]
-        SAPI["ctx.sessions<br>SessionEvent 日志"]
+        SAPI["ctx.sessions<br>SessionEvent 日志 + 格式迁移"]
         TL["ctx.tools<br>scoped 工具注册表 + guard"]
-        SUB["ctx.subagents<br>多 transport 委派"]
+        SUB["ctx.subagents<br>多 transport 委派 + child catalog"]
         SK["ctx.skills + ctx.mcp<br>外部能力注入"]
+        WF["workspace-files<br>资源地址 + 有界字节窗口"]
+        NET["http-proxy<br>统一出站策略"]
         SAND["ctx.sandbox + six seam<br>fs/subprocess/shell/terminal/lsp"]
     end
     subgraph 驱动[agent-loop]
-        LOOP["ReactLoopAgent<br>turn/step 双层"]
+        LOOP["ReactLoopAgent<br>turn/step 双层 + durable inbox"]
         MEM["compaction + context/*<br>token 预算管理"]
     end
     subgraph 地面[data-model + deployment]
-        PERSIST["JSONL<br>session 持久化"]
-        PROFILE["profile/bundle/patch<br>web/headless"]
+        PERSIST["JSONL<br>session 持久化 + 写所有权租约"]
+        PROFILE["profile/bundle/patch<br>web/headless/desktop"]
+    end
+    subgraph 客户端[client roster]
+        CR["Client resource registry<br>+ retained subscriptions"]
+        UI["slots / sidebar / dockkit<br>预览与交付卡片"]
     end
 
     CLI --> BOOT --> TREE
+    DESK --> TREE
     TREE --> SAPI
     SAPI --> SP
     SAPI --> LOOP
@@ -101,12 +134,18 @@ graph TB
     LOOP --> TL
     TL --> SAND
     TL --> SUB
+    TL --> WF
     SP --> LLM
     SUB --> SAND
+    WF --> SAND
+    LLM --> NET
+    WF --> NET
     LOOP --> MEM
     MEM --> SAPI
     SAPI --> PERSIST
     TREE --> PROFILE
+    TREE --> CR --> UI
+    WF --> CR
 ```
 
 ## 核心模块导读
@@ -115,18 +154,24 @@ graph TB
 |------|------|-----------|
 | 架构组合层 | Cordis 插件树装配、Profile/Bundle/Patch 分层 | [`architecture.md`](architecture.md) |
 | 会话系统 | 事件溯源日志、Model-visible means logged | [`session.md`](session.md) |
-| 主循环 + Runtime | turn/step、waterfall 拦截、循环与引擎分离 | [`agent-loop-runtime.md`](agent-loop-runtime.md) |
+| 会话格式迁移 | 不可变世代 + 相邻迁移链 + writer 版本权威 | [`session-format-migration.md`](session-format-migration.md) |
+| 主循环 + Runtime | turn/step、waterfall 拦截、durable inbox、循环与引擎分离 | [`agent-loop-runtime.md`](agent-loop-runtime.md) |
 | 工具管道 | scoped 注册、guard/approval/spill | [`tools.md`](tools.md) |
-| 系统提示词 | section 排序 + tool-schema 组装 | [`system-prompt.md`](system-prompt.md) |
-| 沙箱 + Capability Seam | 六族可交换后端 + Landlock | [`sandbox-capability-seams.md`](sandbox-capability-seams.md) |
-| 多 Agent | 统一接口多 transport 委派 | [`subagent.md`](subagent.md) |
+| 系统提示词 | section 排序 + tool-schema 组装，v3 surface node zero | [`system-prompt.md`](system-prompt.md) |
+| 沙箱 + Capability Seam | 六族可交换后端 + Landlock + 有界字节窗口 | [`sandbox-capability-seams.md`](sandbox-capability-seams.md) |
+| 子进程运行时 | 原生 runner 容纳逃逸后代 + 流式结算 | [`subprocess.md`](subprocess.md) |
+| 多 Agent | 统一接口多 transport 委派 + child catalog | [`subagent.md`](subagent.md) |
 | Agent Teams | 隐式根 Lead/队友队形 + durable 邮件 + 版本化任务板（实验面） | [`agent-teams.md`](agent-teams.md) |
 | 技能 + MCP | 外部能力注入 | [`skill-mcp.md`](skill-mcp.md) |
-| LLM 能力层 | 词汇 + 适配器 seam | [`llm.md`](llm.md) |
+| LLM 能力层 | 词汇 + 适配器 seam + 模型目录/发现 | [`llm.md`](llm.md) |
+| 出站网络代理 | 策略路由 + 进程树/Worker 继承 | [`networking-proxy.md`](networking-proxy.md) |
 | 凭据与授权 | 双键空间 + 持久化记录 + 交互授权 (rc.1) | [`credentials.md`](credentials.md) |
 | 上下文与压缩 | compaction + token 预算 | [`memory-compaction.md`](memory-compaction.md) |
-| 数据模型 | 持久化布局与演进（JSONL 单一事件后端） | [`data-model.md`](data-model.md) |
-| 部署形态 | profile/bundle/patch 与双形态 + SDK 分发 | [`deployment.md`](deployment.md) |
+| 数据模型 | 持久化布局与演进（JSONL 单一事件后端 + 写所有权租约） | [`data-model.md`](data-model.md) |
+| 工作区文件 | 资源寻址 + 双面 API + 有界读取 + 交付 | [`workspace-files.md`](workspace-files.md) |
+| 浏览器客户端 | resource registry + slot roster + 侧栏/预览/交付 | [`web-client.md`](web-client.md) |
+| 部署形态 | profile/bundle/patch 与 web/headless/desktop 三形态 + SDK 分发 | [`deployment.md`](deployment.md) |
+| 桌面形态 | Electron 打包/签名/自动更新 + 原生 addon 家族 | [`desktop-app.md`](desktop-app.md) |
 | 持久化附件 | 不可变内容寻址对象库 + Ref 引用 | [`attachments.md`](attachments.md) |
 | Remote 控制器 | Typert 生成式 API + session/workspace/settings/credentials 控制器 | [`remote-controllers.md`](remote-controllers.md) |
 | Webhook 子系统 | fire-and-forget 规则运行时 + GitHub 适配器 | [`webhook.md`](webhook.md) |
@@ -135,29 +180,35 @@ graph TB
 
 ## 启动 / 请求链路
 
-一个 `turn` 的完整生命周期（含 waterfall 事件归属与源码落点）在 [`agent-loop-runtime.md`](agent-loop-runtime.md) 有 `sequenceDiagram`；启动链路（`dsh web` → loadProfile → 组合 → boot → 挂 Browser UI）见 [`deployment.md`](deployment.md)。
+一个 `turn` 的完整生命周期（含 waterfall 事件归属与源码落点、实时流帧与 durable inbox 唤醒）在 [`agent-loop-runtime.md`](agent-loop-runtime.md) 有 `sequenceDiagram`；启动链路（`dsh web`/桌面壳 → loadProfile → 组合 → boot → 挂 Browser UI）见 [`deployment.md`](deployment.md) 与 [`desktop-app.md`](desktop-app.md)；旧版会话日志的读取链路（识别世代 → 相邻迁移链 → 当前 writer 校验）见 [`session-format-migration.md`](session-format-migration.md)。
 
 ## 子文档索引
 
 - [`architecture.md`](architecture.md) — Cordis 插件树与 Profile/Bundle/Patch 分层启动
 - [`session.md`](session.md) — 会话事件溯源日志，`Model-visible means logged`
-- [`agent-loop-runtime.md`](agent-loop-runtime.md) — 主 Agent 循环（turn/step）与 Runtime 分离
+- [`session-format-migration.md`](session-format-migration.md) — 会话格式的已发布不可变世代与相邻迁移链（0.1.3 起）
+- [`agent-loop-runtime.md`](agent-loop-runtime.md) — 主 Agent 循环（turn/step）、durable inbox 与 Runtime 分离
 - [`tools.md`](tools.md) — 受控工具调用管道（scoped/guard/approval/spill）
-- [`system-prompt.md`](system-prompt.md) — 系统提示词与工具 schema 组装
-- [`sandbox-capability-seams.md`](sandbox-capability-seams.md) — 沙箱与六族可交换后端 + Landlock
-- [`subagent.md`](subagent.md) — 多 agent / subagent 多 transport 委派
-- [`agent-teams.md`](agent-teams.md) — Agent Teams 协调域（隐式根队形 + durable 邮件 + 版本化任务板，实验面 | rc.8 新增）
+- [`system-prompt.md`](system-prompt.md) — 系统提示词与工具 schema 组装（v3 surface node zero）
+- [`sandbox-capability-seams.md`](sandbox-capability-seams.md) — 沙箱与六族可交换后端 + Landlock + 有界字节窗口
+- [`subprocess.md`](subprocess.md) — 子进程运行时与原生 containment（POSIX 进程组 / Windows job object）
+- [`subagent.md`](subagent.md) — 多 agent / subagent 多 transport 委派与父方 child catalog
+- [`agent-teams.md`](agent-teams.md) — Agent Teams 协调域（隐式根队形 + durable 邮件 + 版本化任务板，实验面）
 - [`skill-mcp.md`](skill-mcp.md) — 技能体系 + MCP 外部能力接入
 - [`llm.md`](llm.md) — LLM 消息/流式词汇与适配器 seam
+- [`networking-proxy.md`](networking-proxy.md) — 出站网络代理策略与进程树继承（0.1.3 新增）
 - [`credentials.md`](credentials.md) — 凭据系统：双键空间、持久化记录与交互授权（rc.1 新增）
 - [`memory-compaction.md`](memory-compaction.md) — 上下文管理与自动压缩
-- [`data-model.md`](data-model.md) — 持久化数据模型（事件日志地面实现，JSONL 单一后端 + per-record 存储）
-- [`deployment.md`](deployment.md) — 部署形态（web/headless、profile/bundle/patch、SDK 分发）
-- [`attachments.md`](attachments.md) — 持久化附件能力面（不可变内容寻址对象库 `ctx.attachments`）
-- [`remote-controllers.md`](remote-controllers.md) — Typert Remote 控制器体系（`@Remote` 生成式 API 取代 apiproxy RPC，alpha.1 新增）
-- [`webhook.md`](webhook.md) — Webhook 子系统（无状态 fire-and-forget 规则运行时 + GitHub 适配器，alpha.1 新增）
-- [`inspector.md`](inspector.md) — Inspector 跨域检视（experimental CDP，Worker 隔离 + 快照投影，alpha 新增）
-- [`webworker.md`](webworker.md) — WebWorker 浏览器运行时（experimental VFS 镜像 + 嵌套 Worker 子进程，alpha 新增）
+- [`data-model.md`](data-model.md) — 持久化数据模型（JSONL 单一后端 + 写所有权租约 + per-record 存储）
+- [`workspace-files.md`](workspace-files.md) — 工作区文件能力面（资源寻址 + 双面 API + 有界读取 + 交付，0.1.5 新增）
+- [`web-client.md`](web-client.md) — 浏览器客户端（resource registry + slot roster + 侧栏/预览/交付，0.1.5 新增）
+- [`deployment.md`](deployment.md) — 部署形态（web/headless/desktop、profile/bundle/patch、SDK 分发）
+- [`desktop-app.md`](desktop-app.md) — 桌面形态（Electron 打包/签名/自动更新 + 原生 addon 家族，0.1.5 新增）
+- [`attachments.md`](attachments.md) — 持久化附件能力面（不可变内容寻址对象库 `ctx.attachments`，0.1.3 起泛化为通用文件）
+- [`remote-controllers.md`](remote-controllers.md) — Typert Remote 控制器体系（`@Remote` 生成式 API 取代 apiproxy RPC）
+- [`webhook.md`](webhook.md) — Webhook 子系统（无状态 fire-and-forget 规则运行时 + GitHub 适配器）
+- [`inspector.md`](inspector.md) — Inspector 跨域检视（experimental CDP，Worker 隔离 + 快照投影）
+- [`webworker.md`](webworker.md) — WebWorker 浏览器运行时（experimental VFS 镜像 + 嵌套 Worker 子进程）
 
 ## 可借鉴的设计
 
@@ -166,7 +217,7 @@ graph TB
 - **分层 patch 组合**：profile/bundle/patch 把「发行、组合命名、覆盖行为」正交化，任何升级/换默认都退化为一个 patch，且 `--dump-config` 保证「看到的 = 跑起来的」。
 - **零特权拦截**：所有关键决策点（pre-step/request/request-error/turn-stopping、tools/*）都以 waterfall 事件开放，让插件在洋葱式 `next()` 委派下无优先级地参与——连主循环本身都可替换。
 - **坚持「可回放」优先于「方便」**：二进制图像也没能绕开唯一事实源——用不可变内容寻址对象库 + `ImageAttachmentRef` 引用而非 base64/URL，让 `Model-visible means logged` 从文本扩展到媒体（[attachments.md](attachments.md)）。
-- **把「协作」也变成可回放事件（rc.8）**：Agent Teams 把队形、邮件队列、任务板全部写成 Lead 日志里的 `team/*` log-only 事件，`foldTeam` 折叠重建——连"多 agent 一起干活"都不引入旁路可变状态（[agent-teams.md](agent-teams.md)）。
+- **把「协作」也变成可回放事件（rc.8）**：Agent Teams 把队形、邮件队列、任务板全部写成 Lead 日志里的 `team/*` log-only 事件，再由注册式 `agentTeam` session 投影（`stateVersion: 3`）折叠重建——连"多 agent 一起干活"都不引入旁路可变状态（初始版本用 `foldTeam` 纯函数折叠，0.1.5 已换成投影，见 [agent-teams.md](agent-teams.md)）。
 - **存储效率与真相不可变不冲突**：JSONL 后端用 chunk 打包物理行 + zstd 压缩存储，仍严格还原逻辑 `SessionEvent[]`、seq 连续、`readFrom` 尾读语义不变——压缩的是物理布局，未放宽"日志即真相"（[data-model.md](data-model.md)）。**（rc.8 的 SQLite Schema 17 打包行已随 0.1.2-alpha.1 移除，此原则收敛进 JSONL 单一后端）**
 - **"一个真相、一类读法"（alpha.1）**：移除 SQLite 会话后端、把事件日志收敛为 JSONL 单一后端——不是性能退让，而是用 `readFrom` 的物理后缀语义消解双后端的差异化收益，维护成本降到"单一契约、单一媒介"（[data-model.md](data-model.md)）。
 - **位置与身份从类型层分离（alpha.1）**：`SessionSeq` vs `SessionLogOffset` 让"标识一条事件"与"标识日志中的位置"编译期不可互换——事件溯源系统里最贵的 bug 之一（offset 当身份用）被品牌化直接堵死（[session.md](session.md)）。
@@ -177,21 +228,35 @@ graph TB
 - **凭据也是"记录即事实"的可交换 seam（rc.1）**：授权产出一条 owner 自解释的持久记录而非内存令牌，`GrantRecord` 的 payload 对 harness 完全不透明——授权一次 = 落一条可回放、可审计、可随会话共享的记录（[credentials.md](credentials.md)）。
 - **"确定性归一化 + 对象投影"换取松耦合（rc.2）**：图片落库前先归一化成 provider 无关版本，再由存储侧按模型字节预算投影出可寻址变体（file-id 首选、base64 兜底）——把"图片怎么变"收敛进存储层，消费方只吃确定性制品（[attachments.md](attachments.md)）。
 - **"拒绝"也可以分级（rc.1）**：schema 演进从"一刀切版本拒绝"细化为两层逃生阀——`compatibleVersions` 让 owner **显式背书**旧版本记录可读（不自动迁移、只开白名单），`invalidRecords:'backup-and-skip'` 让可丢弃的派生数据在单条失效时**移走续开**而非 brick 整个 boot；权威数据仍走默认整体拒绝。拒绝不是非黑即白，而是按"这条数据扔了会不会错"分级（[data-model.md](data-model.md)）。
+- **"已发布格式"是不可变契约，不是可重构代码（0.1.3）**：一旦某个格式随任何 release 发出去（含 alpha/rc），它就成为不可变 generation——代码可以重构，但读侧必须永远认得那份旧字节，只能靠**相邻 N→N+1 转换链**逐代前进，不许跳版、不许就地改写历史夹具。"当前版本号"也只有一个手工权威（代码常量），catalog 与 release record 都是它的**派生物**而非并列真相（[session-format-migration.md](session-format-migration.md)）。
+- **迁移要做成"流式 stage"而不是一次性重写（0.1.3→0.1.5）**：老会话可能极大，一次性把所有事件读进内存再转换会在真实用户数据上爆掉；把每代迁移拆成可流式推进的 stage，换来常数内存与可取消（[session-format-migration.md](session-format-migration.md)）。
+- **连"收件箱"都从日志重建（0.1.5）**：inbox 原本是内存服务，重启即丢待处理投递；改成 durable projection 后，进程崩溃后能靠日志重放出未消费的唤醒——这是"日志即事实源"对**运行时可变状态**的最后一次收编（[agent-loop-runtime.md](agent-loop-runtime.md)）。
+- **有界窗口 > "读整份再切片"（0.1.5）**：把 range 读取做成 seam 上的一等能力（且必须可取消），而不是让上层读整个文件再切——后者在远端沙箱后端上会把网络与内存成本乘以文件大小（[workspace-files.md](workspace-files.md)、[sandbox-capability-seams.md](sandbox-capability-seams.md)）。
+- **客户端订阅要"保留"而不是"重建"（0.1.5）**：Client resource registry 把"组件要什么数据"注册成可保留的订阅，组件重挂/重连时续用同一份订阅，而不是重新拉一遍——把生命周期从组件扩到连接（[web-client.md](web-client.md)）。
+- **"默认不代理本机"是安全默认（0.1.3）**：统一出站代理时最容易踩的坑是把自己的 loopback / 内网流量也塞进代理；把"本机流量豁免"做成默认策略而非配置项，比事后补救更省事（[networking-proxy.md](networking-proxy.md)）。
+- **原生错误形状必须逐字保真（0.1.3）**：subprocess 层专门收敛"spawn 错误的 stack/shape 与原生一致"，因为上层按 `code`/`path`/`errno` 做分支——包装层顺手美化错误，等于让上层的结构化判断全部失效（[subprocess.md](subprocess.md)）。
+- **提示缓存靠"稳定前缀 + 变动后缀"（0.1.3）**：把 cwd 这类每次会话都变的**环境事实**从系统提示开头挪到末尾、把可复用指令放前面，是零成本的缓存命中率优化——同时也解释了 v3 为什么要把 system prompt 变成可独立寻址的 surface 节点（[system-prompt.md](system-prompt.md)）。
 
 ## 不足 / 风险
 
-- **pre-release 快速迭代**：设计一致但兼容性未稳定，`SESSION_FORMAT_VERSION=0` 等「无兼容承诺」的紧急出口意味着升级可能需迁移磁盘格式。
+- **pre-release 快速迭代**：设计一致但兼容性未稳定，升级仍可能需迁移磁盘格式。
+  > **演进说明（0.1.3）**：此前"`SESSION_FORMAT_VERSION=0` 无兼容承诺"的紧急出口已收敛——0.1.3 起格式进入**已发布不可变世代 + 相邻迁移链**，写侧只写当前版本、读侧必须逐代迁移（当前 writer 为第 3 代，随 0.1.5-alpha.1 发布）。兼容承诺仍在 pre-release 期间随时可能加代，但不再有"旧字节直接拒绝"的出口（见 [session-format-migration.md](session-format-migration.md)）。
 - **patch by-id 整行替换的维护税**：上层 patch 需重述整行 config，bundle 重构字段名会静默「断」上层重述该字段的 patch。
 - **学习曲线**：三实体（profile/bundle/patch）与分层概念需要理解成本；不少 invariant companion 是空安装，正确性部分押在测试而非运行时自证。
 - **示例/工具集合覆盖**：本解读聚焦架构主干，`extensions/tool-*` 的每把工具 schema 未逐一展开。
-- **附件对象 GC deferred**：附件对象库尚无可达性 GC，恢复/分叉共享不可变对象会留下不可达对象占磁盘；v1 仅收四种栅格格式（见 [attachments.md](attachments.md)「演进与未完成」）。
-- **Agent Teams 尚属实验面（rc.8）**：包名带 `experimental-` 前缀、服务键 `agentTeams`，协调吞吐受日志写速限制，且不保证跨进程 exactly-once 邮件投递（见 [agent-teams.md](agent-teams.md)）。
+- **附件对象 GC deferred**：附件对象库尚无可达性 GC，恢复/分叉共享不可变对象会留下不可达对象占磁盘；v1 仅收四种栅格格式（见 [attachments.md](attachments.md)「演进与未完成」）。**（0.1.3 起附件已泛化为通用文件，接入面变宽，GC 缺口的影响面同步变大）**
+- **Agent Teams 尚属实验面（rc.8 → 0.1.5）**：包仍带 `experimental-` 前缀，协调吞吐受日志写速限制，且不保证跨进程 exactly-once 邮件投递；0.1.5-alpha.2 起虽已随发行版公开分发，实验定位不变（见 [agent-teams.md](agent-teams.md)）。
 - **SQLite 会话后端移除后的取舍（alpha.1）**：事件日志失去"按 seq 随机寻址"媒介，长会话冷读全靠 JSONL 整读 + 投影缓存播种；统一关系库多后端设计仍 deferred，pre-release 不保证 schema/codec 稳定（见 [data-model.md](data-model.md)）。
 - **webhook 无去重/无完成语义（alpha.1）**：上游重试与并发投递可产生重复 Session，且发起方无法得知投递最终是否执行——"确定性地交付给日志"与"完成回调"之间选择了前者（见 [webhook.md](webhook.md)）。
 - **Remote 控制器严格性有学习成本（alpha.1）**：方法参数形状约束严（禁默认值/rest/可选）、复杂对象必须建 `TypertLookupMap`，且生成管线要求 Host 阶段先于 Client 阶段（见 [remote-controllers.md](remote-controllers.md)）。
 - **experimental 工具不进发行版**：Inspector / WebWorker 均 `private: true`，接口随 pre-release 演进；WebWorker 打包是构建时间依赖（stale build 打包 stale bytes）、Inspector 无自动 Worker 重启（见 [inspector.md](inspector.md)、[webworker.md](webworker.md)）。
 - **凭据记录无 owner 卸载即清理策略（rc.1）**：卸载插件的 record 会滞留（靠 owner scope 命名区分而非自动回收），与附件对象 GC deferred 同类（见 [credentials.md](credentials.md)）。
 - **图片归一化是额外渲染开销（rc.2）**：删除元数据/降采样/重编码增加一次 CPU 代价与 Variant 缓存管理，换取长会话与跨 provider 的可重复性（见 [attachments.md](attachments.md)）。
+- **迁移链只能逐代前进（0.1.3）**：相邻转换链保证每一步可验证，代价是跨多代升级要串行跑完整条链，冷启动成本随代数线性增长；且"已发布世代不可改"意味着早期代里的设计缺陷只能靠后续代修正，无法回头修补（见 [session-format-migration.md](session-format-migration.md)）。
+- **平台原生化带来的构建矩阵（0.1.3→0.1.5）**：subprocess 的 POSIX/Windows 双原生 runner、桌面端的 mac 签名公证 / Windows 签名、`node-addon-system` 的预编译产物，把"一次编译处处运行"换成多平台构建与发布流水线成本（见 [subprocess.md](subprocess.md)、[desktop-app.md](desktop-app.md)）。
+- **客户端包数量膨胀（0.1.5）**：`packages/client/ui-*` 细分成十几个包，换来关注面隔离与按需组合，代价是 slot/契约变更要跨多包同步，且 Host/Client 两侧存在重复投影（如系统提示词面的客户端推导）（见 [web-client.md](web-client.md)）。
+- **统一代理是全局开关（0.1.3）**：走 Node `fetch` 的出站（LLM 请求、web 搜索、HTTP MCP、E2B 等）都过同一策略，意味着代理配置错误会一次性影响它们；代价是例外必须显式管理——usage telemetry 的 OTLP exporter 用 Node 自带 HTTP 客户端、**刻意不代理**（导出失败静默丢弃，不影响任何功能）、loopback 结构性直连、模型自写代码拿不到代理设置、进程内 `worker_threads` 也不继承（逃逸防护），浏览器 Worker 侧则只求值、没有 transport 那一半（见 [networking-proxy.md](networking-proxy.md)）。
+- **有界读取把复杂度推给 provider（0.1.5）**：fs 的 range 能力要求每个后端（本地、沙箱、E2B）各自实现可取消的字节窗口，新增后端必须先补齐这块才算合格（见 [workspace-files.md](workspace-files.md)）。
 
 ## 同类对比
 
@@ -204,7 +269,9 @@ graph TB
 
 ## 总结
 
-DeepSeek Harness 用一个反传统的前提改造了 agent 框架：**没有特权内核，反而因此获得了更强的确定性**——主循环是插件、工具是插件、会话日志是唯一事实源，一切都可替换、可配置、可回放。它的架构是对「agent 框架如何既保持可扩展性又保持可审计性」这一根本问题的犀利回答，贯穿五大支柱（无特权内核 / 日志即事实源 / 可交换后端 / 分层启动 / 事件即扩展点）。从 [`architecture.md`](architecture.md) 的地基，到 [`session.md`](session.md) 的事实源，再到 [`agent-loop-runtime.md`](agent-loop-runtime.md) 的发动机与沙箱/多 agent/压缩等外围能力，最终都汇到「把执行过程的每个环节都变成可回放、可交换的插件」这一根因上。
+DeepSeek Harness 用一个反传统的前提改造了 agent 框架：**没有特权内核，反而因此获得了更强的确定性**——主循环是插件、工具是插件、会话日志是唯一事实源，一切都可替换、可配置、可回放。它的架构是对「agent 框架如何既保持可扩展性又保持可审计性」这一根本问题的犀利回答，贯穿五大支柱（无特权内核 / 日志即事实源 / 可交换后端 / 分层启动 / 事件即扩展点）。从 [`architecture.md`](architecture.md) 的地基，到 [`session.md`](session.md) 的事实源与其 [`session-format-migration.md`](session-format-migration.md) 的世代契约，再到 [`agent-loop-runtime.md`](agent-loop-runtime.md) 的发动机，以及 [`workspace-files.md`](workspace-files.md)、[`web-client.md`](web-client.md)、[`desktop-app.md`](desktop-app.md)、[`subprocess.md`](subprocess.md)、[`networking-proxy.md`](networking-proxy.md) 等外围能力，最终都汇到「把执行过程的每个环节都变成可回放、可交换的插件」这一根因上。
+
+0.1.3 → 0.1.5 这条线特别能说明这套前提的**代价与红利同时兑现**：红利是——会话格式可以"发出去就冻结、读侧逐代迁移"，收件箱可以"删掉服务、从日志重建"，外部文件可以"下沉成 seam 上的一等字节窗口"、桌面端可以"换一层壳而不用改核心"；代价是——每一处都要求把隐式状态显式化、把平台差异原生化、把历史字节当作不可变契约来对待。这正是"事件溯源 + 无特权内核"在真实产品化压力下的样子。
 
 ---
 

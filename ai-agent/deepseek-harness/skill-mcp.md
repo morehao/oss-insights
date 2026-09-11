@@ -1,3 +1,10 @@
+---
+type: 项目解读
+title: "Skill 技能体系 + MCP 外部能力接入"
+description: "DeepSeek Harness（dsh）技能体系与 MCP 接入解读——技能包与 SKILL.md 注入、共享模糊名排序器（rankByName）统一候选排序、MCP 客户端工具发现（重复游标拒绝语义），以及外部能力如何经 ctx.tools 进入受控工具管道。"
+tags: [deepseek-harness, dsh, skill, mcp, tool-discovery, ranking, capability-seam]
+---
+
 # Skill 技能体系 + MCP 外部能力接入
 
 > 子文档之一，把「外部能力注入」这一个关注面拆成两条互补通道：`packages/skill/*`（技能）与 `packages/mcp/mcp-client/*`（MCP 接入）。整体哲学见 [README](README.md)；本文上承 [subagent.md](subagent.md)（多 agent 委派）、下启 [memory-compaction.md](memory-compaction.md)（上下文管理）。
@@ -32,22 +39,40 @@ Skill 是「外部指令注入」的通用通道：把可复用的任务指令�
 
 ```mermaid
 flowchart TD
-    A[provider.apply 注册 SkillProvider<br>registerProvider] --> B[register 写进<调用方 scope>的SkillLayer]
-    C[ctx.skills.snapshot/list<br>collect options cwd+scope+signal] --> D{collectCache key 命中?}
-    D --是--> E[返回缓存 entries]
-    D --否--> F[collectFresh 遍历 global layer + scope链]
-    F --> G[listLayerCandidates: runtime skill + 每个 provider.list]
-    G --> H[provider.list 发现候选 或 返回部分观察]
-    H --> I[validateCandidate 快失败 + 按 rank/providerOrder/localOrder 排序]
-    I --> J[按层合并, 最近层同名覆盖更远层]
-    J --> K[setCache + snapshot.summaries sort]
-    K --> L[tool-skill 于 pre-step 注入 system-reminder catalog]
-    L --> M[模型调 skill tool<br>ctx.skills.get name]
-    M --> N[匹配候选 + isModelInvocable 校验]
-    N --> O[provider.get candidate options 读完整正文]
-    O --> P[renderSkillContent → skill_content 回注]
-    A -.mutation.-> Q[skills/change 事件通知 清 cache]
-    M -.signal.-> R[waitWithAbort 竞速 防止 provider 挂死]
+    A["provider.apply 注册 SkillProvider<br>registerProvider"]
+    B["register 写进调用方 scope 的 SkillLayer"]
+    C["ctx.skills.snapshot/list<br>collect options cwd+scope+signal"]
+    D{"collectCache key 命中?"}
+    E["返回缓存 entries"]
+    F["collectFresh 遍历 global layer + scope链"]
+    G["listLayerCandidates<br>runtime skill + 每个 provider.list"]
+    H["provider.list 发现候选<br>或返回部分观察"]
+    I["validateCandidate 快失败<br>+ 按 rank/providerOrder/localOrder 排序"]
+    J["按层合并<br>最近层同名覆盖更远层"]
+    K["setCache<br>snapshot.summaries sort"]
+    L["tool-skill 于 pre-step<br>注入 system-reminder catalog"]
+    M["模型调 skill tool<br>ctx.skills.get name"]
+    N["匹配候选 + isModelInvocable 校验"]
+    O["provider.get candidate options<br>读完整正文"]
+    P["renderSkillContent<br>→ skill_content 回注"]
+    Q["skills/change 事件通知 清 cache"]
+    R["waitWithAbort 竞速<br>防止 provider 挂死"]
+    A --> B
+    C --> D
+    D --是--> E
+    D --否--> F
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+    J --> K
+    K --> L
+    L --> M
+    M --> N
+    N --> O
+    O --> P
+    A -.mutation.-> Q
+    M -.signal.-> R
 ```
 
 关键坐标：
@@ -78,6 +103,40 @@ flowchart TD
 <!-- anchor: private async roots(cwd: string | undefined): Promise<SkillRo -->
 7. 变更观测：模型 facing `write/edit`（`fs/observed` 事件）同步失效 provider，host 层用 Chokidar 覆盖外部进程变更；`skills/change` 事件不带 diff，消费方自取自己关心的观察。[packages/skill/skill-filesystem/src/index.ts:139-143]()
 <!-- anchor: ctx.on('fs/observed', (target, _observation, actor) => { -->
+
+### 技能候选排序：从各处自写匹配收敛到共享排序器
+
+0.1.3-alpha.1 起，`/` 菜单里「命令」与「技能」两组候选改用同一个排序器 `rankByName`（`packages/client/ui-primitives`）。在此之前两组口径是分叉的：命令组内联了一份 DP 模糊打分（有序子序列 + 边界加权 + 跳字罚分），技能组只是朴素的 `name.startsWith(query)`。[packages/client/ui-primitives/src/rank-by-name.ts:2-6]()
+<!-- anchor: * Shared ranking for `/` menu candidates: the query must be a … * .agents/notes/archived/feature/2026-08-04-web-slash-command-fuzzy-discovery.md -->
+同一次按键下同一份 query 得到两种结果：前缀命中在两组里的排序位置不一致，输入 `dcr` 也搜不到 `dsh-code-review` 这类非前缀子序列技能——这类不一致是用户可感知的行为，而非内部实现差异。[packages/client/ui-skill/src/client/index.ts:146-148]()
+<!-- anchor: // The same ranking as the command group of this menu: case-insensitive … return rankByName(skills, query) -->
+（`dsh-code-review` 是本仓库 `.agents/skills` 下真实存在的技能，其名字即 `dsh-code-review`。[.agents/skills/dsh-code-review/SKILL.md:2-2]()）
+<!-- anchor: name: dsh-code-review -->
+
+共享排序器的口径是三级裁决：先判定大小写不敏感的**有序子序列**是否成立，再让前缀命中整组前置，同组内按对齐分降序，最后回退到输入源序保证同分稳定。对齐分本身把「名字起始与 `-`/`_` 边界」各加 8 分、连续命中额外加 4 分、跳字与前置字符按位置扣分——即"前缀优先、词边界次之、越紧凑越前"。[packages/client/ui-primitives/src/rank-by-name.ts:22-58]()
+<!-- anchor: * Score the strongest ordered-subsequence alignment in O(name × query). … for (const score of previous) best = Math.max(best, score) -->
+
+```mermaid
+flowchart LR
+    A["host catalog + contributions"]
+    B["ui-commands: / 命令候选"]
+    C["ui-skill: 技能候选"]
+    D["rankByName (ui-primitives)"]
+    E["前缀命中 → 对齐分 → 源序"]
+    A --> B
+    A --> C
+    B --> D
+    C --> D
+    D --> E
+```
+
+价值不在复用几个函数，而在**把排序提升为菜单级契约**：菜单是同一个输入框、同一套键盘导航，两个来源的候选混排在一屏；只要排序口径分叉，"打两个字母能命中谁"就取决于该候选恰好由哪个插件贡献。收敛后命令组删除私有实现、直接调用共享原语，第三个候选来源也能直接接入而无需再抄一遍打分逻辑。[packages/client/ui-commands/src/client/service.ts:219-222]()
+<!-- anchor: return rankByName( … rows.filter(c => req.position === 'leading' || c.hint === undefined), -->
+导出面收在 `ui-primitives` 的包入口，使「菜单排序」与按钮、图标、剪贴板一样成为客户端原语，而不是某个插件的内部细节。[packages/client/ui-primitives/src/index.ts:47-47]()
+<!-- anchor: export { rankByName } from './rank-by-name.ts' -->
+
+代价要一并说清：`rankByName` 的入参约束只有 `{ readonly name: string }`，**从不看 description**。所以中文描述里出现的关键词永远不会被 query 命中。这是刻意取舍——描述文本随语言与本地化变动，名字才是稳定身份；但它与用户"按描述搜"的直觉相悖，且技能组此前连名字子序列都不支持，本次只是把能力补齐到与命令组一致的水位。[packages/client/ui-primitives/src/rank-by-name.ts:67-78]()
+<!-- anchor: export function rankByName<T extends { readonly name: string }>(items: readonly  … return ranked.map(match => match.item) -->
 
 ---
 
@@ -112,26 +171,45 @@ MCP 子模块是「外部工具注入」的通道：把任意符合 Model Contex
 
 ```mermaid
 flowchart TD
-    A[apply: resolveReconnectPolicy + 保留 serverName 命名空间] --> B[startConnection 启动监督 supervisor]
-    B --> C[connectGeneration: 新 Client + createTransport config]
-    C --> D{transport}
-    D --stdio--> E[StdioClientTransport spawn 子进程<br>env 经 scrubbedParentEnv 脱敏]
-    D --streamable-http--> F[StreamableHTTPClientTransport 连 URL]
-    E --> G[connect + 注册 tools/list_changed 通知监听]
+    A["apply: resolveReconnectPolicy<br>+ 保留 serverName 命名空间"]
+    B["startConnection 启动监督 supervisor"]
+    C["connectGeneration: 新 Client<br>+ createTransport config"]
+    D{"transport"}
+    E["StdioClientTransport spawn 子进程<br>env 经 scrubbedParentEnv 脱敏"]
+    F["StreamableHTTPClientTransport 连 URL"]
+    G["connect + 注册<br>tools/list_changed 通知监听"]
+    H["enqueueSync 初始 sync"]
+    I["Phase1 fetch: 分页 tools/list<br>构建 Map publicName→ToolDefinition"]
+    J["publicToolName<br>= mcp__serverName__rawName<br>超 64/非法字符→追加 SHA-256 hash"]
+    K["Phase2 swap: dispose 前世代<br>+ ctx.tools.register 每个定义"]
+    L["Client 存活期间, 模型调工具"]
+    M["execute 发 tools/call 原始 rawName<br>带 timeout + abort signal"]
+    N["结果校验 isError→throw<br>文本块拼接/二进制占位"]
+    O["回注 ToolRuntime<br>content + structuredContent"]
+    P["generationDown"]
+    Q["scheduleReconnect 指数退避重连"]
+    R{"超 maxAttempts?"}
+    S["注销本 server 全部工具, 停止重连"]
+    A --> B
+    B --> C
+    C --> D
+    D --stdio--> E
+    D --streamable-http--> F
+    E --> G
     F --> G
-    G --> H[enqueueSync 初始 sync]
-    H --> I[Phase1 fetch: 分页 tools/list 构建 Map publicName→ToolDefinition]
-    I --> J[publicToolName = mcp__serverName__rawName<br>超 64/非法字符→追加 SHA-256 hash 防碰撞]
-    J --> K[Phase2 swap: dispose 前世代 + ctx.tools.register 每个定义]
-    K --> L[Client 存活期间, 模型调工具]
-    L --> M[execute 发 tools/call 原始 rawName<br>带 timeout + abort signal]
-    M --> N[结果校验 isError→throw; 文本块拼接/二进制占位]
-    N --> O[回注 ToolRuntime<br>content + structuredContent]
-    L -.onclose/崩溃.-> P[generationDown]
-    P --> Q[scheduleReconnect 指数退避重连]
-    Q --> R{超 maxAttempts?}
+    G --> H
+    H --> I
+    I --> J
+    J --> K
+    K --> L
+    L --> M
+    M --> N
+    N --> O
+    L -.onclose/崩溃.-> P
+    P --> Q
+    Q --> R
     R --否--> C
-    R --是--> S[注销本 server 全部工具, 停止重连]
+    R --是--> S
 ```
 
 关键坐标：
@@ -143,8 +221,8 @@ flowchart TD
 <!-- anchor: // Phase 1: fetch and build the next generation without touch -->
 - 命名纯函数：`publicToolName` 由 `(serverName, rawName)` 确定，异常字符串替换非法字符并追加 12-hex SHA 避免不同身份坍缩成同名。[packages/mcp/mcp-client/src/tools.ts:112-118]()
 <!-- anchor: export function publicToolName(serverName: string, rawName: s -->
-- 工具执行：发送原始 rawName（公名绝不发到线上），abort+timeout 透传进 SDK request；MCP 的 `isError` 会 throw 让 ToolRuntime 走 isError 路径。[packages/mcp/mcp-client/src/tools.ts:312-362]()
-<!-- anchor: return async (args: unknown, exec: ToolExecution) => { -->
+- 工具执行：发送原始 rawName（公名绝不发到线上），abort+timeout 透传进 SDK request；MCP 的 `isError` 会 throw 让 ToolRuntime 走 isError 路径。[packages/mcp/mcp-client/src/tools.ts:321-371]()
+<!-- anchor: return async (args: unknown, exec: ToolExecution) => { … return value -->
 - 重连预算按 outage 算：`maxAttempts` 连续失败后注销并停，`connectedAt` 存活超 `maxDelayMs`（=最大退避间隔）则重置预算，区分「偶发崩溃」与「crash-loop」。[packages/mcp/mcp-client/src/connection.ts:192-225]()
 <!-- anchor: function scheduleReconnect(): void { -->
 
@@ -152,14 +230,48 @@ flowchart TD
 
 1. **transport 权衡**：stdio 适合本地子进程 server（command/args/env，env 经 `scrubbedParentEnv` 脱敏身份状与过期 `DSH_*`），streamable-http 适合远程/SSE。重连只在 transport onclose 触发——stdio 崩溃能触发，HTTP 不可达是每请求重试而非 supervisor 重建。[packages/mcp/mcp-client/src/transport.ts:31-50]()
 <!-- anchor: export function createTransport(config: Config): Transport { -->
-2. **工具映射到内部 tool**：以 server 提供的 description+inputSchema 直接构造 ToolDefinition 的 parameters；output 统一为 `{ content: JsonValue[], structuredContent? }`，支持的广告 outputSchema 校验 structuredContent，不支持的词汇回落到无约束 JsonValue。[packages/mcp/mcp-client/src/tools.ts:275-303]()
-<!-- anchor: /** Build the canonical result schema and existing Native tex -->
+2. **工具映射到内部 tool**：以 server 提供的 description+inputSchema 直接构造 ToolDefinition 的 parameters，并在 `output` 上挂 `createOutput` 铸造的规范 schema 与 Native 文本投影。[packages/mcp/mcp-client/src/tools.ts:254-281]() 而广告的 outputSchema 先经 `supportedOutputSchema` 按 harness 子集白名单试校验：通过者成为 `structuredContent` 的硬约束，不支持的词汇静默回落到无约束 JsonValue，而不是让整份工具清单校验失败。[packages/mcp/mcp-client/src/tools.ts:230-239]()
+<!-- anchor: function createDefinition( … return projection.content -->
+<!-- anchor: /** Keep a supported advertised schema; unsupported MCP vocabulary falls back to … return undefined -->
 3. **超时/abort**：默认 60s/tool call，exec.signal 竞速；SDK 的初始化/分页仍用其自身 60s 默认（未另暴露连接超时）——已知局限。[packages/mcp/mcp-client/src/index.ts:33-34]()
 <!-- anchor: /** Default timeout for individual MCP tool calls (ms). */ -->
 4. **系统性生成切换安全**：`enqueueSync` 串行化所有 sync（首发+通知重同步+跨世代），`isCurrent(generation)` 守卫保证只有当前世代能行动，`dispose` 需 quiesce (await settling+syncChain) 再注销，避免双 dispose/泄漏。[packages/mcp/mcp-client/src/connection.ts:156-172]()
 <!-- anchor:   * Serializes every syncTools call — initial syncs and notification re-syncs -->
-5. 网络信任边界：读取每个 content block 用的是比 SDK 更松的类型，服务器缺失必填字段（text/mimeType）有回退，而非 panic。[packages/mcp/mcp-client/src/tools.ts:197-217]()
-<!-- anchor:  * The shape we read from each MCP content block. Intentionally looser than the -->
+5. 网络信任边界：读取每个 content block 用的是比 SDK 更松的类型——`McpContentBlock` 把 SDK 声明必填的字段一律降为可选，因此服务器缺失必填字段（text/mimeType）时有回退路径，而非 panic。[packages/mcp/mcp-client/src/tools.ts:205-218]()
+<!-- anchor: * The shape we read from each MCP content block. Intentionally looser than the … uri?: string -->
+
+### 工具发现的新拒绝语义：重复游标即失败
+
+`tools/list` 分页存在两种只有上界、没有下界的循环：服务器返回空页却把 `nextCursor` 设回同一个值，或返回一条 A→B→A 的游标环。两者都会让 fetch 循环永不收敛——而这段循环正跑在 plugin 激活的同步路径上，卡住意味着**连工具都注册不上**。SDK 不会更早介入：插件自身不暴露连接/发现超时，每一轮分页都吃 SDK 的 60 秒请求默认值，于是每绕一圈就至少烧掉一个超时窗口。[packages/mcp/mcp-client/src/tools.ts:125-128]() [packages/mcp/mcp-client/README.md:192-192]()
+<!-- anchor: * 1. Fetch: drain uncached `tools/list` pagination and build the full next … *    and leaves the previous generation registered untouched. -->
+<!-- anchor: - **Startup and discovery timeouts are inherited from the MCP SDK** — the plugin -->
+
+修法是把「游标必须单调向前」这一 MCP 分页的隐含前提显式化：fetch 阶段维护一个 `seenCursors` 集合，每取到非空 `nextCursor` 先查重，命中即抛错。判定特意只挂在**非空**游标上——末页返回空游标是正常终止，不能误伤。[packages/mcp/mcp-client/src/tools.ts:175-182]()
+<!-- anchor: cursor = response.nextCursor … seenCursors.add(cursor) -->
+
+```mermaid
+flowchart TD
+    A["Phase 1 fetch: cursor = undefined"]
+    B["listToolsUncached(client, cursor)"]
+    C{"nextCursor 非空?"}
+    D["fetch 完成，进入 Phase 2 swap"]
+    E{"seenCursors 已有?"}
+    F["throw: repeated continuation cursor"]
+    G["seenCursors.add(cursor)"]
+    A --> B
+    B --> C
+    C -- 否 --> D
+    C -- 是 --> E
+    E -- 是 --> F
+    E -- 否 --> G
+    G --> B
+```
+
+错误落在 fetch 阶段，因此自动继承既有的「整代拒绝」路径：本世代零注册，前一代工具集原样保留，且后续更新仍可成功。这把「上游 server 有 bug」从「harness 激活被挂死」降级成「这次更新被拒，继续服务上一个可信版本」——与同名工具重复、注册冲突共用同一条失败语义，而不是为分页单独发明一套。[packages/mcp/mcp-client/README.md:79-79]()
+<!-- anchor: - A repeated non-empty `tools/list` continuation cursor rejects that update imme -->
+
+回归用例的选型也值得记一笔：fixture 返回的是**空页环**（每页 `tools: []` + 恒定 `same-cursor`），并在第 3 次请求直接抛错，让「分页没有在重复游标之后继续」这个断言不依赖测试超时来判负。[packages/mcp/mcp-client/tests/fixtures/repeated-cursor-server.ts:12-15]()
+<!-- anchor: server.server.setRequestHandler(ListToolsRequestSchema, () => { … return { tools: [], nextCursor: 'same-cursor' } -->
 
 ---
 
@@ -178,3 +290,4 @@ Skill 与 MCP 是同一个关注面（把外部能力变成 agent 可用的东�
 ## 全局关联：两条外部能力通道共享同一套哲学
 
 Skill 与 MCP 是「外部能力注入」这个关注面的两条互补通道：Skill 管「哪些指令可用」（发现/仲裁/分层的指令寻址 + host+scope 层叠 + invocation 策略），MCP 管「哪些远端工具能稳定地存续并被执行」（spawn/connect/退避重连/信任边界）。它们共享同一组设计哲学——无特权内核（两者都只是注册表/桥的普通 consumer）、Capability Seam 三件套、上下文成本管理（Skill 摘要目录+按名加载、MCP 目录只含名+description）、事件驱动增量刷新（`skills/change` 与 MCP `tools/list_changed` 反向但同构）。需要说明的一点边界：MCP 三元协议中本文只桥接 tools（`[packages/mcp/mcp-client/README.md:191-191]()`），resources/prompts 在本仓库无消费方而刻意延后——这正是「按需取交集」而非全量代理的表征。
+<!-- anchor: - **Tools are the only bridged MCP capability** — Resources and Prompts have no -->

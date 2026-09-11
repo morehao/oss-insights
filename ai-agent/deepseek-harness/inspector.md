@@ -43,7 +43,7 @@ graph TB
         CP["client/ 适配器<br>注入 __DSH_INSPECTOR__"]
         CPUB["Client 生产者<br>同格式 observation record"]
     end
-    subgraph worker[Inspector Worker（唯一 CDP 状态持有者）]
+    subgraph worker[Worker：唯一 CDP 持有者]
         W["worker/ 编排 + Chrome 协议状态"]
         VAL["验证每个 frame + 源状态/保留"]
         TRANS["识别 topic → 标准 CDP 域"]
@@ -80,9 +80,9 @@ sequenceDiagram
     DT->>W: CDP WebSocket（Runtime.enable 等）
     W->>W: 发布真实 Host 上下文 + 每个 Client 一个合成上下文
     H->>PUB: publish(topic, payload)（微任务合并）
-    PUB->>W: MessagePort 缓冲写（含 sequence/timestamp）
+    PUB->>W: MessagePort 缓冲写
     W->>W: 验证 frame + 翻译成 CDP 域
-    W-->>DT: Runtime.executionContextCreated 等
+    W-->>DT: executionContextCreated
     DT->>W: Runtime.evaluate（选中 Client 上下文时）
     W->>C: 路由求值到该浏览器 realm（经认证 WS）
     C-->>W: 结果（session-local 对象表）

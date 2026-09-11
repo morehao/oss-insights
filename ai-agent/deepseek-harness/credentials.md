@@ -1,3 +1,10 @@
+---
+type: 项目解读
+title: 凭据系统：可交互授权与持久化记录（ctx.credentials / ctx.authorization）
+description: DeepSeek Harness（dsh）凭据能力面解读——ctx.credentials 的双键空间（CredentialRef / CredentialKey）与 $DSH_HOME/.credentials.yaml 版本化文档、CredentialRecord（ApiKeyRecord | GrantRecord）持久化记录、以及 ctx.authorization 可交互授权平面（OAuth / device-code）与 provider 登录接线。
+tags: [deepseek-harness, credentials, authorization, oauth, device-code, credential-record, capability-seam]
+---
+
 # 凭据系统：可交互授权与持久化记录（`ctx.credentials` / `ctx.authorization`）
 
 > 子文档之一，聚焦 dsh 的凭据能力面。覆盖 `packages/credentials/credentials`（能力定义与双键空间）、`packages/credentials/credentials-local`（`$DSH_HOME/.credentials.yaml` 本地实现）、`packages/credentials/authorization`（人机交互授权平面），以及 pi-ai/DeepSeek 适配器侧的登录接线。整体哲学见 [README](README.md)；本文与 [llm.md](llm.md)（provider 路由用哪个凭据）、[deployment.md](deployment.md)（`DSH_HOME` 布局）、[architecture.md](architecture.md)（Capability Seam 三件套）互相咬合。
@@ -56,8 +63,8 @@ opaque payload 是一个关键权衡：把"grant 里装什么"完全下放给 ow
 
 ### interaction 由请求方供给，而非注册时绑定
 
-这是授权设计里最反直觉、也最关键的一点：**surface 半身（`AuthorizationInteraction`）是随请求传入的，不是随 flow 注册的**（[packages/credentials/authorization/src/index.ts:140-159]()）：
-<!-- anchor:  * The surface half of one attempt. Supplied with the request rather than … } -->
+这是授权设计里最反直觉、也最关键的一点：**surface 半身（`AuthorizationInteraction`）是随请求传入的，不是随 flow 注册的**（[packages/credentials/authorization/src/index.ts:145-158]()）：
+<!-- anchor: export interface AuthorizationInteraction { …   prompt(prompt: AuthorizationPrompt): Promise<string> -->
 
 ```ts
 interface AuthorizationInteraction {
@@ -100,11 +107,13 @@ interface AuthorizationInteraction {
 > 这个文件里只有凭据，一条被静默忽略的条目读起来就是"我存的凭据没生效"——所以宁可整篇报错。重复 key 直接按解析错误暴露。
 
 - 文档头要求 `version: 1`（`DOCUMENT_VERSION`，[packages/credentials/credentials-local/src/index.ts:167]()），旧扁平布局在 boot 时被 `migrateFlatDocument()` 一次性搬进 `refs:` 下的新结构，原文逐字保留（注释、空行、值拼写都原样存活），无法证明能懂的文档绝不重写（`:229-239`）。
-- 诊断信息绝不把秘密带出：YAML 解析错误只报 `code + 行/列`，而 `describeYamlError` 明确**不回引源行**，因为解析器引用的那行文本是秘密（[packages/credentials/credentials-local/src/index.ts:153-164]()）。
+- 诊断信息绝不把秘密带出：YAML 解析错误只报 `code + 行/列`，而 `describeYamlError` 明确**不回引源行**，因为解析器引用的那行文本是秘密（[packages/credentials/credentials-local/src/index.ts:154-163]()）。
+<!-- anchor:  * Describe one YAML parse failure without quoting the source. The parser's own …   return `${error.code}${where}` -->
 
 ### 0600 权限 + 跨进程写锁
 
-- `assertOwnerOnly`（[packages/credentials/credentials-local/src/index.ts:127-146]()）在读文档前先拒掉"其他 OS 用户可读"的文件——provider 创建/替换时固定 `0600`，但手写或外部生成的文件带着生成它的 umask；承诺 `0600` 却从一个世界可读的文件里秒速出秘密，等于没承诺。POSIX-only，Windows 跳过（其 ACL 无法在这种表达）。
+- `assertOwnerOnly`（[packages/credentials/credentials-local/src/index.ts:127-143]()）
+<!-- anchor: async function assertOwnerOnly(filename: string): Promise<void> { …     + ` run "chmod 600 ${filename}" before starting again`, -->在读文档前先拒掉"其他 OS 用户可读"的文件——provider 创建/替换时固定 `0600`，但手写或外部生成的文件带着生成它的 umask；承诺 `0600` 却从一个世界可读的文件里秒速出秘密，等于没承诺。POSIX-only，Windows 跳过（其 ACL 无法在这种表达）。
 - 每次写文档前取**跨进程 writer lock**（`DOCUMENT_LOCK_WAIT_MS = 30_000`，[packages/credentials/credentials-local/src/index.ts:112]()），并在锁内"只 patch 自己的 key、保留未动条目原样"；外部编辑经 chokidar 观察热发布，重载整份快照使"被删的条目绝不在内存残留"。
 
 这个 30s 锁等待是打磨过的权衡：`modifyRecord` 的 owner 侧决策可能含网络往返（刷新过期 token），文件层默认锁会让这段时间内同一文档的所有其他写者全挂，故把等待窗口按"最长的持锁者"（一次 provider 请求的代价）来定 —— 这是写协议本身的鲁棒性上界，而非可部署调节项（[packages/credentials/credentials-local/src/index.ts:100-112]()）。
@@ -148,7 +157,9 @@ sequenceDiagram
     end
 ```
 
-无官方 changelog，此图依据 [packages/credentials/authorization/src/index.ts:202-277]() 与 [packages/credentials/credentials-local/src/index.ts:188-227]() 的实现归纳。
+无官方 changelog，此图依据 [packages/credentials/authorization/src/index.ts:202-277]() 与 [packages/credentials/credentials-local/src/index.ts:188-226]() 的实现归纳。
+<!-- anchor:   registerFlow(flow: AuthorizationFlow): () => void { …     const flow = this.flows.get(key) -->
+<!-- anchor: export function parseCredentialsDocument(text: string, filename: string): CredentialsDocument { …   return { refs: parseRefs(fields['refs'], filename), records: parseRecords(fields['records'], filename) } -->
 
 ## 关键设计决策
 

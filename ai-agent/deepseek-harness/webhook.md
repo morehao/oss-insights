@@ -33,15 +33,15 @@ tags: [deepseek-harness, webhook, agent, fire-and-forget]
 
 ```mermaid
 graph TB
-    subgraph provider[provider 适配器（认证 + 归一化）]
+    subgraph provider["provider 适配器（认证 + 归一化）"]
         GH["webhook-github<br>exact route + 签名校验 + 有界 body"]
     end
-    subgraph runtime[webhook 运行时（无状态规则面）]
+    subgraph runtime["webhook 运行时（无状态规则面）"]
         REG["ctx.webhookRuntime<br>register / dispatch / 生命周期"]
         RULE["WebhookRule<br>run(delivery, signal) 受信任回调"]
         SNAP["snapshotDelivery<br>lossless JSON + deepFreeze"]
     end
-    subgraph create[Session 创建（唯一内置动作）]
+    subgraph create["Session 创建（唯一内置动作）"]
         WS["workspaceRegistry.create"]
         AG["agents.create<br>sessionId=webhook-&lt;uuid&gt;"]
         ATT["attachSession + preset + title"]
@@ -69,30 +69,30 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant GH as GitHub
-    participant H as handler.ts (webhook-github)
+    participant H as handler.ts
     participant CR as ctx.credentials
-    participant RT as WebhookRuntime (webhook/src/index.ts)
+    participant RT as WebhookRuntime
     participant R as Rule.run
     participant WS as workspaceRegistry
     participant AG as agents.create
     participant S as Session
 
-    GH->>H: POST <path>（x-hub-signature-256…）
-    H->>H: 校验 POST + content-type + body 上限
+    GH->>H: POST（x-hub-signature-256…）
+    H->>H: 校验 POST + content-type
     H->>CR: resolve(secretEnv)
     CR-->>H: credential 或 503
     H->>H: Octokit verify 签名
-    H->>H: parsePayload → VerifiedWebhookDelivery<'github'>
+    H->>H: parsePayload 归一化签名对象
     H->>RT: dispatch(delivery)
-    RT->>RT: snapshotDelivery（lossless + freeze）
-    RT->>R: run(delivery, signal)（kind 匹配的规则）
-    R-->>RT: WebhookSessionRequest 或 null
+    RT->>RT: snapshotDelivery（冻结快照）
+    RT->>R: run(delivery, signal)
+    R-->>RT: WebhookSessionRequest/null
     RT->>WS: create(workspacePath)
     WS-->>RT: workspace（resolve 或新建）
-    RT->>AG: create({sessionId, meta:{cwd}, agentOptions})
-    RT->>S: attachSession + permissionPreset + title
-    RT->>S: followup(user/message, source.kind=webhook)
-    H-->>GH: 202（即发即忘，不等待规则 settle）
+    RT->>AG: create(sessionId, meta)
+    RT->>S: attach + preset + title
+    RT->>S: followup(user/message)
+    H-->>GH: 202（不等规则 settle）
 ```
 
 `dispatch()` 的核心契约是**同步返回、逐规则包含**：它先 `snapshotDelivery` 把 delivery 变成 lossless-JSON + deepFreeze 的不可变快照，再遍历 kind 匹配的规则各自独立调度，自己立刻返回；任何规则的 throw/reject 都被该规则的 `startInvocation` 包含、记日志，不传染其他规则[[packages/webhook/webhook/src/index.ts:122-130]()]()
@@ -139,15 +139,15 @@ flowchart LR
 
 1. `resolveRequest` 同步快照并校验规则结果（workspacePath 必须绝对路径、title/prompt/agentPreset/permissionPreset 非空；可选 model 若缺席则**快照当前部署的完整模型选择**，包括 reasoning effort）[[packages/webhook/webhook/src/session.ts:42-83]()]()
 <!-- anchor: /** Snapshot and validate a same-process rule result before crossing awaits. */ …   return { workspacePath, title, prompt, agentPreset, permissionPreset, modelSelection, agentOptions } -->；
-2. 解析 permission/agent preset → `workspaceRegistry.create`（resolve 或创建规范 Workspace）→ `agents.create`（`sessionId = webhook-<uuid>`、`meta.cwd = workspace.path`、agentOptions）[[packages/webhook/webhook/src/session.ts:120-141]()]()
+2. 解析 permission/agent preset → `workspaceRegistry.create`（resolve 或创建规范 Workspace）→ `agents.create`（`sessionId = webhook-<uuid>`、`meta.cwd = workspace.path`、agentOptions）[[packages/webhook/webhook/src/session.ts:117-138]()]()
 <!-- anchor: export async function createWebhookSession( …     setup: async (agentCtx) => { -->；
-3. `workspace.attachSession`（durable attach）→ 设 permissionPreset → `sessionTitle.rename` → `followup(createUserMessage({ source: { kind: 'webhook', …provenance } }))`[[packages/webhook/webhook/src/session.ts:150-163]()]()
+3. `workspace.attachSession`（durable attach）→ 设 permissionPreset → `sessionTitle.rename` → `followup(createUserMessage({ source: { kind: 'webhook', …provenance } }))`[[packages/webhook/webhook/src/session.ts:147-159]()]()
 <!-- anchor:     await workspace.attachSession(sessionId) …         ruleId, -->。
 
 Followup 是一条**普通** durable `user/message`，`source.kind: 'webhook'` + provider/source/delivery/rule 溯源；其 inbox 被接受即提交 webhook 操作，此后不特判 flush/等待 turn——普通 Session 持久化与 Agent 生命周期接管[[docs/subsystems/webhook.md:29-29]()]()
 <!-- anchor: The follow-up is a normal durable user-role message with -->
 
-回滚纪律：attach 前失败 → dispose 新建 Agent；attach 后失败 → 先 `workspace.detachSession` 再 `handle.dispose()`，且回滚失败只记 warn、不覆盖原始错误[[packages/webhook/webhook/src/session.ts:167-181]()]()
+回滚纪律：attach 前失败 → dispose 新建 Agent；attach 后失败 → 先 `workspace.detachSession` 再 `handle.dispose()`，且回滚失败只记 warn、不覆盖原始错误[[packages/webhook/webhook/src/session.ts:164-177]()]()
 <!-- anchor:   } catch (error: unknown) { …     throw error -->。唯一的"遗留"是 preflight 中自动创建的 Workspace 目录——它保留，因为并发调用方可能已在使用[[docs/subsystems/webhook.md:31-31]()]()
 <!-- anchor: Failed attachment disposes the new Agent before a prompt exists. -->。这也是一种务实取舍：**清理的是 Session 与 Agent 这类"活的资源"，保留的是目录这类"可复用资源"**。
 

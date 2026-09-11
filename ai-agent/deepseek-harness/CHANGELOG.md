@@ -2,6 +2,136 @@
 
 > 本解读对 DeepSeek Harness（`dsh`）的跨版本变更汇总；按版本倒序。项目无官方 changelog，故基于上游 git 代码变动（tag 间 diff / release commit / commit message 聚合）生成。各版本条目的"相比上一版"描述即对应某次增量解读落盘时更新的内容。
 
+## [0.1.5-rc.2]（2026-09-11 落盘）
+
+> 依据上游 `dsh-v0.1.5-rc.1 → dsh-v0.1.5-rc.2` git diff（4 commits、324 个文件，绝大多数是快照/黄金文件复算）比对生成。
+
+相比 **0.1.5-rc.1** 的主要变更（功能面只有一条）：
+
+**Web 前端 UX**
+- 把已合入 master 的**反馈对话框与文件交付卡片打磨**回移到 0.1.5 发布线（`feat(web): backport feedback and file refinements to 0.1.5`）：统一 markdown 预览组件与注释、图表预览按图片内容定尺寸、交付卡片按 workspace 相对路径显示。无接口或格式变更。see [web-client.md](web-client.md)。
+
+## [0.1.5-rc.1]（2026-09-11 落盘）
+
+> 依据上游 `dsh-v0.1.5-alpha.2 → dsh-v0.1.5-rc.1` git diff（17 commits、349 个文件、约 +1.1K/−0.7K）比对生成。
+
+相比 **0.1.5-alpha.2** 的主要变更（收窄为模型目录 + 侧栏观感）：
+
+**LLM 模型目录**
+- **Chat Completions 默认路由切到 DeepSeek V41 Flash**（`feat(llm): default Chat Completions to DeepSeek V41 Flash`），同时**保留 V4 系列并存**（`retain V4 models alongside V41 Flash`）、**恢复 `deepseek-v4-flash-vision-exp` 视觉条目**（`restore V4 Flash Vision Exp catalog entry`）。see [llm.md](llm.md)。
+- webhook 冒烟与 Cordis 夹具的模型路由随之钉死（`test: keep webhook smoke on the shipped model route`）。
+
+**Web 前端 UX**
+- 侧栏 guide 起始页与统计 pill 去噪、文档预览滚动区跟随当前预览（`fix(client): keep preview scrollports current`）。see [web-client.md](web-client.md)。
+
+## [0.1.5-alpha.2]（2026-09-11 落盘）
+
+> 依据上游 `dsh-v0.1.5-alpha.1 → dsh-v0.1.5-alpha.2` git diff（262 commits、1151 个文件、约 +27K/−10K）比对生成。
+
+相比 **0.1.5-alpha.1** 的主要变更（主题是**客户端外壳与文件呈现的成品化**）：
+
+**Web 客户端 / 侧栏（本次主体）**
+- **侧栏 tab 体系补齐**：last-tab 关闭规则与折叠展开按钮（`feat(sidebar): last-tab close rules and collapsed expand button`）、**live tab 标题**（文件类型图标 + 路径去歧义）、**图片预览**、**全局侧栏面板**（`feat(client): add global sidebar panels`）。see [web-client.md](web-client.md)。
+- **可扩展文档预览**：`feat(client): add extensible document previews and sidebar defaults`，PDF 连续滚动、分页文件 tab 与保留阅读状态（`feat(textpreview): add paged file tabs and retained reader state`）。
+- **Markdown 栅栏预览扩展（已回滚，未进入本版）**：Mermaid（`feat(ui): preview Mermaid diagrams in Chat code blocks`）→ Graphviz / SVG / HTML（`feat(client): preview Graphviz, SVG, and HTML Markdown fences`），并适配应用主题；随后被 PR #3901 `Revert "feat(web): preview Mermaid, Graphviz, SVG, and HTML code fences"` **完整回滚**（净删约 2346 行，含两个 Agent Note、e2e 用例、第三方许可清单与依赖）。HEAD 上代码栅栏只做语法高亮，**没有**图预览。see [web-client.md](web-client.md)。
+- **共享文件类型图标 + 统一链接语言**：`feat(primitives): add file-type icon set and shared link icon`、`feat(client): add shared file type icons`。
+- **交付呈现**：不可变交付物的**下载卡片**（`feat(web): present immutable file deliveries with download cards`）、artifact card 的**原生文件操作**（`feat(web): add native file actions to artifact cards`）、按 workspace 相对路径显示（`fix(web): show artifact paths relative to the workspace`）。see [workspace-files.md](workspace-files.md)。
+- **反馈入口收敛**：`/feedback` 与 Dislike 合并为**同一个带分类的反馈对话框**（`feat(feedback): open one feedback dialog from /feedback and Dislike, with categories and a toast`）。
+- **dockkit 打磨**：strip/chip 呈现、关闭策略与 room reading（`feat(dockkit): refine strip and chip presentation, close policy, and room reading`）。
+
+**工具集**
+- **`str_replace_editor` 从 minimal profiles 移除**（`feat(minimal): remove str_replace_editor from minimal profiles`），至此它已从 base / sdk / minimal 三个默认组合全部退出、改为**显式 opt-in**；同版本内的 `refactor: remove str_replace_editor`（彻底删除代码）被 `Revert "refactor: remove str_replace_editor"` 回滚，**包仍在 HEAD**。see [tools.md](tools.md)。
+
+**子代理**
+- **父方拥有的 child catalog 记录与观察**（`feat(subagent): record and observe parent-owned child catalogs`），并抽出**可持久化 chunked-list 工具**（`refactor(subagent): extract persistent chunked list utility`）。see [subagent.md](subagent.md)、[data-model.md](data-model.md)。
+
+**分发与发行**
+- **实验性 Agent Teams 包正式随发行版发布**（`release: publish experimental Agent Teams packages`，此前为 private）。see [agent-teams.md](agent-teams.md)。
+- minimal 形态的持久 bash 输出对齐一次性 shell 契约（`feat(minimal): align persistent bash output with the one-shot shell contract`）。
+
+**接口 / 行为**
+- **投影视图收敛为 all-or-none**：同一批提交先把 `projectionStates` / `projectionStateKeys` 这类"逐视图挑选"的 API 加出来（`refactor(session-query): return all projection states by default`），随后又由同批的 `refactor(subagent): expose catalog through existing projection views` 收回，**HEAD 上只剩 `projectionMode: 'all' | 'none'` 两档**（默认 `'all'`，位于 session-query 的 observation 层）；llm-pi-ai 启动恢复复用 settings 校验。
+
+## [0.1.5-alpha.1]（2026-09-11 落盘）
+
+> 依据上游 `dsh-v0.1.3-alpha.2 → dsh-v0.1.5-alpha.1` git diff（563 commits、2042 个文件、约 +68K/−11K，为本次增量中最大的单版）比对生成。
+
+相比 **0.1.3-alpha.2** 的主要变更：
+
+**Session 格式 V3（破坏性，本次核心）**
+- **system prompt 提升为 surface node zero**：`refactor(session): represent the system prompt as surface node zero` + `feat(session-format): migrate V2 prompts into V3 system surfaces` + `feat(session): add identity V2-to-V3 migration and writer skeleton`。V3 成为 0.1.5-alpha.1 发布的第 3 代格式，V2 的 prompt 记录被迁移进 V3 的 system surface。see [session-format-migration.md](session-format-migration.md)、[system-prompt.md](system-prompt.md)。
+- 迁移正确性加固：`fix(session): audit every historical content carrier before V3 migration`、`fix(session): retain unknown required events for vocabulary validation`、`fix(session): canonicalize V3 envelopes through adjacent migration`。see [session-format-migration.md](session-format-migration.md)。
+
+**桌面形态（新增）**
+- **Electron 桌面端落地**：`feat: electron 打包`、`feat: mac code sign & notarize`、`feat: windows build & sign`、`feat: optimize ipc perf`；新增 `apps/desktop` 与 `apps/desktop-host` 两个包（Host 从 CLI 包中移出），target-specific 打包与自动更新路径（`feat(desktop): update packaging and auto-update paths for target-specific builds`、`enhance auto-update configuration and add upload scripts`）。see [desktop-app.md](desktop-app.md)。
+
+**原生 addon 家族**
+- **`native/landlock-run` → `native/system`（node-addon-system）**：`refactor(native): rename package family to node-addon-system`、`move Landlock workspace to native/system`、`expose Landlock through its capability subpath`，并新增**预编译 Node-API flock**（`feat(native): add prebuilt Node-API flock support`）。see [desktop-app.md](desktop-app.md)、[sandbox-capability-seams.md](sandbox-capability-seams.md)。
+
+**工作区文件能力面（新增）**
+- **resource 寻址 + 双面文件 API**：`feat(workspace-path): define Session and absolute file resource addresses`、`feat(workspace-files): add dual-face file API and Host-resolved resources`、`feat(remotes): expose workspace file operations to the Client`。
+- **有界字节区间读取下沉到 fs seam**：`feat(fs): define bounded byte-range reads` + `feat(fs-local): implement bounded local byte windows` + `feat(fs-e2b): implement cancellable sandbox byte windows`，`/api/file` 随之只认 `bytes` range、按扩展名 allowlist 提供。see [workspace-files.md](workspace-files.md)。
+
+**Web 客户端**
+- **Client resource registry 与保留订阅**（`feat(resources): add Client resource registry and retained subscriptions`）；**侧栏 tab 导航 / 注入信息 / fullscreen 外壳**（`feat(sidebar): add tab navigation, injected information, and fullscreen shell`）；**可逆 dock 引擎**（`feat(dockkit): add reversible docking engine and pointer interactions`）；**惰性 workspace 文件树 tab**（`feat(sidebar-files): add lazy workspace file tree tabs`）；**交付物经 Sidebar resources 打开**（`feat(deliverables): open produced files through Sidebar resources`）；响应式右列（`feat(layout): add responsive right column and width concessions`）。see [web-client.md](web-client.md)。
+
+**Agent loop / Inbox**
+- **Inbox 由服务改为 durable projection**：`refactor(agent): remove inbox service` + `refactor(agent): back Inbox with a durable projection` + `refactor(agent-loop): own inbox projection in loop`；**system prompt 变更在 capable route 上追加为消息**（`feat(agent-loop): append system prompt changes on capable routes`）。see [agent-loop-runtime.md](agent-loop-runtime.md)、[session.md](session.md)。
+
+**网络代理**
+- **所有出站请求走配置的代理**（`feat(net): route every outbound request through the configured proxy`），http-proxy 收敛为 util 库。see [networking-proxy.md](networking-proxy.md)。
+
+**其他**
+- `feat(visualizer): add dormant Host capability`（休眠状态的可视化 Host 能力面）——随后被 PR #3778 `Revert "feat(visualizer): add dormant Host capability"` 回滚，**未进入本版**，HEAD 无 `packages/visualizer`；`feat(cli): create profiles from shipped templates`（`--from-default-profile`）；compaction 把**派生 system head 作为消息重放**（`refactor(compaction): replay the derived system head as a message`）。see [memory-compaction.md](memory-compaction.md)、[deployment.md](deployment.md)。
+
+## [0.1.3-alpha.2]（2026-09-11 落盘）
+
+> 依据上游 `dsh-v0.1.3-alpha.1 → dsh-v0.1.3-alpha.2` git diff（316 commits、1339 个文件、约 +35K/−9K）比对生成。
+
+相比 **0.1.3-alpha.1** 的主要变更：
+
+**新增能力 / 行为**
+- **模型切换可观察**：`feat(agent): announce model switches`——切换模型在会话流里留下可回放的通知帧。see [agent-loop-runtime.md](agent-loop-runtime.md)。
+- **人机 inbox 控制对齐**（`feat(subagent): align human inbox controls`）：面向人类操作者的 inbox 交互与状态收敛。see [subagent.md](subagent.md)。
+- **Web UI 打开本地应用**：`feat(workspace): open the workspace in local apps from the web UI (#3409)`。see [workspace-files.md](workspace-files.md)、[desktop-app.md](desktop-app.md)。
+- **`str_replace_editor` 退出默认工具集（0.1.3-alpha.2）**：`feat(base): remove str_replace_editor from default tools` + `feat(sdk): disable str_replace_editor by default`；0.1.5-alpha.2 再从 minimal profiles 移除（`feat(minimal): remove str_replace_editor from minimal profiles`）。**注意代码面并未删除**——同一版本内的 `refactor: remove str_replace_editor` 随即被 `Revert "refactor: remove str_replace_editor"` 回滚，`packages/fs/tool-str-replace-editor` 在 HEAD 仍存在，只是从各默认组合退出、改为**显式 opt-in**（base README 明说 "remains available as an explicit opt-in"）。see [tools.md](tools.md)。
+
+**子进程子系统（本版大量收敛）**
+- native containment 基线重建（`refactor(subprocess): restore native containment baseline`），runner 执行面/pid liveness/Windows settlement 逐项收敛（`derive runner execution plane` / `pass runner pid to liveness probe` / `simplify Windows runner settlement`）。see [subprocess.md](subprocess.md)。
+
+**Session format / 上下文**
+- 引入**流式迁移 stage**（`refactor(session-format): introduce streaming migration stages`，0.1.5-alpha.1 再接 `feat(session-format): migrate V2 prompts into V3 system surfaces`）。see [session-format-migration.md](session-format-migration.md)。
+- session-reference 默认预算按所选模型定尺寸、截断捕获转 spill 以便检索（`fix(session-reference): size default budget from selected model`、`fix: spill truncated session-reference captures for retrieval`）。see [session.md](session.md)。
+- 持久化读取：历史读取先准备再发布、冻结读取直接移交进 restore（`perf(session-persistence): prepare historical reads before publication`、`perf(session): transfer frozen persistence reads into restore`）。see [data-model.md](data-model.md)。
+
+**系统提示词**
+- **persona 前缀保留在系统提示首、cwd 移到后缀**（`fix(system-prompt): keep model persona prefix and place cwd in suffix`）；**环境事实排到可复用指令之后**（`fix(system-prompt): place environment facts after reusable instructions`）——为提示缓存命中率服务。see [system-prompt.md](system-prompt.md)。
+
+## [0.1.3-alpha.1]（2026-09-11 落盘）
+
+> 依据上游 `dsh-v0.1.2-rc.1 → dsh-v0.1.3-alpha.1` git diff（328 commits、1442 个文件、约 +56K/−23K）比对生成。
+
+相比 **0.1.2-rc.1** 的主要变更：
+
+**破坏性变更**
+- **会话格式进入"已发布世代 + 相邻迁移链"**：`feat(session)!: add released format migration` + `feat(session)!: embed assistant streams in format v2`——格式版本从"只写当前版、旧版拒绝"演进为**不可变世代 + N→N+1 转换链**，并把 assistant 流内嵌进 v2。see [session-format-migration.md](session-format-migration.md)。
+- **持久化层改为 handle 化 seam + 生命周期拥有的写路径**：`refactor(session-persistence)!: handle-based seam with a lifecycle-owned write path`，JSONL 后端新增**跨进程写所有权租约**（`feat(session-persistence-jsonl): cross-process write-ownership lease`）。see [data-model.md](data-model.md)、[session.md](session.md)。
+
+**新增能力 / 行为**
+- **同会话消息编辑（已回滚，未进入本版）**：`feat(session, agent, web): support same-session message editing` 曾在开发窗口内合入（PR #3452），随即被 `Revert "feat(session, agent, web): support same-session message editing"` 完整回滚（PR #3459），且回滚先于本版打标签——两个提交都在 `dsh-v0.1.2-rc.1..HEAD` 区间内但净效果为零，HEAD 不存在编辑已落库消息的 API。仍然存活的只是 **pending 队列项编辑**（`updateQueue` → `agent.inbox.replace/remove`）。see [session.md](session.md)、[agent-loop-runtime.md](agent-loop-runtime.md)。
+- **附件从"图片专用"泛化为通用文件**：`feat(attachment): store and project generic files` + `refactor(attachment): own prompt admission on service` / `isolate file upload service`。see [attachments.md](attachments.md)。
+- **实时 assistant 流帧**：`feat(agent): emit live assistant stream frames`。see [agent-loop-runtime.md](agent-loop-runtime.md)。
+- **出站代理**：`feat(net): route every outbound request through the configured proxy`（http-proxy 收敛为 util 库，最终 API 为**四函数**：`installProxyFromEnvironment` / `proxyRouteFor` / `proxyEnvironmentForChild` / `clearedProxyEnv`）；usage telemetry 的 OTLP 通道被明确排除在外（`revert(session-telemetry-otel): leave telemetry on its own transport`——telemetry 是唯一"丢了不损失任何功能"的出站通道）。see [networking-proxy.md](networking-proxy.md)。
+- **Python SDK 支持 macOS x64 runtime wheels**（`feat(python): support macOS x64 runtime wheels`）。see [deployment.md](deployment.md)。
+- **会话控制器承接文件**：`feat(session-controller): admit files across command flows`。see [remote-controllers.md](remote-controllers.md)。
+- **Agent Teams 统一 steer 消息**（`feat(agent-team): unify messages on steer`）。see [agent-teams.md](agent-teams.md)。
+
+**Web 前端 UX**
+- 附件混合呈现统一（`feat(ui-attachment): unify mixed attachment presentation`）、`read_image` 结果直接渲染成图片卡片（含嵌套调用）、文件随提交生命周期流式上传（`feat(conversation): stream files through submission lifecycle`）。
+- 可点击链接语言统一（`feat(client): unify clickable-link language with link alias and category glyphs`）；技能候选用共享模糊名排序（`feat(web): rank skill candidates with the shared fuzzy name ranker`）。see [web-client.md](web-client.md)、[skill-mcp.md](skill-mcp.md)。
+
+**注**：**0.1.4 版本号被整段跳过**——发布序列为 `0.1.3-alpha.2` → `0.1.5-alpha.1`，无 0.1.4 tag 或 release commit。
+
 ## [0.1.2-rc.1]（2026-09-03 落盘）
 
 > 依据上游 `dsh-v0.1.2-alpha.4 → dsh-v0.1.2-rc.1` git diff（跨 alpha.5、rc.1 两个 release commit，代码面约 1300 行含测试夹具、全落在 storage-domain / storage-json / session-projection-cache）比对生成。

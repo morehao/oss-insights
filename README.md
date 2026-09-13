@@ -216,6 +216,7 @@ graph TB
 | [DeepEval](ai-infra/deepeval/) | Python | LLM 评测框架（类似 pytest）：50+ Metric + LLM-as-Judge schema 判官协议，GEval/DAG 双判官，Synthesizer 造数据，@observe 非侵入 OTel 追踪，pytest 插件进 CI | Apache-2.0 | [GitHub](https://github.com/confident-ai/deepeval) |
 | [darwin-skill](ai-infra/darwin-skill/) | Markdown(Agent Skill) | Agent Skill 自主优化器：9 维评分 rubric + paired 同-judge 多数决棘轮 + human-in-the-loop 三层守关，基于 autoresearch + 微软 SkillLens/SkillOpt | MIT | [GitHub](https://github.com/alchaincyf/darwin-skill) |
 | [Agent Client Protocol](ai-infra/agent-client-protocol/) | Rust | 编辑器⇄编码 Agent 标准化双向 JSON-RPC 协议（Zed 发起）：Rust 类型单一事实源 → schemars 生成 JSON Schema 四件套，三阶段生命周期 + capabilities 双轨演进 + RFD 治理，v1 稳定/v2 草稿 feature 共存 | Apache-2.0 | [GitHub](https://github.com/agentclientprotocol/agent-client-protocol) |
+| [zvec-grep](ai-infra/zvec-grep/) | TypeScript | 面向人与 Agent 的本地优先混合检索层（zg）：ripgrep 精确/正则 + zvec FTS 词法 + 向量语义经 RRF 融合为一套接口，tree-sitter 结构感知切分，Model2Vec/ONNX/GGUF/远端四类 Embedding 后端，Direct/Server 双执行形态 + watcher 小时级对账，本地 MCP Server 默认只暴露一个搜索工具 + 六种 Agent 安装器，远端嵌入需显式数据授权 | Apache-2.0 | [GitHub](https://github.com/zvec-ai/zvec-grep) |
 
 ### [AI 生成（AIGC）](aigc/)
 

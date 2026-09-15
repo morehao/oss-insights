@@ -167,7 +167,7 @@ sequenceDiagram
 |---|---|---|---|
 | 语言/栈 | Go 单体 | Java + Quarkus | Java 单体 |
 | 协议覆盖 | OIDC(OP) / SAML / SCIM / LDAP | OIDC/ SAML/ SCIM / SSF | OIDC / SAML / SCIM |
-| 多租户隔离粒度 | **Infrastructure 级**（单 schema + `instance_id` 行级，Instance 独立配置） | Schema 级（realm 独立 schema，扩展上限） | Schema 级（tenant 独立 schema） |
+| 多租户隔离粒度 | **Infrastructure 级**（单 schema + `instance_id` 行级，Instance 独立配置） | 单库共享 schema + `REALM_ID` 行级隔离（**非** per-realm schema；`USER_ENTITY` 无任何外键） | Schema 级（tenant 独立 schema） |
 | 事件溯源 | ✅ 完整事件流 + 审计，可流式导出 | ❌ 仅审计日志 | ❌ 审计日志 |
 | 可编程扩展 | Actions/Execution（条件×目标→ webhook/函数） | 认证流程 SPI / 自定义 | 自定义插件 | 
 | API | gRPC + connectRPC + REST 三态 | REST 为主 | REST 为主 |

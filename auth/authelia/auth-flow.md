@@ -1,3 +1,10 @@
+---
+type: 关注面解读
+title: Authelia 请求校验主链路
+description: Authelia 反代伴生校验主链路：ForwardAuth/ExtAuthz/AuthRequest/Legacy 四种集成模式、加密 Session 生命周期、FirstFactor 登录编排、regulation 登录封禁与可配置的端点限流体系。
+tags: [authelia, forward-auth, session, firstfactor, regulation, rate-limit]
+---
+
 # 请求校验主链路：反代集成、Session、FirstFactor 与登录限流
 
 > 源码根 `/Users/morehao/Documents/study/auth/authelia`。这是 Authelia「反代伴生」这一灵魂关注面的深读：对外它是 verify 网关，对内它是认证 + 会话 + 门卫三层。
@@ -18,7 +25,7 @@ nginx/traefik/caddy/envoy 只能在「有没有某个 header、是否命中某�
 
 ## 四种反向代理集成模式
 
-核心差异在两处：**怎么决定目标 URL+method**（读哪些头），以及**怎么处理未授权**（回什么状态码/跳不跳 portal）。公共骨架 `Authz.Handler` 只写一次，依赖 builder 注入四组行为函数 [internal/handlers/handler_authz_builder.go:74-104]()。
+核心差异在两处：**怎么决定目标 URL+method**（读哪些头），以及**怎么处理未授权**（回什么状态码/跳不跳 portal）。公共骨架 `Authz.Handler` 只写一次，依赖 builder 注入四组行为函数 [internal/handlers/handler_authz_builder.go:78-108]()。
 <!-- anchor: func (b *AuthzBuilder) WithEndpointConfig(config schema.ServerEndpointsAuthz) *AuthzBuilder { -->
 
 | 实现 | 目标 URL 来源 | method 来源 | 未授权处理 | 反代代表 |
@@ -30,12 +37,15 @@ nginx/traefik/caddy/envoy 只能在「有没有某个 header、是否命中某�
 
 为什么四种并存而不抽象成一种协议：反代的鉴权转发能力差异太大（auth_request 只能透传有限头、ForwardAuth 走 X-Forwarded-*、Envoy ext_authz 是 gRPC 桥接每次收到完整 HTTP 请求）。**为每种反代的「原生转发模型」提供最贴合的实现**，语义忠实、集成成本最低；代价是公共逻辑必须小心抽取（已通过函数注入字段做到）。
 
-裁决主骨架 [internal/handlers/handler_authz.go:146-241]()：取 object → 校验安全 scheme 且命中 session cookie 域 → `authn()` 跑策略链 → `Authorizer.GetRequiredLevel` 拿规则要求 → `isAuthzResult` 三态裁决 → 各自回复。
+4.39.21 起「取 object」这一步被进一步收敛：Legacy 策略的 `handleAuthzGetObjectLegacy` 不再自己拼装，而是交给 `authorization.NewObjectMethodURLOrSchemeHostPath`——有 `X-Original-URL` 就用它，否则用 scheme/host/path 拼；host 与 path 分别取 `ctx.GetXForwardedHost()`（回退请求行 Host）与 `ctx.GetXForwardedURI()`（回退请求行 path）[internal/handlers/handler_authz_impl_legacy.go:15-29]()。这类「缺头就回退到请求行」的容错让反代只透传部分头时不再直接 400，也是该版 `did` 式纵深防御的一部分。
+<!-- anchor: func handleAuthzGetObjectLegacy(ctx AuthzContext) (object authorization.Object,  … return *requestedObject, nil -->
+
+裁决主骨架 [internal/handlers/handler_authz.go:157-252]()：取 object → 校验安全 scheme 且命中 session cookie 域 → `authn()` 跑策略链 → `Authorizer.GetRequiredLevel` 拿规则要求 → `isAuthzResult` 三态裁决 → 各自回复。
 
 <!-- anchor: func (authz *Authz) Handler(ctx AuthzContext) { -->
 <!-- anchor: 		switch isAuthzResult(authn.Level, required, ruleHasSubject) { -->
 
-关键裁决判据 `isAuthzResult` [internal/handlers/handler_authz_util.go:33-48]()：
+关键裁决判据 `isAuthzResult` [internal/handlers/handler_authz_util.go:37-52]()：
 
 <!-- anchor: func isAuthzResult(level authentication.Level, required authorization.Level, ruleHasSubject bool) AuthzResult { -->
 
@@ -77,7 +87,7 @@ sequenceDiagram
 **设计要点与权衡**：
 
 - **为何 session 用「加密序列化存 Redis」而非 JWT**（全项目最深的取舍）：JWT 无状态自包含、天然分布式，但不可主动撤回、可变字段（LastActivity/AMR/RefreshTTL）改写需重签发。Authelia 作为「需立刻封禁」的安全网关选择 **authenticated session**——可即时吊销（Redis DEL），可变真值一次读写；代价是维护服务端存储与密钥轮换，放弃「无状态天然横扩」。
-- **加密序列化**：`EncryptingSerializer` 设为 `EncodeFunc/DecodeFunc`，先 MessagePack marshal 再 `utils.Encrypt`（256-bit AES-GCM），输出 `nonce|ciphertext|tag` [internal/session/encrypting_serializer.go:30-66]()。**完整性由 AES-GCM 的认证标签（AEAD）保证，而非独立 HMAC**。session 密钥由配置 secret 经 `DeriveLegacyCryptographicKey`（SHA256 压缩）派生。
+- **加密序列化**：`EncryptingSerializer` 设为 `EncodeFunc/DecodeFunc`，先 MessagePack marshal 再 `utils.Encrypt`（256-bit AES-GCM），输出 `nonce|ciphertext|tag` [internal/session/encrypting_serializer.go:34-70]()。**完整性由 AES-GCM 的认证标签（AEAD）保证，而非独立 HMAC**。session 密钥由配置 secret 经 `DeriveLegacyCryptographicKey`（SHA256 压缩）派生。
 <!-- anchor: func (e *EncryptingSerializer) Encode(src session.Dict) (data []byte, err error) { -->
 - **为什么都持久化加密态**：fasthttp/session 的 provider 只存字节块，「你是谁」靠加密 dict；Redis 泄露时明文不可读。这是「数据落库、会话入 Redis」哲学的体现。
 - 会话后端：配置 Redis 时用 fasthttp/session 的 redis provider（可 Sentinel 高可用），否则内置 memory；KeyPrefix 均 `authelia-session`。
@@ -115,7 +125,7 @@ sequenceDiagram
     end
 ```
 
-要点 [internal/handlers/handler_firstfactor_password.go:66-161]()：
+要点 [internal/handlers/handler_firstfactor_password.go:70-165]()：
 <!-- anchor: userPasswordOk, err := ctx.Providers.UserProvider.CheckUserPassword(details.Username, bodyJSON.Password) -->
 
 - 口令校验前先 `BanCheck`，命中则记录失败并 401——regulation 在认证入口即拦截。
@@ -145,21 +155,35 @@ flowchart TD
     P -->|是| O["返回 ErrUserIsBanned"]
 ```
 
-核心逻辑 [internal/regulation/regulator.go:26-62]()：`HandleAttempt` 记 `AuthenticationAttempt` 入 storage，仅当「失败、未封禁、启用 regulation、类型为 1FA」才进入封禁判定（避免 2FA 失败也触发封禁风暴）。`expires` 在 FindTime 时间窗内数**连续**失败（遇第一条成功即停），够 `MaxRetries` 就返回封禁到期点——封禁期内继续失败不重置到期，成功登录会打破连续计数。按 IP 与按用户分别封禁，落 `BannedIP`/`BannedUser`。
+核心逻辑 [internal/regulation/regulator.go:31-67]()：`HandleAttempt` 记 `AuthenticationAttempt` 入 storage，仅当「失败、未封禁、启用 regulation、类型为 1FA」才进入封禁判定（避免 2FA 失败也触发封禁风暴）。`expires` 在 FindTime 时间窗内数**连续**失败（遇第一条成功即停），够 `MaxRetries` 就返回封禁到期点——封禁期内继续失败不重置到期，成功登录会打破连续计数。按 IP 与按用户分别封禁，落 `BannedIP`/`BannedUser`。
 <!-- anchor: func (r *Regulator) HandleAttempt(ctx Context, successful bool, ban *Ban, requestURI, requestMethod, authType string) { -->
 
 **「延迟 + 随机」与「封禁」的分工**：时序延迟对应**中间件层**的 `TimingAttackDelay`（`internal/middlewares/timing_attack_delay.go`），而 regulation 是**存储层**的真封禁，两者叠加防御：
 
 - 认证端点用 `NewTimingAttackDelay(10, time.Second)` 让成功/失败响应耗时趋同、加随机抖动，防时间侧信道推断用户名是否有效。
-- 中间件 `NewIPRateLimit`（基于 `golang.org/x/time/rate` 令牌桶）给第二因子与 OIDC 端点防爆破，超量回 429 + Retry-After。
+- 中间件 `RateLimiter`（令牌桶，默认桶实现 `NewIPRateLimitBucket` 基于 `golang.org/x/time/rate`）给第二因子与 OIDC 端点防爆破，超量回 429 + Retry-After。
 
-关键权衡：**时序延迟在单实例内存**（滑动平均），低延迟无存储依赖但多实例不共享；**封禁落在 Redis-backed storage**，天然跨实例共享、支持 HA。Authelia 把「防侧信道」放无状态中间件、「防爆破」放有状态存储层——两种失效模式互补。
+### 端点限流：配置驱动 + 集中回收
+
+> **演进说明(4.39.26)**：此前本文写的是 `NewIPRateLimit` 单中间件；该 API 已被 `NewRateLimiter` + 可配置桶取代。
+
+限流从「几个写死的 IP 限流器」演进为**配置驱动的端点限流体系**：
+
+- **逐端点配置**：每个受保护端点对应 `server.endpoints.rate_limits.<endpoint>`，可配 `enable` 与多档 `buckets`（每档 `period` + `requests`），由 `WithRateLimitConfig` 装载；默认值见 [internal/configuration/schema/server.go:62-75]()。
+<!-- anchor: // ServerEndpointRateLimits represents the rate limiter configuration for each e … OpenIDConnectRevocation                 ServerEndpointRateLimit `koanf:"openid_c -->
+  **该版新增的档位是 `second_factor_password`**（默认 5 分钟 30 次 / 60 分钟 40 次）：passkey 无密码登录可能回落到口令补 2FA，这条新路径此前没有任何限流。
+- **配置即开关**：`enable: false` 时 `WithRateLimitConfig` 清空 buckets，中间件退化为透传——「关掉某端点限流」不需要改路由代码。
+- **集中垃圾回收**：令牌桶的过期清理不再各自为政，改为限流器实现 `GarbageCollectorProvider` 契约，由 `middlewares` 的中央 `GarbageCollector` 统一调度 [internal/middlewares/garbage_collector.go:13-18]()。
+<!-- anchor: // GarbageCollectorProvider represents the required methods to support periodic  … GarbageCollectionFrequency(ctx context.Context) (frequency time.Duration) -->
+- **状态码豁免**：`WithRateLimitExemptStatusCodes` 让「明确成功」的响应（如 PAR 的 201、token 的 200）不计入配额，避免正常流量被自己的成功响应拖进限流。
+
+关键权衡：**时序延迟在单实例内存**（滑动平均），低延迟无存储依赖但多实例不共享；**封禁落在 Redis-backed storage**，天然跨实例共享、支持 HA。Authelia 把「防侧信道」放无状态中间件、「防爆破」放有状态存储层——两种失效模式互补。**限流桶本身也仍是实例内存**（`IPRateLimitBucket` 是带 RWMutex 的 `map[string]*BucketLimiter`），所以多副本部署下限流阈值实际被放大到「副本数 × 配置值」；这是它与 regulation 封禁的关键差异，也是分布式部署时需要知道的取舍。
 
 ## 中间件：认证门槛与安全默认
 
 - `Require1FA`/`RequireElevated` 保护 portal 内部需登录的 API（/api/configuration、/api/user/info、TOTP/WebAuthn 变更端点等）。`Require1FA` 检查 `AuthenticationLevel ≥ OneFactor` 否则 403；`RequireElevated` 额外校验「升级会话」（Elevations）未过期且 IP 匹配。
 - 严格安全默认：只接受 https/wss 目标、session cookie Secure+HttpOnly、跳转限域内域名（`IsSafeRedirectionTargetURI`）。
-- 「错误永不产生已认证身份」的纪律：认证策略链出错不升级身份，`Get` 初始化即把 Level 置 `NotAuthenticated`、Username 置 `<anonymous>`，杜绝把失败当匿名放行的隐患 [internal/handlers/handler_authz_authn.go:213-296]()。
+- 「错误永不产生已认证身份」的纪律：认证策略链出错不升级身份，`Get` 初始化即把 Level 置 `NotAuthenticated`、Username 置 `<anonymous>`，杜绝把失败当匿名放行的隐患 [internal/handlers/handler_authz_authn.go:217-300]()。
 <!-- anchor: func (s *HeaderAuthnStrategy) Get(ctx AuthzContext, _ session.Manager, object *authorization.Object) (authn *Authn, err error) { -->
 
 ## 全局关联

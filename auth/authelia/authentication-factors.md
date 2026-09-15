@@ -1,3 +1,10 @@
+---
+type: 关注面解读
+title: Authelia 多因子认证
+description: Authelia 认证这一半：file/LDAP 用户库与 LDAP 连接池、认证等级模型、WebAuthn/TOTP/Duo 第二因子、NTP 时钟校验、密码重置与用户枚举防护。
+tags: [authelia, authentication, mfa, webauthn, totp, ldap]
+---
+
 # 多因子认证：用户库、认证等级、WebAuthn / TOTP / Duo
 
 > 源码根 `/Users/morehao/Documents/study/auth/authelia`。Authelia 是反代伴生认证网关，安全模型的核心筹码就是**多因子**；本关注面是「认证 vs 授权」分离这条设计哲学里**认证这一半的全部实现**。
@@ -13,7 +20,7 @@
 ## 设计思路
 
 - **放弃「把因子逻辑写进 handler」**：TOTP/WebAuthn/Duo 各自抽象成 `Provider` 接口，handler 只调 `Validate`/`Assertion`/`AuthCall`，换实现不碰 handler。
-- **放弃「用户存储直接操作数据库」**：file 与 LDAP 统一在 `UserProvider` 接口后，`CheckUserPassword`/`UpdatePassword` 语义对上层一致，底层差异被完全封装。`[internal/authentication/user_provider.go:8-25]()` 定义 `CheckUserPassword`/`GetDetails`/`UpdatePassword`/`ChangePassword` 等统一门面。
+- **放弃「用户存储直接操作数据库」**：file 与 LDAP 统一在 `UserProvider` 接口后，`CheckUserPassword`/`UpdatePassword` 语义对上层一致，底层差异被完全封装。`[internal/authentication/user_provider.go:12-29]()` 定义 `CheckUserPassword`/`GetDetails`/`UpdatePassword`/`ChangePassword` 等统一门面。
 
   <!-- anchor: type UserProvider interface { … Close() (err error) -->
 - **放弃「把认证等级写死在每个 handler」**：等级计算收敛到 `session.UserSession.AuthenticationLevel()`，handler 只管打标记，避免各写一套 `if` 链。
@@ -22,15 +29,15 @@
 
 两个实现面对同一 `UserProvider` 接口，但「密码验证」的根本机制天差地别：
 
-- **file 用户库**：`[internal/authentication/file_user_provider.go:85-97]()` 的 `CheckUserPassword` 用 go-crypt 的 `algorithm.Digest.MatchAdvanced(password)` 比对哈希。哈希算法启动时由配置解析成 `crypt.Hash`——`NewFileCryptoHashFromConfig` 支持 `argon2id`（默认）/`sha2crypt`/`pbkdf2`/`scrypt`/`bcrypt`，每种参数全可配。用户信息与哈希读入内存 `FileUserDatabase`（RWMutex 保护），文件被 watcher 改动可热重载，写回时权限 `0600`。
-
+- **file 用户库**：`[internal/authentication/file_user_provider.go:90-101]()` 的 `CheckUserPassword` 用 go-crypt 的 `algorithm.Digest.MatchAdvanced(password)` 比对哈希。哈希算法启动时由配置解析成 `crypt.Hash`——`NewFileCryptoHashFromConfig` 支持 `argon2id`（默认）/`sha2crypt`/`pbkdf2`/`scrypt`/`bcrypt`，每种参数全可配。用户信息与哈希读入内存 `FileUserDatabase`（RWMutex 保护），文件被 watcher 改动可热重载，写回时权限 `0600`。热重载会经 `LoadAliases` **重建** email/CI 别名映射——此前重载不重置别名表，会让失效别名残留、进而让「查不到用户」返回误导性错误（4.39.21 修复）[internal/authentication/file_user_provider_database.go:90-110]()。
   <!-- anchor: func (p *FileUserProvider) CheckUserPassword(username string, password string) (match bool, err error) { … return details.Password.MatchAdvanced(password) -->
+  <!-- anchor: // LoadAliases performs the loading of alias information from the database. … return nil -->
 
-- **LDAP**：`[internal/authentication/ldap_user_provider.go:84-101]()` 的 `CheckUserPassword` 语义不是比哈希，而是「能否用这组凭据 bind 成功」——先无凭据查用户 DN（`getUserProfile`），再 `bind(username+password)`。改密按服务器能力分支：AD 走 `unicodePwd` UTF-16LE modify + `MsftServerPolicyHints`、支持 `PwdModify` 扩展的走 RFC 3062 ExOp、否则回退 `userPassword` modify。
+- **LDAP**：`[internal/authentication/ldap_user_provider.go:88-292]()` 的 `CheckUserPassword` 语义不是比哈希，而是「能否用这组凭据 bind 成功」——先无凭据查用户 DN（`getUserProfile`），再 `bind(username+password)`。改密按服务器能力分支：AD 走 `unicodePwd` UTF-16LE modify + `MsftServerPolicyHints`、支持 `PwdModify` 扩展的走 RFC 3062 ExOp、否则回退 `userPassword` modify。
 
   <!-- anchor: func (p *LDAPUserProvider) CheckUserPassword(username string, password string) (valid bool, err error) { … if profile, err = p.getUserProfile(client, username); err != nil { -->
 
-**关键权衡**：file 是「自管哈希的离线存储」（泄露文件即泄露全部哈希，虽加了盐和强算法），LDAP 是「目录服务器托管的在线服务」（密码明文归目录管，Authelia 无法审计密码历史）。统一接口掩盖差异，另有 `cached.go` 的口令缓存（HMAC 摘要 + 有效期 + `singleflight` 合并并发验证）做性能优化——`[internal/authentication/cached.go:44-56]()` 的 `Check` 用 `singleflight` 把并发同名校验合并为一次真正落库的密码比较。
+**关键权衡**：file 是「自管哈希的离线存储」（泄露文件即泄露全部哈希，虽加了盐和强算法），LDAP 是「目录服务器托管的在线服务」（密码明文归目录管，Authelia 无法审计密码历史）。统一接口掩盖差异，另有 `cached.go` 的口令缓存（HMAC 摘要 + 有效期 + `singleflight` 合并并发验证）做性能优化——`[internal/authentication/cached.go:49-61]()` 的 `Check` 用 `singleflight` 把并发同名校验合并为一次真正落库的密码比较。
 
   <!-- anchor: func (c *CredentialCacheHMAC) Check(ctx Context, username, password string) (valid, cached bool, err error) { … raw, err, _ = c.group.Do(key, c.check(ctx, username, password, sum)) -->
 
@@ -48,13 +55,27 @@ flowchart TD
     OK -->|no| INVALID
 ```
 
+### LDAP 连接池：装饰器而非分支
+
+LDAP 的连接管理抽象成 `LDAPClientFactory` 接口（`Initialize`/`GetClient`/`ReleaseClient`/`Close`），有两个实现：`StandardLDAPClientFactory` 每次 `GetClient` 新建、用完关闭；`PooledLDAPClientFactory` 则是一个**装饰器**——包住另一个 factory，用带缓冲的 channel 维护固定大小连接池 [internal/authentication/ldap_client_factory.go:130-152]()。
+<!-- anchor: // PooledLDAPClientFactory is a LDAPClientFactory that takes another LDAPClientF … sleep   time.Duration -->
+
+三个值得注意的设计点：
+
+- **池化是包装而非 `if pooling` 分支**：`NewPooledLDAPClientFactory` 包装标准 factory，未开启池化时行为完全等同标准实现，上层（`LDAPUserProvider`）对是否池化无感知。
+- **非常规凭据自动降级为不池化**：`poolOptions` 比较请求的 address/username/password 与配置默认值，任一不同就改走一次性连接（典型场景是按用户 DN 做二次 bind），避免把携带不同身份的连接混进同一个池 [internal/authentication/ldap_client_factory.go:226-235]()。
+<!-- anchor: func (f *PooledLDAPClientFactory) poolOptions(opts ...LDAPClientFactoryOption) ( … return unpooled, options -->
+- **错误语义区分关闭态**：`ErrPoolClosed`（取用时池已关闭）与 `ErrPoolClosedInitialize`（关闭后又尝试 initialize）分开，便于上层区分「临时不可用」与「生命周期用错」。
+
+4.39.21 修的是「池化客户端被错误跳过」：选择逻辑此前会让部分客户端被不当跳过，既可能让个别连接长期闲置，也可能让少数连接过载——这是连接池实现里的经典 bug 类型，正确性依赖 round-robin 计数器与 `closing` 状态机的配合。
+
 ## 认证等级模型
 
-认证状态被量化为 `[internal/authentication/types.go:324-336]()` 的三值 `Level`（`NotAuthenticated`/`OneFactor`/`TwoFactor`），TOTP、Duo、WebAuthn、passkey 无论协议差异，最终都落进这一个等级值。
+认证状态被量化为 `[internal/authentication/types.go:358-368]()` 的三值 `Level`（`NotAuthenticated`/`OneFactor`/`TwoFactor`），TOTP、Duo、WebAuthn、passkey 无论协议差异，最终都落进这一个等级值。
 
 <!-- anchor: type Level int … TwoFactor -->
 
-等级计算完全收敛在 `[internal/session/user_session.go:24-36]()` 的 `AuthenticationLevel(passkey2FA bool)`：
+等级计算完全收敛在 `[internal/session/user_session.go:29-141]()` 的 `AuthenticationLevel(passkey2FA bool)`：
 
 <!-- anchor: func (s *UserSession) AuthenticationLevel(passkey2FA bool) authentication.Level { … default: -->
 
@@ -70,17 +91,17 @@ handler 侧只负责「成功后在 session 打 AMR 标记」：`SetOneFactorPas
 
 ## WebAuthn 流程：注册、断言、NTP 防重放
 
-- **注册登记（seed）**：`WebAuthnRegistrationPUT` 下发 attestation challenge，`POST` 对响应做 `w.CreateCredential` 校验，构造 `model.NewWebAuthnCredential` 落库（含 AAGUID/AttestationType/SignCount）。落库前用 `[internal/webauthn/util.go:47-68]()` 的 `ValidateCredentialAllowed` 做过滤策略——`ProhibitBackupEligibility` 禁可备份凭据直接报错、AAGUID 白名单命中即放行、否则按黑名单逐一拒绝。
+- **注册登记（seed）**：`WebAuthnRegistrationPUT` 下发 attestation challenge，`POST` 对响应做 `w.CreateCredential` 校验，构造 `model.NewWebAuthnCredential` 落库（含 AAGUID/AttestationType/SignCount）。落库前用 `[internal/webauthn/util.go:43-64]()` 的 `ValidateCredentialAllowed` 做过滤策略——`ProhibitBackupEligibility` 禁可备份凭据直接报错、AAGUID 白名单命中即放行、否则按黑名单逐一拒绝。
 
   <!-- anchor: func ValidateCredentialAllowed(config *schema.WebAuthn, credential *model.WebAuthnCredential) (err error) { … return nil -->
 - **登录断言**：`WebAuthnAssertionGET` 发 challenge → `WebAuthnAssertionPOST` 用 `w.ValidateLogin` 校验，比对 `credential.KID` 后 `UpdateSignInInfo` 更新 sign count、检查 `CloneWarning`（克隆检测），成功后 `SetTwoFactorWebAuthn`。
 - **挑战与会话绑定**：`WebAuthn` 会话数据（含 challenge）存在 session 里，保证「发 challenge 的和应答的必须是同一会话」。AMR 在 post 阶段由 `AuthenticatorAttachment == CrossPlatform` 推导 `WebAuthnHardware`（否则 `WebAuthnSoftware`），结合 `HasUserPresent/HasUserVerified` 进入 `AuthenticationMethodRefs`。
 
-**NTP 为何在认证模块里**：TOTP 靠时间步长、WebAuthn 靠时间窗口防重放，服务器时钟不准会既拒合法用户又扩大攻击窗口。`[internal/ntp/ntp.go:25-36]()` 的 `StartupCheck` 用 SNTP 四时间戳公式估算时钟偏移，超过 `MaximumDesync` **直接拒绝启动**——把时钟正确性提升为认证前置条件。
+**NTP 为何在认证模块里**：TOTP 靠时间步长、WebAuthn 靠时间窗口防重放，服务器时钟不准会既拒合法用户又扩大攻击窗口。`[internal/ntp/ntp.go:29-39]()` 的 `StartupCheck` 用 SNTP 四时间戳公式估算时钟偏移，超过 `MaximumDesync` **直接拒绝启动**——把时钟正确性提升为认证前置条件。
 
 <!-- anchor: func (p *Provider) StartupCheck() (err error) { … return errors.New("the system clock is not synchronized accurately enough with the configured NTP server") -->
 
-偏移由 `[internal/ntp/util.go:70-78]()` 的 `calcOffset` 依 `((T2-T1)+(T3-T4))/2` 计算。
+偏移由 `[internal/ntp/util.go:72-79]()` 的 `calcOffset` 依 `((T2-T1)+(T3-T4))/2` 计算。
 
 <!-- anchor: func calcOffset(t1, t2, t3, t4 time.Time) time.Duration { … return offset -->
 
@@ -114,7 +135,7 @@ sequenceDiagram
 
 ## 密码重置与用户枚举防护
 
-passwordless reset：`ResetPasswordIdentityStart` 全库查用户 email → 构造含 JWT 的验证链接 → `[internal/notification/notifier.go:12-15]()` 的 `Notifier.Send` 发邮件。**用户枚举防护**：handler 无论成功失败都回 200，且带 `NewTimingAttackDelay` 恒定延迟，抹平「用户是否存在」的时间差。重置成功经 `PasswordPolicy.Check` 强度校验 → `UserProvider.UpdatePassword`（file 重新 hash 写回；LDAP 走目录改密分支），并再发「密码已变更」通知邮件。
+passwordless reset：`ResetPasswordIdentityStart` 全库查用户 email → 构造含 JWT 的验证链接 → `[internal/notification/notifier.go:16-19]()` 的 `Notifier.Send` 发邮件。**用户枚举防护**：handler 无论成功失败都回 200，且带 `NewTimingAttackDelay` 恒定延迟，抹平「用户是否存在」的时间差。重置成功经 `PasswordPolicy.Check` 强度校验 → `UserProvider.UpdatePassword`（file 重新 hash 写回；LDAP 走目录改密分支），并再发「密码已变更」通知邮件。
 
 <!-- anchor: type Notifier interface { … Send(ctx context.Context, recipient mail.Address, subject string, et *templates.EmailTemplate, data any) (err error) -->
 

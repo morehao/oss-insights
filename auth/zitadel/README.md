@@ -27,7 +27,7 @@
 | 能力 | 说明 |
 |------|------|
 | OIDC Provider | Authorization Code + PKCE / Implicit / Device Auth / Refresh Rotation / Client Credentials，官方 OP 认证 |
-| SAML 2.0 / SCIM | SAML Service Provider 角色；SCIM 2.0 server |
+| SAML 2.0 / SCIM | **SAML Identity Provider** 角色（对下游应用签发断言，暴露 `/saml/v2/metadata`、`/certificate`、`/SSO`）；同时在 `internal/idp/providers/saml/` 以 Service Provider 角色接入外部上游 IdP；SCIM 2.0 server（当前仅 User 资源，无 Group 接口） |
 | 认证因子 | 密码（passwap 多算法）、Passkey/WebAuthN、TOTP、OTP SMS/Email、RecoveryCode、LDAP / IdP 联邦、Token Exchange / Impersonation；统一由 Session V2 API 承载 |
 | 多租户隔离 | System → Instance → Organization → Project → Application，`instance_id` 贯穿写读（[`multi-tenancy.md`](multi-tenancy.md)） |
 | 事件溯源 + CQRS | 每次变更作为不可变事件入 `events2`，投影折算关系表，完整审计与历史重建（[`architecture.md`](architecture.md)、[`data-model.md`](data-model.md)） |

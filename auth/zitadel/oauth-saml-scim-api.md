@@ -60,14 +60,14 @@ OIDC Session 分 v1/v2 两代演进（`internal/api/oidc` 与 `internal/api/grpc
 
 ## SAML / SCIM 形态
 
-- **SAML**（`internal/api/saml/`）：Service Provider 角色，元数据管理，认证结果同样经 AuthRequest/Session 落到写侧。
-- **SCIM**（`internal/api/scim/`）：SCIM 2.0 server，用户/组跨域身份管理，写侧同样走 command。
+- **SAML**（`internal/api/saml/`）：**Identity Provider** 角色——暴露 `/saml/v2/metadata`、`/saml/v2/certificate`、`/saml/v2/SSO`，对下游应用签发断言（依赖 `github.com/zitadel/saml/pkg/provider`），元数据与受信 ServiceProvider 登记在此管理，认证结果同样经 AuthRequest/Session 落到写侧。**另一角色同时存在**：`internal/idp/providers/saml/` 让 ZITADEL 以 **Service Provider** 身份接入外部的上游 SAML IdP。两者是不同目录、不同方向。
+- **SCIM**（`internal/api/scim/`）：SCIM 2.0 server，用户跨域身份管理（当前仅 User 资源，无 Group 接口），写侧同样走 command。
 
 ```mermaid
 graph LR
     subgraph 入口
         P["OIDC provider"] 
-        S["SAML SP"]
+        S["SAML IdP"]
         C["SCIM server"]
         G["gRPC / connect / REST"]
     end

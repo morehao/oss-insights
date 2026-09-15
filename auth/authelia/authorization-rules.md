@@ -1,3 +1,10 @@
+---
+type: 关注面解读
+title: Authelia 访问控制规则引擎
+description: Authelia 细粒度访问控制：first-match-wins 规则匹配与全维度 AND 短路、域名通配与 {user}/{group} 正则化、Level 策略语义、AMR 与 expression 用户属性求值。
+tags: [authelia, access-control, acl, authorization, amr, cel]
+---
+
 # 细粒度访问控制规则引擎（authorization + expression）
 
 > 源码根 `/Users/morehao/Documents/study/auth/authelia`。授权是「你是谁能访问什么」的决策核心。`internal/authorization` 实现 access control rules 匹配引擎，`internal/expression` 是规则里「可配置用户属性」的条件求值器。
@@ -13,7 +20,7 @@
 - **编译时把 schema 转成多层 matcher，运行时代价小**：`NewAuthorizer` → `NewAccessControlRules` 一次性把配置转成内部 `[]*AccessControlRule`，每维度是一个小 matcher 实例（`SubjectMatcher`/`ObjectMatcher`/`SubjectObjectMatcher` 等接口见 `types.go`）。每个请求只做「逐规则顺序 IsMatch」线性扫描，无排序、无预索引，匹配即停。
 - **放弃「按 specificity 自动排序」（关键修正）**：代码里**没有任何 `sort` 调用**。规则保持配置顺序、**首条命中即生效（first-match-wins）**。代价是「更具体的规则必须写前面」成为运维纪律（校验器只对 `*.x` 写法给 warning）；换来行为完全可预测、可读配置即结果。
 
-[internal/authorization/authorizer.go:51-56]() 首条命中立即返回，就是「第一个匹配者赢」的唯一判据：
+[internal/authorization/authorizer.go:55-60]() 首条命中立即返回，就是「第一个匹配者赢」的唯一判据：
 
 <!-- anchor: func (p *Authorizer) GetRequiredLevel(subject Subject, object Object) (hasSubjects bool, level Level) { -->
 <!-- anchor: 	return false, p.defaultPolicy -->
@@ -30,10 +37,13 @@ return false, p.defaultPolicy
 
 ## 规则匹配算法（first-match-wins，全维度 AND 短路）
 
-单条规则 `AccessControlRule.IsMatch` 是**全条件 AND** [internal/authorization/access_control_rule.go:54-80]()：Domains → Resources → Query → Methods → Networks → Subjects 逐个短路，任一维度不满足即整条不匹配。各维度规则（空列表 = 该维度视为恒真）：
+单条规则 `AccessControlRule.IsMatch` 是**全条件 AND** [internal/authorization/access_control_rule.go:58-84]()：Domains → Resources → Query → Methods → Networks → Subjects 逐个短路，任一维度不满足即整条不匹配。各维度规则（空列表 = 该维度视为恒真）：
 <!-- anchor: func (acr *AccessControlRule) IsMatch(subject Subject, object Object) (match bool) { -->
 
-- **Domains**：逐 domain `IsMatch` 任一命中即真。`AccessControlDomainMatcher` 分四种：普通精确匹配（EqualFold）、`*.` 后缀通配、`{user}` 域名前缀注入用户名、`{group}` 注入分组——后两者让「谁的子域谁访问」这类规则变成依赖身份的规则，因此在构造时置位 `HasSubjects`。
+- **Domains**：逐 domain `IsMatch` 任一命中即真。自 4.39.21 起 `AccessControlDomainMatcher` 只剩两条路径——普通精确匹配（`EqualFold`）与 `*.` 后缀通配（`StringHasSuffixFold`）[internal/authorization/access_control_domain.go:16-32]()；
+<!-- anchor: func NewAccessControlDomain(domain string) (subjects bool, rule AccessControlDom … return false, AccessControlDomain{m} -->
+  旧的 `{user}`/`{group}` 域名 token **不再走专用分支**，而是在构造期由 `DomainTokenPattern` 翻译成带命名分组 `User`/`Group` 的正则，交由与 DomainRegex 同一条 matcher 路径处理 [internal/authorization/access_control_domain.go:37-46]()。它们仍使「谁的子域谁访问」这类规则变成依赖身份的规则，因此构造时照旧置位 `HasSubjects`。
+<!-- anchor: func DomainTokenPattern(domain string) (pattern string, ok bool) { … return "", false -->
 - **DomainRegex/Resources**：正则含命名分组 `User`/`Group` 时校验捕获值与 subject 的 username/groups 相等，否则纯串匹配。
 - **Query**：外层组间 OR、组内子规则 AND；支持 `present/absent/equal/equal not/pattern/not pattern` 六种 operator。
 - **Methods**：装载时已 `strings.ToUpper`，`IsStringInSlice` 匹配。
@@ -44,10 +54,10 @@ return false, p.defaultPolicy
 
 ## 策略类型（Level）语义
 
-`Level` 枚举：`Bypass(0) < OneFactor(1) < TwoFactor(2) < Denied(3)` [internal/authorization/const.go:6-18]()。字符串→枚举未知值一律落 `Denied`（默认安全）。
+`Level` 枚举：`Bypass(0) < OneFactor(1) < TwoFactor(2) < Denied(3)` [internal/authorization/const.go:12-24]()。字符串→枚举未知值一律落 `Denied`（默认安全）。
 <!-- anchor: Bypass Level = iota -->
 
-真正的授权判定不在 authorization 包内，而在 handler 的 `isAuthzResult` [internal/handlers/handler_authz_util.go:33-48]() 把「要求策略」与「实际认证等级」比较：
+真正的授权判定不在 authorization 包内，而在 handler 的 `isAuthzResult` [internal/handlers/handler_authz_util.go:37-52]() 把「要求策略」与「实际认证等级」比较：
 <!-- anchor: func isAuthzResult(level authentication.Level, required authorization.Level, ruleHasSubject bool) AuthzResult { -->
 
 - `required == Bypass` → Authorized
@@ -56,7 +66,7 @@ return false, p.defaultPolicy
 
 ## AMR（Authentication Methods Reference）
 
-**关键发现：AMR 不参与 one/two_factor 的硬判定**。硬判定只看 `authentication.Level`（单调比较 `IsAuthLevelSufficient`）。AMR 回答「用户用哪些方法/因子/通道认证过」，被统一建模成 `AuthenticationMethodsReferences` [internal/authorization/amr.go:57-68]()：
+**关键发现：AMR 不参与 one/two_factor 的硬判定**。硬判定只看 `authentication.Level`（单调比较 `IsAuthLevelSufficient`）。AMR 回答「用户用哪些方法/因子/通道认证过」，被统一建模成 `AuthenticationMethodsReferences` [internal/authorization/amr.go:61-72]()：
 <!-- anchor: type AuthenticationMethodsReferences struct { -->
 
 - 组合语义：`FactorKnowledge`（知道：口令）vs `FactorPossession`（拥有：OTP/Duo/WebAuthn）；`MultiFactorAuthentication = FactorKnowledge() && FactorPossession()`；`ChannelBrowser`/`ChannelService` 通道分类。
@@ -106,4 +116,6 @@ flowchart TD
 
 **亮点**：短路路径运行期极快；默认安全（未知策略值一律 `Denied`、无规则时 deny）；`HasSubjects` 显式建模「依赖身份的匹配」，让「匿名时含身份规则 ≠ 真拒绝」这个易错细节交由 handler 特判；正则命名分组 `User`/`Group` 让「路径/域名含用户名 → 仅该用户可访问」这类高频场景低门槛可写；AMR 对齐 RFC8176，双向转换对称。
 
-**问题/风险**：无排序纯靠运维纪律，规则顺序写错静默产生偏差（靠日志 HIT/MISS 定位）；`{user}`/`{group}` 匿名分支的边界处理语义隐晦（依赖 `len(domain) > len(m.Name)` 判断，易受域名长度误判）；expression 与 ACL 的「条件」概念易被混淆，成文须明确区分两层。
+**问题/风险**：无排序纯靠运维纪律，规则顺序写错静默产生偏差（靠日志 HIT/MISS 定位）；`{user}`/`{group}` 作为**已弃用 token** 仍被保留（翻译成正则后继续可用，源码注释明写 deprecated），配置里旧 token 与新正则写法混用会带来迁移期的心智负担；expression 与 ACL 的「条件」概念易被混淆，成文须明确区分两层。
+
+> **演进说明(4.39.26)**：此前本文把「`{user}`/`{group}` 匿名分支依赖 `len(domain) > len(m.Name)` 判断、易受域名长度误判」列为风险。4.39.21 的 `fix(authorization): deprecated wildcard consistency and did` 已消除该实现：两个 token 统一翻译成命名分组正则，由正则捕获值直接与 subject 的 username/groups 比对，长度比较的启发式不再存在。

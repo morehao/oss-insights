@@ -113,7 +113,7 @@ func main() {
 
 `setup` 显式顺序执行迁移步骤：`s14NewEventsTable`（建 events2）、`s40InitPushFunc`（建存储函数）排最前，随后 `FirstInstance` 铸首实例事件，最后建投影表——先有事件表与写函数，投影才有数据可折算：
 
-[cmd/setup/setup.go:266-275]() 迁移步骤顺序编排：先建 events2/push 函数再铸首实例
+[cmd/setup/setup.go:267-276]() 迁移步骤顺序编排：先建 events2/push 函数再铸首实例
 <!-- anchor: for _, step := range []migration.Migration{ ... steps.s5LastFailed, -->
 
 `setup` 与 `start` 都在跑迁移/启动前装配事件存储，注入 `Config.Eventstore`：

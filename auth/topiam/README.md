@@ -27,16 +27,23 @@ TOPIAM（Top Identity and Access Management）是一款开源的企业级身份�
 | 能力 | 说明 |
 |------|------|
 | 统一账户管理 | 组织架构树、用户、用户组、第三方身份源同步 |
-| 多协议 SSO | OIDC、OAuth2、SAML2、JWT、CAS、表单代填 |
-| 多认证方式 | 用户名密码、短信/邮箱验证码、钉钉/微信/飞书/QQ/GitHub/Gitee/支付宝/企业微信社交登录 |
-| 多因素认证 | 图形验证码 + 密码 + 短信/邮箱验证码的多步组合 |
-| 身份源集成 | 钉钉、飞书、企业微信、LDAP、AD 等身份源的定时/事件同步 |
-| 访问控制 | 基于用户/用户组/组织的应用访问授权策略 |
+| 多协议 SSO | OIDC（含设备码）、JWT、表单代填——**CE 源码仅这三种协议**（`eiam-application` 下只有 `core/all/oidc/jwt/form`） |
+| 多认证方式 | 用户名密码、短信/邮箱验证码、钉钉/微信/飞书/QQ/GitHub/Gitee/支付宝/企业微信社交登录（社交/企业 IdP 共 8 个 Configurer） |
+| 多因素认证 | 密码 + 短信/邮箱验证码的组合——注意二者是**独立登录方式**而非密码之后的第二因素；**当前 ref 不含图形验证码组件**，也无可绑定的第二因子 |
+| 身份源集成 | 钉钉、飞书——**CE 仅这两种**（`eiam-identity-source` 下只有 `core/all/dingtalk/feishu`） |
+| 访问控制 | 基于用户/用户组/组织的应用访问授权策略（**无角色实体**：28 张表中无 role/permission 表） |
 | 安全策略 | 密码复杂度、锁定策略、会话并发控制、IP 地理识别 |
 | 行为审计 | 用户/管理员全量操作审计，含 UserAgent 解析和 IP 地理位置 |
 | 会话管理 | 在线会话列表、强制下线、会话过期策略 |
 | 部署方式 | Docker 一键部署、宝塔面板、阿里云计算巢 |
-| 信创支持 | CPU、操作系统、中间件、数据库、浏览器、国密算法的全面适配 |
+| 信创支持 | 官方宣称 CPU/操作系统/中间件/数据库/浏览器/国密算法全面适配；**源码侧可核实者有限**——全仓无 SM2/SM3/SM4 实现，DDL 仅 MySQL，`deploy/helm` 为空目录 |
+
+> **修正说明（源码核对，ref `ca2be26e`）**：上表原按仓库 README 与官方文档转录，经逐模块核对**发现三处与 CE 源码不符**，已就地更正：
+> 1. **SAML 2.0 与 CAS 在 CE 源码中不存在**。`eiam-application` 当前只有 `core/all/oidc/jwt/form`；`eiam-application-saml2`、`eiam-application-cas` 于提交 `bd148325`（`1.0.0`）被删除。全仓 `grep -i saml` 仅命中 `README.md` 与 `database-design.md` 的**文案**。README 第 19、35 行仍宣称支持，属宣称与实现不一致（疑为商业版能力）。
+> 2. **LDAP / AD 身份源同样已移除**。`eiam-identity-source-ldap`、`-ad` 于 `bef08892` 以「移除暂未开发的模块」删除，`-wechatwork`、`-excel` 于 `1774e0c0` 移除；当前仅剩钉钉、飞书。
+> 3. **多因素认证（TOTP）与图形验证码已移除**。`eiam-authentication-mfa`（含 `TotpProviderValidator`）于 `4aaeabbd`/`bd148325` 删除，极验 GeeTest 验证码模块同批删除。当前 ref 中名为 `CaptchaNotExistException` 的类是短信/邮件 OTP 的「验证码不存在」异常，与图形人机校验无关。
+>
+> 结论：**TOPIAM CE 的实际协议与因子覆盖面显著窄于 README 宣称**，选型时须以源码为准。六家横向对照见 [`../capability-matrix.md`](../capability-matrix.md)。
 
 ### 技术栈一览
 
@@ -68,26 +75,26 @@ graph TB
     end
 
     subgraph "网关层"
-        Portal[Portal - 用户门户<br/>eiam-portal]
-        Console[Console - 管理后台<br/>eiam-console]
-        OpenAPI[OpenAPI - 开放接口<br/>eiam-openapi]
+        Portal[Portal - 用户门户<br>eiam-portal]
+        Console[Console - 管理后台<br>eiam-console]
+        OpenAPI[OpenAPI - 开放接口<br>eiam-openapi]
     end
 
     subgraph "协议层"
-        OIDC[OIDC Server<br/>eiam-protocol-oidc]
-        JWT[JWT Server<br/>eiam-protocol-jwt]
-        Form[表单代填 Server<br/>eiam-protocol-form]
+        OIDC[OIDC Server<br>eiam-protocol-oidc]
+        JWT[JWT Server<br>eiam-protocol-jwt]
+        Form[表单代填 Server<br>eiam-protocol-form]
     end
 
     subgraph "认证层"
-        AuthCore[认证核心<br/>eiam-auth-core]
-        Social[社交登录<br/>钉钉/微信/飞书/QQ/...]
-        OTP[OTP 认证<br/>短信/邮箱]
+        AuthCore[认证核心<br>eiam-auth-core]
+        Social[社交登录<br>钉钉/微信/飞书/QQ/...]
+        OTP[OTP 认证<br>短信/邮箱]
     end
 
     subgraph "核心服务"
-        Core[核心服务<br/>eiam-core]
-        Common[公共模块<br/>eiam-common]
+        Core[核心服务<br>eiam-core]
+        Common[公共模块<br>eiam-common]
     end
 
     subgraph "基础设施"
@@ -273,7 +280,7 @@ sequenceDiagram
   
     Ext->>Sync: 定时拉取全量/增量数据
   
-    Sync->>Sync: 策略引擎评估<br/>(组织映射、用户匹配策略)
+    Sync->>Sync: 策略引擎评估<br>(组织映射、用户匹配策略)
   
     Sync->>DB: 批量 upsert 用户
     Sync->>DB: 批量 upsert 组织
@@ -296,7 +303,7 @@ TOPIAM 实现了全面的行为审计，采用**宽表 + JSON 列**设计：
 
 ```mermaid
 graph LR
-    Actor[操作者<br/>用户/管理员] --> Event[事件发生]
+    Actor[操作者<br>用户/管理员] --> Event[事件发生]
     Event --> Enrich[上下文丰富]
     Enrich --> Record[写入审计表]
 

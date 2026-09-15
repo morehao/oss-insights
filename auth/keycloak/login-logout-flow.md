@@ -324,7 +324,7 @@ Cookie 认证器返回 **NOT_SKIPPED challenge** 而非失败——流程引擎�
    -> UserModel 查找 -> 不存在则返回错误
 4. checkPassword() -- 密码校验
    -> credentialManager.authenticate(password)
-   -> 支持 BCrypt/PBKDF2 等多种哈希算法
+   -> 支持 Argon2 / PBKDF2 等哈希算法（内置 provider 无 BCrypt）
 5. checkDisabledUser() -- 检查账户状态（禁用/锁定/临时锁定）
 6. checkTimer() -- 临时锁定时间检查
 7. checkBruteForce() -- 暴力破解检测
@@ -339,7 +339,7 @@ Cookie 认证器返回 **NOT_SKIPPED challenge** 而非失败——流程引擎�
 PasswordCredentialProvider.isValid():
   1. 从 UserModel 获取存储的密码凭据
   2. 根据 credentialData.algorithm 选择密码编码器
-     -> BCrypt / pbkdf2-sha256 / pbkdf2-sha512 等
+     -> argon2 / pbkdf2 / pbkdf2-sha256 / pbkdf2-sha512（内置 provider 无 BCrypt）
   3. 编码器验证：encode(password, salt) == stored_hash
   4. 若密码过期策略启用 -> 验证是否需更新密码
   5. 更新密码哈希迭代（若算法迭代次数已变更，自动重新哈希）
@@ -629,10 +629,10 @@ Keycloak 的会话系统分为三层：
 
 ```mermaid
 graph TB
-    RSS["RootAuthenticationSessionModel<br/>临时认证会话<br/>ID: authId"]
-    ASM["AuthenticationSessionModel<br/>认证会话（单客户端）<br/>ID: tabId"]
-    USM["UserSessionModel<br/>用户会话（已认证）<br/>ID: userSessionId"]
-    ACSM["AuthenticatedClientSessionModel<br/>客户端会话<br/>关联 UserSession + Client"]
+    RSS["RootAuthenticationSessionModel<br>临时认证会话<br>ID: authId"]
+    ASM["AuthenticationSessionModel<br>认证会话（单客户端）<br>ID: tabId"]
+    USM["UserSessionModel<br>用户会话（已认证）<br>ID: userSessionId"]
+    ACSM["AuthenticatedClientSessionModel<br>客户端会话<br>关联 UserSession + Client"]
 
     RSS --> ASM
     USM --> ACSM

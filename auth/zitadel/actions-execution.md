@@ -113,11 +113,11 @@ Connect 协议独立实现，且**只转发白名单请求头**，避免任意�
 
 OIDC userinfo/access-token 出口根据触发类型（`PreUserinfo`/`PreAccessToken`）拼出 `function/<key>` 的 executionID 查目标调用；返回体里的 `SetUserMetadata`/`AppendClaims` 会被回填到用户元数据或追加进 token claims：
 
-[internal/api/oidc/userinfo.go:453-466]() function 节点：按触发类型查目标 → CallTargets 富化 token
-<!-- anchor: executionTargets := execution.QueryExecutionTargetsForFunction(ctx, function) ... return err -->
+[internal/api/oidc/userinfo.go:529-548]() function 节点：按触发类型查目标 → CallTargets 富化 token
+<!-- anchor: executionTargets := execution.QueryExecutionTargetsForFunction(ctx, function) ... resp, err := execution.CallTargets(ctx, executionTargets, info, s.target -->
 
-[internal/api/oidc/userinfo.go:473-487]() 把 webhook 返回的 set_user_metadata / append_claims 落地
-<!-- anchor: for _, metadata := range contextInfoResponse.SetUserMetadata { ... claimLogs = append(claimLogs, fmt.Sprintf("key %q already exists", claim.Key)) -->
+[internal/api/oidc/userinfo.go:562-574]() 把 webhook 返回的 set_user_metadata / append_claims 落地（已抽为 `applyContextInfoResponse`）
+<!-- anchor: func (s *Server) applyContextInfoResponse(ctx context.Context, qu ... userInfo.AppendClaims(fmt.Sprintf(ClaimActionLogFormat, function), claimLogs) -->
 
 ### Event：随写库事务把 river job 投递
 

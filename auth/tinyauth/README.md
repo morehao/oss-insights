@@ -201,12 +201,14 @@ sequenceDiagram
 | 方面 | Tinyauth | Authelia | oauth2-proxy | Keycloak |
 |------|----------|----------|--------------|----------|
 | 语言 / 体积 | Go / ~20MB 单二进制 | Go | Go | Java / 300MB+ |
-| 部署复杂度 | 低（单二进制 + 迁移自动） | 中（需 Redis/DB） | 低 | 高（需 DB + 控制台） |
-| 认证源 | 本地/LDAP/OAuth2/Tailscale | 本地/LDAP/OAuth2 | OAuth2/OIDC | LDAP/SAML/OIDC/Social |
-| ACL 粒度 | 用户/组/IP/路径，静态+动态 | 用户/组/IP/2FA | 邮箱/域 | 完整 RBAC |
-| OIDC 提供者 | ✅ 完整（OpenID Certified™） | ❌ | ❌ | ✅ 原生 |
+| 部署复杂度 | 低（单二进制 + 迁移自动） | 中（HA 需 Redis + 远程 DB；单机可 SQLite） | 低 | 高（需 DB + 控制台） |
+| 认证源 | 本地/LDAP/OAuth2/Tailscale | 本地/LDAP（仅 file 与 ldap 两种后端） | OAuth2/OIDC | LDAP/SAML/OIDC/Social |
+| ACL 粒度 | 用户/组/IP/路径，静态+动态 | 域/资源/查询/方法/网络/主体 全维度 AND + 每规则 1FA/2FA | 邮箱/域 | 完整 RBAC |
+| OIDC 提供者 | ✅ 完整（OpenID Certified™） | ✅ 完整（OpenID Certified™） | ❌ | ✅ 原生 |
 | 动态标签发现 | ✅ Docker/K8s | ❌ | ❌ | ❌ |
 | 学习曲线 | 低 | 中 | 低 | 高 |
+
+> 上表是本项目视角的局部对比。**六家（Authelia / Tinyauth / Keycloak / ZITADEL / TOPIAM / MaxKey）的完整能力横评**见 [`../capability-matrix.md`](../capability-matrix.md)。
 
 **差异化优势**：同时是认证消费者与提供者；Docker/K8s 标签自动发现；Tailscale 原生集成；纯 Go 无 CGO 部署极简。**局限**：无 SAML；无管理 API/UI；无 WebAuthn；单实例下 SQLite 是容量上限（可切 Postgres）。
 

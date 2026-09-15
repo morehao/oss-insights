@@ -1,520 +1,141 @@
-# MaxKey — 企业级 IAM-IDaas 身份管理和单点登录系统解读
-
-> **GitHub:** [github.com/dromara/MaxKey](https://github.com/dromara/MaxKey) | **网站:** [www.maxkey.top](https://www.maxkey.top) | **许可:** Apache-2.0 | **版本:** v4.1.11
-
-## 第一部分：快速概览
-
-### 这是什么
-
-MaxKey（马克思的钥匙）是 Dromara 开源社区旗下的 IAM-IDaas（身份管理和身份即服务）产品。它是一个全面的**单点登录认证系统**，提供用户身份管理（IDM）、身份认证（AM）、单点登录（SSO）、RBAC 权限管理和基于协议的第三方认证网关。
-
-项目谐音"马克思的钥匙"——寓意安全、信任和打开数字世界大门的钥匙。
-
-### 解决的痛点
-
-大中型组织的认证体系面临四重挑战：
-
-- **协议碎片化**：OAuth2/OIDC、SAML2、CAS、JWT 各自为政，每个业务系统各自对接
-- **认证源多样化**：本地密码、LDAP/AD、社交账号、Kerberos、扫码登录——统一管理困难
-- **多租户隔离**：大型企业、SaaS 平台的租户级身份隔离需求
-- **合规与审计**：等保、GDPR 等对登录历史和权限变更的完整审计要求
-
-MaxKey 通过**协议适配层 + 可插拔认证提供者 + 多租户架构**在这四个维度统一解决。
-
-### 适用场景
-
-- 企业内部的统一认证中心（替换多个系统的独立登录）
-- SaaS 平台的多租户身份隔离
-- 政务系统的信创环境部署（支持国密 SM3、国产数据库）
-- 需要同时对接 OAuth2、SAML、CAS 协议的应用集群
-- 教育/医疗等需要 LDAP/AD 域集成的组织
-
-### 核心能力清单
-
-| 能力 | 说明 |
-|------|------|
-| 单点登录（SSO） | 一次登录访问所有已授权应用，支持跨域 Cookie/Token/Congress 三种传递机制 |
-| 身份管理（IDM） | 完整的用户/组织/组/岗位管理，支持 LDAP/AD/钉钉/飞书/企微同步 |
-| 认证协议 | OAuth 2.x / OpenID Connect 1.0、SAML 2.0、JWT、CAS、FormBased、TokenBased、ExtendApi |
-| 多因素认证 | TOTP 时间令牌、短信验证码、邮件验证码、WebAuthn/Passkey |
-| 认证源 | 本地密码、LDAP、Active Directory、Kerberos、社交登录（微信/QQ/钉钉/飞书等）、扫码登录 |
-| RBAC 权限 | 角色-权限-应用三级权限模型，细粒度资源授权 |
-| 多租户 | 机构（Inst）级隔离，每个机构可独立配置认证策略和登录界面 |
-| 审计与合规 | 完整的登录历史、操作审计、密码策略、IP 地理位置解析 |
-| 协议扩展 | 开放 ExtendApi 接口，支持自定义协议适配 |
-| 部署 | 支持 MySQL/PostgreSQL/达梦/人大金仓等数据库，Redis 分布式会话，Docker 部署 |
-
-### 技术栈一览
-
-| 层面 | 技术 |
-|------|------|
-| 语言 | Java 17+ |
-| 框架 | Spring Boot 3.x |
-| 构建 | Gradle |
-| 数据库 | MySQL 8.4+ / PostgreSQL / 达梦 / 人大金仓 / Oracle |
-| 缓存/会话 | Redis（分布式 Session）/ Caffeine（单机 Session） |
-| 前端 | Angular（认证端 + 管理端） |
-| 认证核心 | 自研认证框架（非 Spring Security 标准流程） |
-| JWT | Nimbus JOSE + JWT（HMAC512） |
-| OAuth 2.0 | 自研 OAuth 2.x / OIDC 实现 |
-| SAML 2.0 | OpenSAML |
-| CAS | 自研 CAS 协议兼容 |
-| 密码加密 | 支持 BCrypt / SHA-256 / SM3 / MD4 / LDAP-SHA / MD5 |
-| 容器 | Docker / Docker Compose |
-| 代理/Gateway | Spring Cloud Gateway |
-
+---
+type: 项目总览
+title: "MaxKey 解读总览：面向企业的 IAM-IDaaS 单点登录系统"
+description: MaxKey 是 Dromara 社区维护、Apache-2.0 许可的企业级 IAM-IDaaS 单点登录系统，支持 OAuth2/OIDC/SAML2/CAS/JWT 等协议与多种认证方式。本页汇总项目定位、规模、技术栈、八个关注面子文档的索引与整体架构，并给出解读过程中发现的设计亮点与真实缺陷。
+tags: [maxkey, iam, idaas, sso, oauth2, oidc, saml2, cas, rbac, java, spring-boot]
 ---
 
-## 第二部分：架构深读
+> 解读基线：MaxKey `4.1.12`（`3a3a5c765`）。下文所有源码引用均相对仓库根，并附程序化校验过的行号锚点。
 
-### 架构总览
+## 项目定位
+
+MaxKey 是一套**应用注册表驱动**的企业级身份与访问管理平台（IAM / IDaaS）。它要解决的问题是：企业内部往往并存大量异构系统，各自维护账号与登录，既无法统一身份，也无法统一审计。MaxKey 把这些系统登记为「应用」，再以单一入口对外提供 SSO、单点登出与协议适配。
+
+它的差异化不在单点技术深度，而在**覆盖面**：同一个部署里同时提供 OAuth 2.0 / OIDC / SAML 2.0 / CAS / JWT / 表单 / Token 等多种协议，加上社交登录、扫码登录、多因素认证、LDAP/AD 同步与 SCIM 供给，属于「一套系统包住全部身份场景」的重型方案。代价是模块数量多、部署形态分散、部分能力存在宣传与实现的落差——本解读的重点正是把这些落差用可验证的源码位置说清楚。
+
+## 项目规模
+
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| Gradle 子模块 | 39 | `settings.gradle` 中的 `include` 条目 |
+| Java 文件 / 行数 | 1089 / 122,281 | 不含 `build/` 产物 |
+| 测试文件 | 70 | `src/test` 下的 Java 文件 |
+| 控制器类 | 120 | 含 `@RestController` / `@Controller` 的文件 |
+| 数据库表 | 44 | `sql/v4.1.11/maxkey.sql` 中的 `CREATE TABLE` |
+| 前端 TS 文件 | 518 | 两个 Angular SPA |
+| 许可 / 语言 | Apache-2.0 / Java 17 | — |
+
+模块按职责分为四层：公共基础（`maxkey-commons`）、领域与持久化（`maxkey-entity` / `maxkey-persistence`）、能力装配（`maxkey-authentications` / `maxkey-protocols` / `maxkey-synchronizers` / `maxkey-starter`）、运行形态（`maxkey-webs` 下的 4 个可部署应用与 2 个前端 SPA）。
+
+## 技术栈一览
+
+| 层面 | 选型 |
+|------|------|
+| 语言 / 运行时 | Java 17 |
+| 应用框架 | Spring Boot 3.5.16、Spring Framework 6.2.19、Spring Security 6.5.11、Spring Data 3.5.13 |
+| Servlet 容器 | Tomcat 10.1.56（内嵌） |
+| 构建 | Gradle 多模块（`*_boot.jar` 打包） |
+| 持久化 | MyBatis + `mybatis-jpa-extra`，自带 MySQL / PostgreSQL / 达梦 / 人大金仓方言目录 |
+| 缓存 | Caffeine（进程内）+ Redis（可选，分布式会话） |
+| 前端 | Angular 13.3 + ng-alain（认证端与管理端两套 SPA） |
+| 日志 | Log4j2（非 Logback），支持 `monitorInterval` 热调级 |
+| 默认数据库 | MySQL 8.x（仓库仅提供 MySQL 建库脚本） |
+
+## 子文档索引
+
+- `architecture.md` —— 总体架构与设计哲学：39 个模块的边界划分、4 个可部署应用的职责、`/authz/{id}` 单入口分发、认证与授权分离的落地方式，以及这套架构的根因与代价。
+- `protocol-gateway.md` —— 协议适配层：OAuth2/OIDC/SAML2/CAS/JWT 的适配器结构、协议常量与授权端点、SAML 断言签名策略、以及「OAuth2 实为 Spring Security OAuth 私有 fork」这一关键事实。
+- `authentication.md` —— 认证核心：`AuthenticationProviderFactory` 的选路机制、`createOnlineTicket` 单点收敛、多因素被建模为「又一个 Provider」、trusted 直通通道的风险面与两个 provider 模块的复制式分叉。
+- `session-token.md` —— 会话与令牌：容器会话 600s 与 MaxKey 会话 1800s 的落差如何决定整体设计、JWT 作为「被签名的 sessionId 句柄」、两级会话存储、单点登出与记住我。
+- `identity-provisioning.md` —— 身份供给与同步：Connectors 与 Synchronizers 的分工、LDAP/AD/飞书/钉钉/企微/JDBC 的同步实现、SCIM 2.0 入站供给，以及定时路径与手动触发的能力差异。
+- `multi-tenancy-rbac.md` —— 多租户与权限：`instId` 行级隔离的读写不对称、两套并行 RBAC 中只有一套在运行时生效、`PermissionInterceptor` 的粗粒度门禁与水平越权面。
+- `data-model.md` —— 数据模型：44 张表的实体关系、核心表字段设计、存储选型取舍、Schema 演进策略，以及登录热路径的读写与缓存分层。
+- `deployment.md` —— 部署与运维：四个后端应用与两个前端的端口/上下文路径、Docker Compose 的真实覆盖范围、默认口令与密钥管理、备份升级与「部署孤儿」问题。
+- `frontend-and-infrastructure.md` —— 前后端分层与运行时基础设施：依赖方向、密码编码器表驱动装配、starter 的按需裁剪能力、国密支持的真实覆盖度、前端令牌存储与 XSS 面、网关与 Nacos 的实际状态。
+
+## 核心模块导读表
+
+| 关注面 | 核心模块 / 入口 | 关键结论 | 详见 |
+|--------|----------------|----------|------|
+| 协议适配 | `maxkey-protocols/maxkey-protocol-authorize` | 所有协议收敛到 `/authz/{id}`，按 `app.getProtocol()` 中央分发 | [`protocol-gateway.md`](protocol-gateway.md) |
+| 认证选路 | `AuthenticationProviderFactory` | 按凭据类型选择 Provider，认证成功后统一走 `createOnlineTicket` | [`authentication.md`](authentication.md) |
+| 会话状态 | `SessionManagerImpl` | L1 Caffeine + L2 Redis + DB 状态位的两级组合器，默认单机 | [`session-token.md`](session-token.md) |
+| 令牌 | `AuthTokenService` / `Hmac512Service` | JWT 载荷只承载 sessionId，权限始终以服务端会话为准 | [`session-token.md`](session-token.md) |
+| 身份同步 | `maxkey-synchronizers` | 一个来源需聚合器 + 用户 + 机构三类 + 映射表配置 + DB 记录 | [`identity-provisioning.md`](identity-provisioning.md) |
+| 租户隔离 | `PersistFieldAutoFillHandler` | 写入自动填充 `instId`，读取依赖控制器显式赋值，遗漏点在「读」 | [`multi-tenancy-rbac.md`](multi-tenancy-rbac.md) |
+| 权限模型 | `mxk_groups` / `mxk_access` | 运行时生效的一套；`mxk_roles` 系列未定位到运行时消费者 | [`multi-tenancy-rbac.md`](multi-tenancy-rbac.md) |
+| 数据存储 | `maxkey-persistence` | 全库 0 外键，索引内联，登录热路径部分用裸 `JdbcTemplate` | [`data-model.md`](data-model.md) |
+| 部署形态 | `maxkey-webs` 下 4 个应用 | 开放 API 与网关有产物但无编排、无入口，属「部署孤儿」 | [`deployment.md`](deployment.md) |
+| 基础设施 | `maxkey-starter` × 8 | starter 只能按 Gradle 依赖裁剪，引入后运行时关不掉 | [`frontend-and-infrastructure.md`](frontend-and-infrastructure.md) |
+
+## 整体架构
 
 ```mermaid
-graph TB
-    subgraph "前端层"
-        WEB_APP["maxkey-web-app<br/>认证前端 (Angular)"]
-        MGT_APP["maxkey-web-mgt-app<br/>管理前端 (Angular)"]
-    end
-    subgraph "Web 应用层 (maxkey-webs)"
-        WEB["maxkey-web-maxkey<br/>认证/SSO 站点"]
-        MGT["maxkey-web-mgt<br/>管理后台站点"]
-        OPENAPI["maxkey-web-openapi<br/>OpenAPI 站点"]
-        GW["maxkey-gataway<br/>API 网关"]
-    end
-    subgraph "协议层 (maxkey-protocols)"
-        OAUTH["OAuth 2.x / OIDC"]
-        SAML["SAML 2.0"]
-        CAS["CAS"]
-        JWT_P["JWT"]
-        FORM["FormBased"]
-        TOKEN["TokenBased"]
-        API["ExtendApi"]
-    end
-    subgraph "认证层 (maxkey-authentications)"
-        AUTH_CORE["认证核心<br/>Token/Session/JWT"]
-        AUTH_PROVIDER["认证提供者<br/>Normal/MFA/Mobile/<br/>ScanCode/Trusted/App"]
-        AUTH_REALM["认证 Realm<br/>JDBC/LDAP/AD"]
-        AUTH_MGT["管理端认证"]
-    end
-    subgraph "核心层"
-        COMMONS["公共模块<br/>缓存/加密/通用"]
-        ENTITY["实体模块"]
-        PERSISTENCE["持久层"]
-    end
-    subgraph "基础设施"
-        DB[("数据库<br/>MySQL/PG/达梦等")]
-        REDIS[("Redis<br/>分布式会话")]
-    end
-
-    WEB_APP --> WEB
-    MGT_APP --> MGT
-    WEB --> OAUTH
-    WEB --> SAML
-    WEB --> CAS
-    WEB --> FORM
-    WEB --> JWT_P
-    WEB --> AUTH_PROVIDER
-    OAUTH --> AUTH_CORE
-    SAML --> AUTH_CORE
-    CAS --> AUTH_CORE
-    AUTH_PROVIDER --> AUTH_REALM
-    AUTH_PROVIDER --> AUTH_CORE
-    AUTH_REALM --> PERSISTENCE
-    PERSISTENCE --> DB
-    AUTH_CORE --> REDIS
-    GW --> OPENAPI
-    OPENAPI --> ENTITY
+flowchart TD
+  U["浏览器 / 客户端"] --> N["Nginx 反代"]
+  N --> FE1["认证前端 SPA"]
+  N --> FE2["管理前端 SPA"]
+  N --> A1["认证中心 :9527"]
+  N --> A2["管理后台 :9526"]
+  A1 --> P["协议适配层"]
+  A2 --> AUM["认证核心 mgt 副本"]
+  A1 --> AU["认证核心"]
+  AU --> S["会话与令牌"]
+  AUM --> S
+  S --> DB[("MySQL 44 表")]
+  S -.-> R[("Redis 可选")]
+  A1 --> SY["同步器"]
+  A1 --> API["开放 API :9525"]
+  A1 --> GW["网关 :9000"]
 ```
 
-MaxKey 采用**四层架构**：前端（Angular SPA） → Web 应用层（Spring Boot Controller） → 协议/认证层 → 持久层。亮点在于**协议适配层**作为"翻译官"，将不同协议请求统一转化为内部认证模型。
+图中「认证核心 mgt 副本」不是笔误：管理端与门户各自持有一份同名同包的认证实现，二者无法同时存在于同一 classpath，这既是当前的架构债，也解释了为什么两个应用的认证能力并不等价。
 
-### 模块组织与关键目录
+## 核心能力清单
 
-MaxKey 共有约 **40+ 个 Gradle 子模块**，顶层按职责分为：
+| 能力 | 说明 | 详见 |
+|------|------|------|
+| 单点登录 SSO | 以应用注册表为中心，单入口 `/authz/{id}` 统一受理 | [`architecture.md`](architecture.md) |
+| 单点登出 SLO | 支持反向前端/后端通道，应用清单来自会话的 `visited` 记录 | [`session-token.md`](session-token.md) |
+| 协议适配 | OAuth 2.0、OIDC、SAML 2.0、CAS、JWT、表单、Token 等多种协议 | [`protocol-gateway.md`](protocol-gateway.md) |
+| 多因素认证 | TOTP、邮件、短信；建模为一个独立 Provider 并配半成品会话 | [`authentication.md`](authentication.md) |
+| 无密码登录 | Passkey / WebAuthn 由独立 starter 提供，不经过认证核心 | [`authentication.md`](authentication.md) |
+| 社交与扫码 | 社交登录与扫码登录统一走 trusted 直通通道 | [`authentication.md`](authentication.md) |
+| 目录集成 | LDAP / AD 按实例动态装配，配置存库表并带本地缓存 | [`identity-provisioning.md`](identity-provisioning.md) |
+| 身份供给 | 同步器 + SCIM 2.0 入站，覆盖飞书/钉钉/企微/JDBC 等来源 | [`identity-provisioning.md`](identity-provisioning.md) |
+| 多租户 | `mxk_institutions` 为租户边界，共享表 + 行级 `instId` 过滤 | [`multi-tenancy-rbac.md`](multi-tenancy-rbac.md) |
+| 权限管理 | 组/角色/应用访问白名单 + 管理端粗粒度门禁 | [`multi-tenancy-rbac.md`](multi-tenancy-rbac.md) |
+| 审计 | 登录历史与在线状态落库（`mxk_history_login`） | [`data-model.md`](data-model.md) |
+| 部署 | Docker Compose 覆盖 2 后端 + 2 前端 + MySQL + Nginx | [`deployment.md`](deployment.md) |
 
-```
-MaxKey/
-├── maxkey-authentications/     # 认证框架
-│   ├── maxkey-authentication-core/        # 核心抽象：Session/Token/JWT
-│   ├── maxkey-authentication-provider/    # 认证提供者 + Realm
-│   └── maxkey-authentication-provider-mgt/ # 管理端认证提供者
-├── maxkey-commons/             # 公共组件
-│   ├── maxkey-core/            # 核心工具
-│   ├── maxkey-crypto/          # 密码编码器（BCrypt/SM3等）
-│   ├── maxkey-cache/           # 缓存抽象
-│   └── maxkey-ldap/            # LDAP 客户端
-├── maxkey-entity/              # JPA 实体（所有数据表映射）
-├── maxkey-persistence/         # MyBatis Mapper（数据访问层）
-├── maxkey-protocols/           # 认证协议实现
-│   ├── maxkey-protocol-authorize/      # 授权路由总入口
-│   ├── maxkey-protocol-oauth-2.0/      # OAuth 2.x / OIDC
-│   ├── maxkey-protocol-saml-2.0/       # SAML 2.0
-│   ├── maxkey-protocol-cas/            # CAS
-│   ├── maxkey-protocol-jwt/            # JWT
-│   ├── maxkey-protocol-formbased/      # 表单代理
-│   ├── maxkey-protocol-tokenbased/     # Token 代理
-│   └── maxkey-protocol-extendapi/      # 扩展 API
-├── maxkey-starter/             # Spring Boot Starter
-│   ├── maxkey-starter-web/           # Web 基础设施
-│   ├── maxkey-starter-captcha/       # 图形验证码
-│   ├── maxkey-starter-otp/           # OTP 令牌
-│   ├── maxkey-starter-sms/           # 短信服务
-│   ├── maxkey-starter-social/        # 社交登录
-│   ├── maxkey-starter-passkey/       # Passkey/WebAuthn
-│   └── maxkey-starter-ip2location/   # IP 地理位置
-├── maxkey-webs/                # Web 应用
-│   ├── maxkey-web-maxkey/           # 认证/SSO 站点
-│   ├── maxkey-web-mgt/              # 管理后台站点
-│   ├── maxkey-web-openapi/          # OpenAPI 接口
-│   └── maxkey-gataway/              # Spring Cloud Gateway
-├── maxkey-web-apis/            # REST API 模块
-│   ├── maxkey-web-api-rest/         # REST API
-│   └── maxkey-web-api-scim/         # SCIM 2.0
-├── maxkey-web-frontend/        # 前端应用
-│   ├── maxkey-web-app/              # 认证端 (Angular)
-│   └── maxkey-web-mgt-app/          # 管理端 (Angular)
-├── maxkey-synchronizers/       # 身份同步器
-│   ├── synchronizer-ldap/
-│   ├── synchronizer-activedirectory/
-│   ├── synchronizer-feishu/
-│   ├── synchronizer-dingtalk/
-│   └── synchronizer-work-weixin/
-└── sql/                        # 数据库 SQL 脚本
-```
+## 设计亮点
 
-### 关键模块代码规模
+- **应用注册表驱动的可扩展性**。新增一种协议或一种认证方式不需要改主流程：协议侧按注册的 `protocol` 分发，认证侧按凭据类型选 Provider，两侧最终都收敛到同一个「登录成功后建立系统状态」的入口。这是全项目最值得借鉴的一处结构决策。
+- **密码编码器的表驱动装配**。启动时把一个「算法名 → 编码器」的映射一次性注册进委托式编码器，默认算法由配置项决定，与具体算法实现解耦。
+- **窄接口 + 配置整数做实现二选一**。缓存只暴露三个方法的窄接口，用同一个 `persistence` 配置整数在启动时决定装配进程内还是分布式实现，把「单机/集群」的差异压在装配期而不是运行期。
+- **协议无关的登出应用清单**。单点登出时下发的是与会话关联的应用记录，而不是协议特有的凭据，使具体登出报文的编码方式成为可替换的细节。
 
-| 模块 | 核心代码行（估算） | 职责 |
-|------|-------------------|------|
-| `maxkey-authentication-core` | ~3000 行 | Token 生成/校验、Session 管理、核心认证模型 |
-| `maxkey-authentication-provider` | ~5000 行 | 6 种认证 Provider + JDBC/LDAP Realm + Kerberos/RememberMe |
-| `maxkey-protocol-oauth-2.0` | ~8000 行 | 完整的 OAuth 2.x/OIDC 实现（授权码/隐式/密码/客户端） |
-| `maxkey-protocol-saml-2.0` | ~5000 行 | IdP/SP 双角色，元数据管理，断言生成 |
-| `maxkey-protocol-cas` | ~3000 行 | CAS 1.0/2.0/3.0 协议兼容 |
-| `maxkey-entity` | ~6000 行 | 200+ 实体类，覆盖全业务模型 |
-| `maxkey-persistence` | ~8000 行 | MyBatis Mapper + XML，全部数据库操作 |
-| `maxkey-web-maxkey` | ~4000 行 | 认证/登录/登出 Controller，前端交互 |
+## 值得警惕的问题
 
-### 启动流程
+- **默认凭据与密钥**。初始化脚本内置管理员账号且口令以明文编码器前缀存储、绕过配置的强哈希算法；JWT 签名密钥在配置文件中有硬编码默认值且访问令牌与刷新令牌共用同一密钥，未改默认值的部署可被自签令牌。
+- **网关名不副实**。`maxkey-gataway` 中标称做鉴权与日志的过滤器，方法体只是把请求原样转发；同时其路由使用服务发现协议前缀，而服务发现默认关闭，按默认配置启动无法解析上游。
+- **协议层的安全实现有缺口**。CAS 的服务票据未与 `service` 参数绑定、SAML 断言签名校验失败后仍继续返回断言、令牌自省端点未做调用方认证、重定向地址采用前缀匹配。
+- **认证与授权链路上的既有缺陷**。用户锁定状态在认证核心中只记日志不拦截；扫码登录缺少独立的「确认」状态，构成扫码劫持面；管理端存在多个未带租户过滤的按 ID 读写端点，属可复现的水平越权。
+- **权限模型存在「配置态」与「生效态」断层**。库里并存两套角色/权限表，但只有基于组与访问白名单的一套在运行时生效，另一套未定位到消费方，容易误导二次开发。
+- **交付承诺与仓库内容不符**。仓库只提供 MySQL 建库脚本，而方言目录中的 PostgreSQL 与人大金仓映射仍是旧包名、缺少对应接口，相关「完全兼容」的宣传无法自证；建库脚本是销毁型的全量脚本，没有版本间迁移脚本。
+- **规模化能力受限**。默认配置下会话不共享，认证中心无法水平扩容；强制下线在多节点不能立即生效；定时同步路径与手动触发的凭据处理不一致，可能导致定时任务整体不可用。
+- **大量死代码与复制式分叉**。路由服务整类被注释、若干工厂实现分支被注释、多个映射构建器无调用方；管理端与门户的认证实现逐字节重复，任何修复都需要改两处。
 
-```
-Spring Boot 应用启动
-  │
-  ▼
-AutoConfiguration 加载 (各 starter 模块)
-  │
-  ├── MvcSecurityAutoConfiguration     → Spring Security 基础安全配置
-  ├── AuthnProviderAutoConfiguration   → 注册认证 Providers 到工厂
-  ├── JwtAuthnAutoConfiguration        → 初始化 AuthJwtService/TokenService
-  ├── SessionAutoConfiguration         → 初始化 SessionManager (Redis/Caffeine)
-  ├── Oauth20AutoConfiguration         → OAuth 端点注册
-  ├── Saml20AutoConfiguration          → SAML 端点注册
-  ├── CasAutoConfiguration             → CAS 端点注册
-  ├── SocialSignOnAutoConfiguration    → 社交登录 Provider 加载
-  ├── KaptchaAutoConfiguration         → 图形验证码初始化
-  ├── OneTimePasswordAutoConfiguration → OTP 服务初始化
-  └── PasskeyAutoConfiguration         → WebAuthn 初始化
-  │
-  ▼
-Web 应用路由注册
-  │
-  ├── /login/*        → LoginEntryPoint（登录入口）
-  ├── /logout*        → LogoutEndpoint（登出端点）
-  ├── /authz/{id}     → AuthorizeEndpoint（协议路由总入口）
-  ├── /auth/token/refresh → AuthTokenRefreshPoint
-  ├── /passkey/*      → PasskeyAuthenticationEndpoint
-  └── /force/logout   → 强制登出
-  │
-  ▼
-数据库初始化 (sql/ 目录下的 DDL/DML 脚本)
-  │
-  └── 创建 80+ 张业务表（用户/机构/应用/权限/审计等）
-```
+## 同类对比
 
----
+在自建 IAM 的选型谱系中，MaxKey 的生态位是「**Spring 技术栈上的广覆盖整合方案**」：协议与认证方式的种类齐全、目录与同步来源覆盖国内办公套件、管理界面开箱可用，适合希望以单套系统承接历史协议与国产目录的中国企业环境。
 
-## 第三部分：认证体系总览
+相对的取舍也很明确：它的细粒度授权、可配置认证流程、集群化与迁移工具链都不是强项，部分能力停留在「有入口、无实现」的状态。若诉求是完整的授权模型与可编排的认证流程，或需要成熟的分布式与升级路径，同类中更专注的方案会更合适；若诉求是尽快把一堆异构系统的登录收敛到一处，MaxKey 的覆盖面是它的主要价值。跨项目的逐项能力对照见 [`../capability-matrix.md`](../capability-matrix.md)。
 
-MaxKey 的认证体系是其最核心、最复杂的子系统。它使用**自研认证框架**，通过 `AbstractAuthenticationProvider` 的子类实现不同认证策略，由 `AuthenticationProviderFactory` 根据 `authType` 字段路由。
+## 解读类型说明
 
-### 认证类型矩阵
+本文档集按**管理员视角**规格撰写：以产品使用者与二次开发者的决策需求为主线，优先回答「这套东西怎么组织的、能不能满足我的场景、有什么坑」，而非逐文件讲解源码。因此每一篇都聚焦于成因、权衡与代价，并保留可点开验证的源码位置；涉及 JVM/Java 生态惯用法的部分（编码器装配、自动配置、窄接口多实现）按语言惯例另行标注。
 
-| authType | Provider 类 | 密码验证 | 附加验证 | 使用场景 |
-|----------|------------|---------|---------|---------|
-| `normal` | NormalAuthenticationProvider | 密码匹配 | 图形验证码（可选） | 标准 Web 登录 |
-| `tfa` | MfaAuthenticationProvider | 密码匹配 | TOTP OTP | 双因素认证 |
-| `mobile` | MobileAuthenticationProvider | 无密码 | 短信验证码 | 手机验证码登录 |
-| `trusted` | TrustedAuthenticationProvider | 无 | 无 | RememberMe / 第三方信任登录 |
-| `scancode` | ScanCodeAuthenticationProvider | 无 | 二维码票据 | 扫码登录 |
-| `app` | AppAuthenticationProvider | 密码匹配 | 图形验证码（可选） | App 端登录 |
+## 阅读路线
 
-### 认证数据源（Realm）
-
-| Realm | 密码验证方式 | 用户数据源 |
-|-------|------------|-----------|
-| JdbcAuthenticationRealm | BCrypt/SHA-256/SM3 等编码器比对 | MySQL/PostgreSQL 等数据库 |
-| Jdbc + LDAP 混合 | JDBC 优先，失败后 LDAP 兜底，LDAP 成功则回写密码 | 数据库 + LDAP |
-| LdapAuthenticationRealm | LDAP bind 验证 | 多 LDAP/AD 服务器轮询 |
-
-### 登录方式汇总
-
-| 登录方式 | 实现机制 | 关键模块 |
-|---------|---------|---------|
-| 用户名 + 密码 | NormalAuthenticationProvider + JdbcAuthenticationRealm | authentication-provider |
-| 用户名 + 密码 + TOTP | MfaAuthenticationProvider + TwoFactorTotpAuthenticationProvider | authentication-provider |
-| 用户名 + 密码 + 短信 | MfaAuthenticationProvider + TwoFactorMobileAuthenticationProvider | authentication-provider |
-| 用户名 + 密码 + 邮件 | MfaAuthenticationProvider + TwoFactorEmailAuthenticationProvider | authentication-provider |
-| 手机号 + 短信验证码 | MobileAuthenticationProvider | authentication-provider |
-| 扫码登录 | ScanCodeAuthenticationProvider + ScanCodeService | authentication-provider |
-| 社交登录（微信/QQ/钉钉等） | SocialSignOnEndpoint（OAuth 回调） | starter-social |
-| Kerberos/AD 域 | HttpKerberosEntryPoint + KerberosService | authentication-provider |
-| Passkey/WebAuthn | PasskeyAuthenticationEndpoint + PasskeyServiceImpl | starter-passkey |
-| JWT Header | HttpJwtEntryPoint + AuthorizationUtils | authentication-provider |
-| HTTP Basic | BasicEntryPoint | authentication-provider |
-| Remember Me | AbstractRemeberMeManager（JWT Cookie，7天有效） | authentication-provider |
-
-> 详细的登录、登出流程和所有认证方式的时序分析，请参阅：[登录/登出流程详细分析](login-logout-flow.md)
-
----
-
-## 第四部分：协议适配层
-
-MaxKey 的一个核心设计是**协议适配层**（Protocol Adapter），它让不同协议的接入应用都能通过统一的 SSO 认证中心完成身份验证。
-
-### 协议分发总入口
-
-`AuthorizeEndpoint` 是协议分发的总路由器：
-
-```
-GET /authz/{appId}
-  │
-  ├── 读取应用配置 (AppsService)
-  │
-  └── 根据 app.getProtocol() 分发：
-      ├── EXTEND_API          → forward /authz/api/{id}
-      ├── FORMBASED           → forward /authz/formbased/{id}
-      ├── OAUTH20/OIDC10      → forward /authz/oauth/v20/{id}
-      ├── OAUTH21             → redirect app.getLoginUrl()
-      ├── SAML20              → forward /authz/saml20/idpinit/{id}
-      ├── TOKENBASED          → forward /authz/tokenbased/{id}
-      ├── CAS                 → forward /authz/cas/{id}
-      ├── JWT                 → forward /authz/jwt/{id}
-      └── 其他 (BASIC等)      → redirect app.getLoginUrl()
-```
-
-### 各协议适配特点
-
-| 协议 | 适配器基类 | 签名/加密支持 | 账号策略 |
-|------|----------|-------------|---------|
-| OAuth 2.x / OIDC | TokenEndpoint + AuthorizationEndpoint | JWT (HS512/RS256) | User-Defined / Shared / System / None |
-| SAML 2.0 | SingleSignOnEndpoint + AssertionEndpoint | XML 断言签名 | 同 OAuth |
-| CAS | CasAuthorizeEndpoint + TicketGrantingTicket | CAS TGT/ST | 共享凭证 |
-| JWT | JwtLoginService | HMAC512 JWT | User-Defined |
-| FormBased | FormBasedAdapter | 可选签名+加密 | User-Defined / Shared |
-| TokenBased | TokenBasedAdapter | Token 直传 | User-Defined / Shared |
-| ExtendApi | ExtendApiAdapter | 自定义 | 自定义 |
-
-### 账号凭证策略
-
-`AbstractAuthorizeAdapter` 中定义了四种凭证策略，控制认证后将什么凭据传递给应用：
-
-| 策略 | 行为 |
-|------|------|
-| `USER_DEFINED` | 用户自己对应用绑定的独立账号/密码 |
-| `SHARED` | 应用级别的共享账号/密码（所有用户共用） |
-| `SYSTEM` | 从用户属性映射到应用账号体系（如 employeeNumber → AppUsername） |
-| `NONE` | 使用 MaxKey 用户名/密码直接传递 |
-
-这个设计让不同应用可以使用不同的账号体系，而用户只需记住 MaxKey 一套密码。
-
----
-
-## 第五部分：Session 与 Token 管理
-
-### 会话模型
-
-MaxKey 的 Session 管理采用**自建 Session 模型**（非 Servlet HttpSession），支持两种存储后端：
-
-| 存储后端 | 实现类 | 默认有效期 | 过期策略 |
-|---------|--------|-----------|---------|
-| 内存（Caffeine） | InMemorySessionManager | 1800 秒（30 分钟） | expireAfterWrite |
-| Redis | RedisSessionManager | 1800 秒（30 分钟） | SETEX 自动过期 |
-
-核心字段：
-
-```
-Session {
-    id              // UUID 或自定义 session ID
-    authentication  // Spring Security UsernamePasswordAuthenticationToken
-    startTimestamp  // 会话创建时间
-    lastAccessTime  // 最后访问时间（刷新时更新）
-    expiredTime     // 过期时间（创建/刷新时计算）
-    visited         // Map<appId, VisitedDto> 记录单点登录访问过的应用
-}
-```
-
-### Token 体系
-
-MaxKey 使用**两层 Token 结构**，签发密钥分离：
-
-```
-AuthTokenService (access_token 密钥)
-  └── genAuthJwt()
-       ├── refreshTokenService.genRefreshToken()  → 使用 refresh 密钥签发 refresh_token
-       └── genJwt()                                → 使用 access 密钥签发 access_token
-```
-
-| Token 类型 | 签发服务 | 密钥 | 用途 |
-|-----------|---------|------|------|
-| `access_token` | AuthTokenService | `authJwkConfig.getSecret()` | 访问令牌，携带用户身份 |
-| `refresh_token` | AuthRefreshTokenService | `authJwkConfig.getRefreshSecret()` | 刷新令牌，延长会话 |
-| `rememberMe JWT` | AuthTokenService | `authJwkConfig.getSecret()` | 记住我功能，7 天有效期 |
-| `state JWT` | AuthTokenService.genRandomJwt() | 同 access | CSRF 防护 token |
-| `congress` | AuthTokenService.createCongress() | 同 access | 跨应用一次性凭证传递 |
-
-Refresh Token 的刷新端点：
-
-```
-GET/POST /auth/token/refresh
-  1. 用 refresh 密钥验证 JWT 有效性
-  2. 解析 sessionId，刷新 Session
-  3. 重新生成 access_token + refresh_token
-```
-
-### 认证状态维护
-
-`AuthorizationUtils` 是认证状态的静态工具类，提供完整的认证状态读写：
-
-```
-Cookie 方式:  从 "congress" Cookie 读取 → doJwtAuthenticate()
-Header 方式:  从 HTTP Authorization Bearer 读取 → doJwtAuthenticate()
-Session 方式: HTTP Session 中 key="AUTHENTICATION" 存取 Authentication 对象
-
-doJwtAuthenticate():
-  1. 验证 JWT → 解析 sessionId
-  2. sessionManager.get(sessionId) → 获取 Session
-  3. session != null → setAuthentication(session.getAuthentication())
-  4. session == null → clearAuthentication()
-```
-
----
-
-## 第六部分：安全设计
-
-### 密码策略
-
-- 支持 BCrypt / SHA-256 / SM3 / MD4 / LDAP-SHA / MD5 等多种编码器
-- 密码错误计数：超过配置次数后锁定账户
-- 密码过期策略：可配置强制修改周期
-- `LoginCredential.toString()` 中将密码替换为 `"********"`，防止泄露到日志
-
-### CSRF 防护
-
-登录请求中的 `state` 字段是一个随机生成的 JWT：
-
-```
-LoginEntryPoint.get():
-  → authTokenService.genRandomJwt() 生成 state JWT
-  → 返回给前端，提交时回传
-
-LoginEntryPoint.signin():
-  → authTokenService.validateJwtToken(credential.getState())
-  → 验证通过才继续认证
-```
-
-### 登录失败防护
-
-- 图形验证码：登录前需通过验证码校验（可配置开关）
-- 密码错误递增计数：`loginService.plusBadPasswordCount()`
-- IP 地理位置记录：`ipLocationParser.region()` 解析，用于异常登录检测
-
-### 二次认证
-
-首次认证成功后，若用户启用了 MFA：
-
-```
-createOnlineTicket():
-  authType == NORMAL && userInfo.authnType > NONE:
-    → sessionManager.createTwoFactor()  // 创建临时 2FA 会话
-    → 返回 twoFactor 类型给前端
-
-前端跳转到 TFA 页面 → 输入 OTP → POST /login/signin (authType=tfa):
-
-MfaAuthenticationProvider:
-  → sessionManager.getTwoFactor(sessionId)  // 获取临时会话
-  → twoFactorProvider.doTwoFactorAuthenticate()  // 校验 OTP
-  → 成功后 sessionManager.create() 正式创建会话
-  → sessionManager.removeTwoFactor() 清理临时会话
-```
-
-### 审计日志
-
-每次登录/登出/操作均记录到 `mxk_history_login` 表：
-
-- 登录成功/失败原因
-- IP 地址和地理位置
-- 浏览器 User-Agent
-- 时间戳
-- 认证类型和提供商
-
----
-
-## 第七部分：同类项目对比
-
-| 方面 | MaxKey | Keycloak | Casdoor | Authelia |
-|------|--------|----------|---------|----------|
-| **语言** | Java 17 | Java | Go | Go |
-| **部署体积** | ~200MB（含 JVM） | ~400MB | ~100MB 单二进制 | ~30MB 单二进制 |
-| **部署复杂度** | 中（需数据库） | 高（需数据库） | 低（单二进制+DB） | 中（需 Redis/DB） |
-| **OAuth2/OIDC** | 自研完整实现 | 原生支持 | 基于 Casdoor OAuth | 不提供 |
-| **SAML 2.0** | 完整 IdP 实现 | 原生支持 | 支持 | 不支持 |
-| **CAS** | 完整 1.0/2.0/3.0 | 不支持 | 支持 | 不支持 |
-| **JWT** | 原生支持 | 原生支持 | 原生支持 | 不支持 |
-| **LDAP/AD** | 完整集成+同步 | 完整集成 | 完整集成 | 支持 |
-| **多因素认证** | TOTP/SMS/Email | TOTP/WebAuthn | TOTP/SMS/Email | TOTP/Duo |
-| **WebAuthn/Passkey** | 完整实现 | 完整实现 | 支持 | 不支持 |
-| **社交登录** | 微信/QQ/钉钉/飞书等 | 通用+Keycloak | GitHub/Google/QQ/微信等 | OAuth2 Provider 通用 |
-| **多租户** | 原生机构隔离 | Realm 隔离 | Organization | 不支持 |
-| **管理 UI** | 完整 Angular 管理后台 | 完整管理控制台 | 完整 React 管理 UI | 文件编辑配置 |
-| **国密支持** | SM3/SM4 | 不支持 | 不支持 | 不支持 |
-| **身份同步** | 钉钉/飞书/企微/LDAP/AD/JDBC | LDAP/Kerberos | LDAP | 不支持 |
-| **学习曲线** | 中高 | 高 | 中 | 低 |
-| **信创适配** | 达梦/人大金仓 | 不支持 | 不支持 | 不支持 |
-
-**MaxKey 的差异化优势：**
-
-1. **协议覆盖最广** — 同时支持 OAuth2、OIDC、SAML2、CAS、JWT 五大协议，且为自研实现
-2. **国内生态深度适配** — 微信/QQ/钉钉/飞书/企微社交登录、国密 SM3/SM4、信创数据库
-3. **身份同步器** — 内建钉钉/飞书/企微/LDAP/AD 等同步器，非简单集成
-4. **多租户** — 机构级隔离，适合 SaaS 平台
-5. **Caffeine 内存会话** — 无需 Redis 也可运行，降低小型部署成本
-
-**MaxKey 的局限性：**
-
-1. **体积较大** — Java + Spring Boot 不如 Go 方案轻量
-2. **学习曲线较高** — 自研认证框架，非标准 Spring Security 流程
-3. **配置项多** — 功能丰富带来的配置复杂性
-4. **前端技术栈分裂** — 两套 Angular 应用（认证端 + 管理端）
-
----
-
-## 第八部分：总结与评价
-
-MaxKey 是一个功能极其完整的 IAM-IDaas 产品，其**协议适配层 + 可插拔认证提供者**的架构设计让它在面对多样化的企业认证需求时表现出出色的灵活性。
-
-**最值得学习的设计决策：**
-
-1. **协议适配层（AuthorizeEndpoint 路由分发）** — 一个入口路由根据 `app.getProtocol()` 分派到不同协议端点，以策略模式隔离协议差异，新增协议只需增加适配器和对应端点
-2. **认证提供者工厂模式** — `AuthenticationProviderFactory` + `ConcurrentHashMap<String, AbstractAuthenticationProvider>` 实现了按 `authType` 的动态路由，新增认证方式只需注册一个 Provider
-3. **Realm 的 JDBC+LDAP 混合认证** — JDBC 优先，LDAP 兜底，LDAP 成功后自动回写密码，实现用户无感知的认证源切换
-4. **两层 Token 分离密钥** — access_token 和 refresh_token 使用不同密钥签名，降低单一密钥泄露的爆破面
-5. **Session 存储双模式** — Caffeine（内存）和 Redis（分布式）共享同一接口，按部署规模灵活切换
-6. **密码策略+审计日志** — 完整的安全闭环，错误计数、IP 解析、UA 追踪、历史审计
-
-对于需要搭建企业级统一认证中心、研究 SSO 协议实现、或了解大型 Java Monorepo 工程组织方式的开发者，MaxKey 是一个值得深入研究的项目。
-
-> **仓库：** [github.com/dromara/MaxKey](https://github.com/dromara/MaxKey) | **网站：** [www.maxkey.top](https://www.maxkey.top)
-
----
-
-*本项目解读目录下后续可扩展各维度的独立分析文档，例如：[登录/登出流程详细分析](login-logout-flow.md)、[协议适配层深度分析](protocol-adapters.md)、[身份同步器实现](synchronizers.md) 等。*
+先读 `architecture.md` 建立整体认识，再按关心的问题选读：做协议对接看 `protocol-gateway.md`，做登录与风控看 `authentication.md` 与 `session-token.md`，做组织与权限看 `multi-tenancy-rbac.md`，做数据与运维看 `data-model.md` 与 `deployment.md`，评估工程化程度看 `frontend-and-infrastructure.md`。

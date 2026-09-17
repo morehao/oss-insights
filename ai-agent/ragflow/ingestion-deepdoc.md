@@ -1,3 +1,10 @@
+---
+type: 关注面解读
+title: RAGFlow 数据摄取与文档解析
+description: RAGFlow 摄取链路深读：worker 拉取式任务分发 + 心跳租约 + 断点续传的任务状态机、DSL 数据流管线与模板式切分、DeepDoc 版面/OCR/表格识别与可插拔解析后端（deepdoc/mineru/monkeyocr/paddleocr 等）、连接器接入面与索引写入。
+tags: [ragflow, ingestion, deepdoc, ocr, chunking, pipeline-dsl, connectors]
+---
+
 # RAGFlow 数据摄取与文档解析：“Quality in, quality out”的解析切分管线
 
 > 本解读按 **ai-infra（叠加 ai-agent/framework）类规格**产出，作为 RAGFlow 档案的 `ingestion-deepdoc` 子文档，负责“数据摄取与文档解析（ingestion + deepdoc）”关注面。真源以源码仓库 `/Users/morehao/Documents/study/ai-agent/ragflow` 为根，所有 `路径:行号` 均指该仓库相对路径。
@@ -8,15 +15,17 @@
 
 ## 角色：去掉它系统会怎样
 
-「数据摄取与文档解析」是 RAGFlow 品牌信条 *Quality in, quality out* 的第一环，README 把它的两条卖点端出来：「基于深度文档理解的知识抽取，处理复杂格式、无结构化数据」+「模板式切分，智能且可解释」[README.md:117-124]()<!-- anchor: - [Deep document understanding](./deepdoc/README.md)-based knowledge extraction from unstructured data with complicated … - Plenty of template options to choose from. -->。
+「数据摄取与文档解析」是 RAGFlow 品牌信条 *Quality in, quality out* 的第一环，README 把它的两条卖点端出来：「基于深度文档理解的知识抽取，处理复杂格式、无结构化数据」+「模板式切分，智能且可解释」[README.md:117-124]()。
+  <!-- anchor: - [Deep document understanding](./deepdoc/README.md)-based knowledge extraction  … - Plenty of template options to choose from. -->
 
 它是“文档 → 可检索知识”的正向管道，夹在三条更广的分层之间：
 
-- **上游**：用户/同步器把原始文件放进对象存储、在 MySQL 建 `document` 行、建 `ingestion_task` 任务行，并向消息队列投递任务消息（`UploadLocalDocuments` 把文件字节 `Put` 到 `bucket=kb_id` [internal/service/document/document_upload.go:91]()<!-- anchor: if err = storageImpl.Put(ctx, kb.ID, location, blob); err != nil { -->）。同步器的**数据源接入面**是可插拔 connector：`internal/syncer/connector/builtin.go` 的 `RegisterBuiltIns` 把各 connector 工厂注册进 `Registry`，截至 dev-20260902 共注册 38 个内置源（dev-20260826 时为 29 个）——如 Azure DevOps（仓库源码 + 拉取请求，checkpoint/resume + commit 变更探测，[internal/syncer/connector/builtin.go:33](internal/syncer/connector/builtin.go)）与 Azure Blob Storage（容器 blob，checkpoint 续传，[internal/syncer/connector/builtin.go:45](internal/syncer/connector/builtin.go)）：
-  <!-- anchor: 	registerBuiltIn(registry, "azure_devops", NewAzureDevOpsConnector) -->
-  <!-- anchor: 	registerBuiltIn(registry, "azure_blob", NewAzureBlobStorageConnector) -->
+- **上游**：用户/同步器把原始文件放进对象存储、在 MySQL 建 `document` 行、建 `ingestion_task` 任务行，并向消息队列投递任务消息（`UploadLocalDocuments` 把文件字节 `Put` 到 `bucket=kb_id` [internal/service/document/document_upload.go:91-91]()）。同步器的**数据源接入面**是可插拔 connector：`internal/syncer/connector/builtin.go` 的 `RegisterBuiltIns` 把各 connector 工厂注册进 `Registry`，截至 v0.27.2 共 40 处 `registerBuiltIn` 调用（其中 `google-drive`/`google_drive` 是同一实现的两个别名，去重后 **39 类内置源**；dev-20260902 时为 39 处/38 类，dev-20260826 时为 29 类）——如 Azure DevOps（仓库源码 + 拉取请求，checkpoint/resume + commit 变更探测，[internal/syncer/connector/builtin.go:33](internal/syncer/connector/builtin.go)）与 Azure Blob Storage（容器 blob，checkpoint 续传，[internal/syncer/connector/builtin.go:45](internal/syncer/connector/builtin.go)）：
+  <!-- anchor: if err = storageImpl.Put(ctx, kb.ID, location, blob); err != nil { … if err = storageImpl.Put(ctx, kb.ID, location, blob); err != nil { -->
   > **演进说明（dev-20260826）**：Azure DevOps / Azure Blob 为本次新增数据源 connector（GitHub 近期 `feat(data_source)` / `feat(go-syncer)` 提交），分别为仓库源码+PR 与对象容器两类接入。connector 具体实现见 `internal/syncer/connector/azure_devops.go`、`internal/syncer/connector/azure_blob.go`。
   > **演进说明（dev-20260902）**：注册面从 29 扩到 38 个内置源，dev-20260826 后**净增 9 个 connector**（均落在 [internal/syncer/connector/builtin.go:35-67](internal/syncer/connector/builtin.go) 的注册表里，逐个有上游 `feat(go-syncer)` / `feat(go-connector)` / `feat(data-source)` 提交佐证）：Box（`f62b10d`）、Asana（`78527d7`，resume + prune）、Airtable（`5217f99`，lazy fetch + resume）、OneDrive（`dd8cb0b`，lazy fetch + resume）、OCI Storage（`41bc872`，resume）、Zendesk（`90ee505`）、Xquik X search（`0201c1a`）、SeaFile（`8b90c03`）、BigQuery（`c63c237`）。实现分别落 `internal/syncer/connector/{box,asana,airtable,onedrive,oci_storage,zendesk,xquik,seafile,bigquery}.go`——数据源连接器是这一周上游新增能力最密集的前沿之一。
+  >
+  > **演进说明（v0.27.2）**：注册面再 +1——新增 **Sitemap** 连接器（按 `sitemap.xml` 抓网页入库，带 PDF-pass checkpoint），注册点 [internal/syncer/connector/builtin.go:31](internal/syncer/connector/builtin.go)。因此 v0.27.2 是 40 处注册 / 39 类源。
 - **核心**：`Ingestor`（消费队列的任务 worker 池）驱动每个文档跑一遍“解析 → 切分 → 元数据抽取 → embedding → 写检索引擎”的数据流管线，最后把结果元数据回写文档行。
 - **下游**：检索（多路召回 + 融合重排）、Agent / dataflow canvas、知识图谱编译产物都消费这批 chunk / 索引 / 编译产物。
 
@@ -30,15 +39,19 @@
 
 RAGFlow 的核心假设：**检索质量上限由解析 / 切分质量决定**。固定 token 数硬切在复杂文档上会系统性污染质量，根因分三类叠加：
 
-- **纯文本切分对“版式信息”完全盲视**。多栏 PDF、图注、页眉页脚、跨页表格在文本流里与正文混在一起，硬切必然“图注与图分离”“表格被截两半”“两栏文字交叉拼接”。必须先做**版面分析（layout recognition）**，识别哪些区域是 title/text/table/figure/header/footer/reference/equation，机器才能判断文本块是否连续、哪里需要表格结构识别（TSR）[deepdoc/README.md:64-70]()<!-- anchor: or this part needs Table Structure Recognition(TSR) to process, or this part is a figure and described with this caption. … - Table -->。
+- **纯文本切分对“版式信息”完全盲视**。多栏 PDF、图注、页眉页脚、跨页表格在文本流里与正文混在一起，硬切必然“图注与图分离”“表格被截两半”“两栏文字交叉拼接”。必须先做**版面分析（layout recognition）**，识别哪些区域是 title/text/table/figure/header/footer/reference/equation，机器才能判断文本块是否连续、哪里需要表格结构识别（TSR）[deepdoc/README.md:64-70]()。
+  <!-- anchor: or this part needs Table Structure Recognition(TSR) to process, or this part is  … - Table -->
 
-- **扫描件 / 图片 / 纯图像文档没有“文本层”可切**。字符以像素存在，必须先 OCR 把像素转回文本，而 OCR 质量直接决定后续切分质量——所以 DeepDoc 的第一步是 OCR，而非切分 [deepdoc/README.md:38-45]()<!-- anchor: Our models are served on HuggingFace. If you have trouble downloading HuggingFace models, this might help!! … <a name="2"></a> -->。
+- **扫描件 / 图片 / 纯图像文档没有“文本层”可切**。字符以像素存在，必须先 OCR 把像素转回文本，而 OCR 质量直接决定后续切分质量——所以 DeepDoc 的第一步是 OCR，而非切分 [deepdoc/README.md:37-45]()。
+  <!-- anchor-base64:LS1tb2RlIHtsYXlvdXQsdHNyfSAgIFRhc2sgbW9kZTogbGF5b3V0IHJlY29nbml0aW9uIG9yIHRhYmxlIHN0cnVjdHVyZSByZWNvZ25pdGkg4oCmIDxhIG5hbWU9IjIiPjwvYT4= -->
 
-- **表格是“结构”不是“线性文本”**。真实表格有层级表头、跨行合并、投影行头；必须做 **TSR（Table Structure Recognition）** 识别 Column/Row/Header/Projected row header/Spanning cell，再把表格内容重组回 LLM 能看懂的句子序列 [deepdoc/README.md:88-101]()<!-- anchor: And the structure of a table might be very complex, like hierarchy headers, spanning cells and projected row headers. … The inputs could be directory to images or PDF, or an image or PDF. -->。
+- **表格是“结构”不是“线性文本”**。真实表格有层级表头、跨行合并、投影行头；必须做 **TSR（Table Structure Recognition）** 识别 Column/Row/Header/Projected row header/Spanning cell，再把表格内容重组回 LLM 能看懂的句子序列 [deepdoc/README.md:88-101]()。
+  <!-- anchor: And the structure of a table might be very complex, like hierarchy headers, span … The inputs could be directory to images or PDF, or an image or PDF.  -->
 
 三者叠加构成“先要在视觉/版面层理解文档，才谈得上切分”的根本矛盾。`rag/app/` 的一批 chunker（`naive/book/paper/presentation/tab` 等）就是为不同版式契约服务的模板；Go 侧 DSL 模板（`ingestion_pipeline_*.json`）则是对这套模板的**可编排化重构**（见下）。
 
-另一隐性痛点：**切分一旦黑盒，用户无法校验 / 修正质量**。README 头图 `chunking.gif` 展示“可介入、可解释的切分可视化”，把 “quality in” 变成可干预、可信赖的事 [README.md:121-124]()<!-- anchor: ### 🍱 **Template-based chunking** … - Plenty of template options to choose from. -->。
+另一隐性痛点：**切分一旦黑盒，用户无法校验 / 修正质量**。README 头图 `chunking.gif` 展示“可介入、可解释的切分可视化”，把 “quality in” 变成可干预、可信赖的事 [README.md:121-124]()。
+  <!-- anchor: ### 🍱 **Template-based chunking** … - Plenty of template options to choose from. -->
 
 ---
 
@@ -48,22 +61,29 @@ RAGFlow 的核心假设：**检索质量上限由解析 / 切分质量决定**�
 
 Go 版把摄取重构成**独立服务（`Ingestor`）+ 任务状态机 + worker 池 + 消息驱动**，而非入库时的同步函数：
 
-- `Ingestor` 持有 `maxConcurrency` 个 worker goroutine（默认 `runtime.NumCPU()`）、一个缓冲容量为 `maxConcurrency*2` 的 `taskChan`，并挂一个“数据集级知识编译 consumer”（`knowledgeCompile`）[internal/ingestion/service/ingestion_service.go:55-104]()<!-- anchor: type Ingestor struct { … compileWg sync.WaitGroup -->。
-- 启动时 `InitConsumer(TaskSubject)`（主题 `tasks.RAGFLOW`）、`startWorkerPool()` + `startDatasetKnowledgeCompile()`，再在主 goroutine 外跑 `consumeLoop()` [internal/ingestion/service/ingestion_service.go:180-199]()<!-- anchor: func (e *Ingestor) start() error { … e.startDatasetKnowledgeCompile() -->。
+- `Ingestor` 持有 `maxConcurrency` 个 worker goroutine（默认 `runtime.NumCPU()`）、一个缓冲容量为 `maxConcurrency*2` 的 `taskChan`，并挂一个“数据集级知识编译 consumer”（`knowledgeCompile`）[internal/ingestion/service/ingestion_service.go:57-114]()。
+  <!-- anchor: type Ingestor struct { … compileWg sync.WaitGroup -->
+- 启动时 `InitConsumer(TaskSubject)`（主题 `tasks.RAGFLOW`）、`startWorkerPool()` + `startDatasetKnowledgeCompile()`，再在主 goroutine 外跑 `consumeLoop()` [internal/ingestion/service/ingestion_service.go:202-221]()。
+  <!-- anchor: func (e *Ingestor) start() error { … e.startDatasetKnowledgeCompile() -->
 
-- 消费循环 `GetMessages(4)` 批量拉取，逐条交给 `processMessage` 做状态路由 [internal/ingestion/service/ingestion_service.go:231-275]()<!-- anchor: func (e *Ingestor) consumeLoop() { … e.kcEmbedding = embedding -->。
+- 消费循环 `GetMessages(4)` 批量拉取，逐条交给 `processMessage` 做状态路由 [internal/ingestion/service/ingestion_service.go:234-319]()。
+  <!-- anchor: func (e *Ingestor) consumeLoop() { … e.kcEmbedding = embedding -->
 
 这一层价值：慢解析不阻塞 API，异常可重投递、可取消、可心跳续命；多文档并发解析，而同一文档串行（靠 `ingestion_task` 唯一索引 + 状态机）。
 
 ### 管线化与可编排：从“硬编码 parser_id 分支”到“DSL 数据流”
 
-2025-10 的 “orchestrable ingestion pipeline” [README.md:98]()<!-- anchor: - 2025-10-15 Supports orchestrable ingestion pipeline. --> 把摄取从“一个 `parser_id` 对应一段 if/else”升级成**基于 dataflow canvas 的 DSL 图**：
+2025-10 的 “orchestrable ingestion pipeline” [README.md:98-98]() 把摄取从“一个 `parser_id` 对应一段 if/else”升级成**基于 dataflow canvas 的 DSL 图**：
+  <!-- anchor: - 2025-10-15 Supports orchestrable ingestion pipeline. … - 2025-10-15 Supports orchestrable ingestion pipeline. -->
 
-- `builtin_registry.go` 用 `//go:embed template/ingestion_pipeline_*.json` 内置 13 个摄取模板（general/book/manual/one/paper/presentation/table/qa/picture/laws/email/audio/knowledge_compiler）[internal/ingestion/pipeline/builtin_registry.go:16-37]()<!-- anchor: const builtinTemplatePrefix = "ingestion_pipeline_" … var builtinTemplateFS embed.FS -->。
+- `builtin_registry.go` 用 `//go:embed template/ingestion_pipeline_*.json` 内置 **12** 个摄取模板（general/book/manual/one/paper/presentation/table/qa/picture/laws/email/audio；`knowledge_compiler` 是 dataflow canvas 里的一个**组件**，不是内置模板）[internal/ingestion/pipeline/builtin_registry.go:16-37]()。v0.27.2 另把默认模板里组件 id 的 `_0` 后缀去掉（`2390b20d`），模板结构本身未变。
+  <!-- anchor: const builtinTemplatePrefix = "ingestion_pipeline_" … var builtinTemplateFS embed.FS -->
 - 模板即 DSL 数据流：`general` 为 `File → Parser → TokenChunker → Extractor → Tokenizer`（见 `ingestion_pipeline_general.json`）；模板带 `canvas_type: "Ingestion Pipeline"`、`canvas_category: "dataflow_canvas"`，与 Agent 的 dataflow canvas 共享 `internal/agent/runtime` 与 `internal/agent/canvas` 运行时。
-- 历史 `parser_id` 走别名兼容，“naive → general”使得存量数据集行无需迁移即可运行 [internal/ingestion/pipeline/builtin_registry.go:139-141]()<!-- anchor: func builtinAliases() map[string]string { … "naive": "general", -->。
+- 历史 `parser_id` 走别名兼容，“naive → general”使得存量数据集行无需迁移即可运行 [internal/ingestion/pipeline/builtin_registry.go:139-141]()。
+  <!-- anchor: func builtinAliases() map[string]string { … "naive": "general", -->
 
-`defaultRunDocumentTask` 中，无显式 `pipeline_id` 时走内置 DSL（`LoadBuiltinDSL(parserID)`）[internal/ingestion/service/ingestion_service.go:1087-1114]()<!-- anchor: pipelineID := strings.TrimSpace(docTaskCtx.PipelineID) … return dsl, parserID, nil -->。
+`defaultRunDocumentTask` 中，无显式 `pipeline_id` 时走内置 DSL（`LoadBuiltinDSL(parserID)`）[internal/ingestion/service/ingestion_service.go:1178-1205]()。
+  <!-- anchor: pipelineID := strings.TrimSpace(docTaskCtx.PipelineID) … return dsl, parserID, nil -->
 
 **放弃的替代方案**：直接演进 Python `rag/app` 的硬编码 chunker 选择。它虽直观，但难以组合、没有中途断点续传、无法向 UI 暴露节点级进度。DSL 化换来：每个组件 `init()` 注册进 `CategoryIngestion` 注册表（`wire.go` 汇总、`MustRegister`），管线可断点续传、可重跑、进度可分摊到每个节点。
 
@@ -80,15 +100,30 @@ Go 版把摄取重构成**独立服务（`Ingestor`）+ 任务状态机 + worker
 | `OneChunker` | 单块（整篇一个 chunk） | `rag/app/one.py` |
 | `TableChunker` / `PageChunker` | 表 / 页级 | `rag/app/table.py` |
 
-注册与分发集中在 `newChunkerByName` [internal/ingestion/component/chunker/common.go:36-65]()<!-- anchor: func newChunkerByName(name string, params map[string]any) (runtime.Component, error) { … return nil, fmt.Errorf("chunker: unknown component %q", name) -->。每个 chunker 通过 `init()` + `MustRegisterChunker` 登记；`imageUploadDecorator` 包裹真实 chunker，在切分后给每个 chunk 打**确定性 id** `common.ChunkID(docID, text)`（同文档同文本的重复 chunk 得到同一 id，索引端视为 upsert），并把内嵌图片字节上传到 MinIO [internal/ingestion/component/chunker/register.go:62-114]()<!-- anchor: type imageUploadDecorator struct { … return out, nil -->。
+注册与分发集中在 `newChunkerByName` [internal/ingestion/component/chunker/common.go:36-63]()。每个 chunker 通过 `init()` + `MustRegisterChunker` 登记；`imageUploadDecorator` 包裹真实 chunker，在切分后给每个 chunk 打**确定性 id** `common.ChunkID(docID, text)`（同文档同文本的重复 chunk 得到同一 id，索引端视为 upsert），并把内嵌图片字节上传到 MinIO [internal/ingestion/component/chunker/register.go:62-114]()。
+  <!-- anchor: func newChunkerByName(name string, params map[string]any) (runtime.Component, er … return nil, fmt.Errorf("chunker: unknown component %q", name) -->
+  <!-- anchor: type imageUploadDecorator struct { … return out, nil -->
 
 ### 多模态视觉：从“像素”到“文本”的最后一公里
 
-- **2025-03 多模态模型理解 PDF/DOCX 内图片** [README.md:102]()：`vision_language.go` 构造图片理解 prompt，把 `{{ language }}` 占位符替换成目标语言后交给 VLM 描述图片、并保留原文文字 [internal/ingestion/component/vision_language.go:38-45]()<!-- anchor: func renderFigureVisionLanguage(prompt, language string) string { … return "Describe this image in detail. Respond in " + normalizeVisionLanguage(language) + ". Preserve all visible text in its original language; do not translate it." -->。
-- **PDF 解析是 `parse_method` 可插拔后端**：支持 `deepdoc / plain_text / mineru / paddleocr / docling / opendataloader / somark / tcadp` [README.md:97]() [internal/parser/parser/pdf_parser_common.go:42-51]()<!-- anchor: var supportedPDFParseMethods = map[string]struct{}{ … "tcadp":          {}, -->。DeepDoc 是内置后端（pdfium/pdf_oxide + in-process native），其余是外部 HTTP 服务。其中 `paddleocr` 后端在 Python 侧已支持**自托管 PaddleX 部署**：`PADDLEOCR_BASE_URL` 指向自建 PaddleX pipeline、`PADDLEOCR_ACCESS_TOKEN` 做认证，按 URL 主机区分 hosted 服务与 self-hosted 同步部署的协议 [deepdoc/parser/paddleocr_parser.py:256-257]()<!-- anchor: self.base_url = base_url.rstrip("/") if base_url else os.getenv("PADDLEOCR_BASE_URL", _DEFAULT_BASE_URL) … self.access_token = access_token or os.getenv("PADDLEOCR_ACCESS_TOKEN") -->。
-- **Go 版 deepdoc**：`internal/deepdoc/parser/pdf` 是原生 Go 的版面分析（layout）、字符 box、表格结构识别、OCR、跨页渲染裁图。解析后端由 `resolveDocAnalyzer` 的策略决定，当前**生产路径仅认 in-process native 后端**——`deepDocAnalyzerFromEnv` 直取注册的 `NativeDocAnalyzerFactory`（[internal/parser/parser/pdf_parser_common.go:315-317]()<!-- anchor: func deepDocAnalyzerFromEnv() (deepdoctype.DocAnalyzer, error) { … return resolveDocAnalyzer(deepdoctype.NativeDocAnalyzerFactory) -->），拿不到 backend 时直接返回错误、绝不静默产出空版面/表格/OCR（[internal/parser/parser/pdf_parser_common.go:333-340]()<!-- anchor: func resolveDocAnalyzer(factory func() (deepdoctype.DocAnalyzer, bool)) (deepdoctype.DocAnalyzer, error) { … return nil, fmt.Errorf("deepdoc: no in-process DeepDoc backend available: build with -tags cgo and provide ORT + models") -->）。
+- **2025-03 多模态模型理解 PDF/DOCX 内图片** [README.md:102-102]()：`vision_language.go` 构造图片理解 prompt，把 `{{ language }}` 占位符替换成目标语言后交给 VLM 描述图片、并保留原文文字 [internal/ingestion/component/vision_language.go:38-45]()。
+  <!-- anchor: - 2025-03-19 Supports using a multi-modal model to make sense of images within P … - 2025-03-19 Supports using a multi-modal model to make sense of images within P -->
+  <!-- anchor: func renderFigureVisionLanguage(prompt, language string) string { … return "Describe this image in detail. Respond in " + normalizeVisionLanguage(la -->
+- **PDF 解析是 `parse_method` 可插拔后端**：支持 `deepdoc / plain_text / mineru / monkeyocrv2 / docling / opendataloader / tcadp parser / paddleocr / somark`（注意白名单里是带空格的 `tcadp parser`，不是 `tcadp`） [README.md:97-97]() [internal/parser/parser/pdf_parser_common.go:42-51]()。
+  <!-- anchor: - 2025-10-23 Supports MinerU & Docling as document parsing methods. … - 2025-10-23 Supports MinerU & Docling as document parsing methods. -->
+  <!-- anchor: var supportedPDFParseMethods = map[string]struct{}{ … "tcadp":          {}, -->
 
-  > **演进说明（dev-20260902）**：本段初版记录的形态——「Go 经 `inference.NewClient` 连接 Python `deepdoc/server` HTTP 服务做 DLA/TSR/OCR 推理、外层套 1h TTL Redis 推理缓存」——**已被上游移除**。`c28edde` 起 Go parser 改为调用 in-process native analyzer（`-tags cgo` 静态链接 ONNX Runtime 的 `internal/deepdoc/native` + `internal/deepdoc/parser/pdf/inference/native_analyzer`），`resolveDocAnalyzer` 注释明言原 `DEEPDOC_URL` 选择的外部 Python HTTP 服务「已从生产路径与测试套件整体移除，生产仅 in-process」（[internal/parser/parser/pdf_parser_common.go:319-326]()<!-- anchor: // resolveDocAnalyzer applies the DeepDoc backend policy: … // been removed entirely from both the production path and the test suite, so -->）。摄取侧由此不再有外部 HTTP 服务与 Redis 推理缓存依赖，改为模型目录 `DEEPDOC_MODEL_DIR`（默认 `rag/res/deepdoc`，模型权重快照由 `ragflow_deps/download_deps.py` 拉取）下的本地 ORT 会话；native 注册与启动期 fail-fast 见 [architecture.md](architecture.md) 演进说明。
+DeepDoc 是内置后端（pdfium/pdf_oxide + in-process native），其余是外部 HTTP 服务。其中 `paddleocr` 后端在 Python 侧已支持**自托管 PaddleX 部署**：`PADDLEOCR_BASE_URL` 指向自建 PaddleX pipeline、`PADDLEOCR_ACCESS_TOKEN` 做认证，按 URL 主机区分 hosted 服务与 self-hosted 同步部署的协议 [deepdoc/parser/paddleocr_parser.py:256-257]()。
+  <!-- anchor: self.base_url = base_url.rstrip("/") if base_url else os.getenv("PADDLEOCR_BASE_ … self.access_token = access_token or os.getenv("PADDLEOCR_ACCESS_TOKEN") -->
+- **Go 版 deepdoc**：`internal/deepdoc/parser/pdf` 是原生 Go 的版面分析（layout）、字符 box、表格结构识别、OCR、跨页渲染裁图。解析后端由 `resolveDocAnalyzer` 的策略决定，当前**生产路径仅认 in-process native 后端**——`deepDocAnalyzerFromEnv` 直取注册的 `NativeDocAnalyzerFactory`（[internal/parser/parser/pdf_parser_common.go:315-316]()），拿不到 backend 时直接返回错误、绝不静默产出空版面/表格/OCR（[internal/parser/parser/pdf_parser_common.go:333-339]()）。
+  <!-- anchor: func deepDocAnalyzerFromEnv() (deepdoctype.DocAnalyzer, error) { … return resolveDocAnalyzer(deepdoctype.NativeDocAnalyzerFactory) -->
+  <!-- anchor: func resolveDocAnalyzer(factory func() (deepdoctype.DocAnalyzer, bool)) (deepdoc … return nil, fmt.Errorf("deepdoc: no in-process DeepDoc backend available: build  -->
+
+  > **演进说明（dev-20260902）**：本段初版记录的形态——「Go 经 `inference.NewClient` 连接 Python `deepdoc/server` HTTP 服务做 DLA/TSR/OCR 推理、外层套 1h TTL Redis 推理缓存」——**已被上游移除**。`c28edde` 起 Go parser 改为调用 in-process native analyzer（`-tags cgo` 静态链接 ONNX Runtime 的 `internal/deepdoc/native` + `internal/deepdoc/parser/pdf/inference/native_analyzer`），`resolveDocAnalyzer` 注释明言原 `DEEPDOC_URL` 选择的外部 Python HTTP 服务「已从生产路径与测试套件整体移除，生产仅 in-process」（[internal/parser/parser/pdf_parser_common.go:319-326]()）。摄取侧由此不再有外部 HTTP 服务与 Redis 推理缓存依赖，改为模型目录 `DEEPDOC_MODEL_DIR`（默认 `rag/res/deepdoc`，模型权重快照由 `ragflow_deps/download_deps.py` 拉取）下的本地 ORT 会话；native 注册与启动期 fail-fast 见 [architecture.md](architecture.md) 演进说明。**v0.27.2 补充**：Go 侧权重从 `.onnx` 改为 FlatBuffer `.ort`（`{det,layout,tsr,rec}.ort` + `ocr.res`，[internal/common/environments.go:229-253]()），因为静态链接的 ORT 只支持 `.ort`；Python sidecar 与 `deepdoc/server/download_deps.py` 仍用 `.onnx`，两个清单故意分离。
+  <!-- anchor: // resolveDocAnalyzer applies the DeepDoc backend policy: … // been removed entirely from both the production path and the test suite, so -->
+  <!-- anchor: // DeepDocModelFiles is the single source of truth for the weights the … "ocr.res", -->
+  > 链接策略同步从 `--whole-archive` 改为 `--undefined=OrtGetApiBase` + `--dynamic-list`，让链接器的 archive-level GC 丢回未引用的 kernel（否则 ORT 的算子裁剪形同虚设），dynamic-list 落到固定路径 `.cache/ort_dynamic_list.txt` 以保证 `CGO_LDFLAGS` 可复现（[build.sh:521-537]()）。
+  <!-- anchor: # Statically link libonnxruntime*.a into the binary. The org Go binding … # is required or supported at runtime; there is no dynamic .so fallback. -->
 
 **关键权衡**：内置 DeepDoc 保开箱体验（本机推理），而外部解析器带来更强解析力却引入外部服务依赖、网络与密钥配置；`PDFParser` 因此要为每个 `parse_method` 维持一整套配置字段——这是“解析即插即拔”的代价。
 
@@ -98,24 +133,32 @@ Go 版把摄取重构成**独立服务（`Ingestor`）+ 任务状态机 + worker
 
 ### 任务模型：`IngestionTask`
 
-一个文档一条 `ingestion_task` 行，是队列 + 状态机的“制度账本”：`ID/UserID/DocumentID/DatasetID`（主键、属主、文档、知识库）、`Schema`（JSONMap 校验 / 元数据）、`Status`（状态机）、`ComponentTotal`（DSL 节点数 = 进度分母）[internal/entity/ingestion_task.go:19-32]()<!-- anchor: type IngestionTask struct { … BaseModel -->。
+一个文档一条 `ingestion_task` 行，是队列 + 状态机的“制度账本”：`ID/UserID/DocumentID/DatasetID`（主键、属主、文档、知识库）、`Schema`（JSONMap 校验 / 元数据）、`Status`（状态机）、`ComponentTotal`（DSL 节点数 = 进度分母）[internal/entity/ingestion_task.go:19-31]()。
+  <!-- anchor: type IngestionTask struct { … BaseModel -->
 
-配套 `IngestionTaskLog`（`phase: 0 started / 1 done / 2 errored` + `Component` + `Message`）记录组件级生命周期与 run-count 检查点 [internal/entity/ingestion_task.go:39-51]()<!-- anchor: type IngestionTaskLog struct { … return "ingestion_task_log" -->。任务状态常量 `CREATED/RUNNING/COMPLETED/FAILED/STOPPED/STOPPING` 定义在 `internal/common/constants.go` [internal/common/constants.go:33-39]()<!-- anchor: CREATED   = "CREATED" … STOPPING  = "STOPPING" -->。
+配套 `IngestionTaskLog`（`phase: 0 started / 1 done / 2 errored` + `Component` + `Message`）记录组件级生命周期与 run-count 检查点 [internal/entity/ingestion_task.go:39-51]()。任务状态常量 `CREATED/RUNNING/COMPLETED/FAILED/STOPPED/STOPPING` 定义在 `internal/common/constants.go` [internal/common/constants.go:33-39]()。
+  <!-- anchor: type IngestionTaskLog struct { … return "ingestion_task_log" -->
+  <!-- anchor: CREATED   = "CREATED" … STOPPING  = "STOPPING" -->
 
 ### 文档模型：`Document`
 
-摄取的目标元数据载体：`ParserID`（内置模板标识）、`PipelineID`（自定义管线）、`ParserConfig`（parse_method / 切分配置）、`Progress`、`TokenNum`、`ChunkNum`、`ContentHash` 等 [internal/entity/document.go:22-46]()<!-- anchor: type Document struct { … BaseModel -->。
+摄取的目标元数据载体：`ParserID`（内置模板标识）、`PipelineID`（自定义管线）、`ParserConfig`（parse_method / 切分配置）、`Progress`、`TokenNum`、`ChunkNum`、`ContentHash` 等 [internal/entity/document.go:22-45]()。
+  <!-- anchor: type Document struct { … BaseModel -->
 
 ### 任务上下文：`TaskContext`
 
-把 `ingestion_task` 行加载成 worker 的执行边界，沿 FK 链带上 `Doc / KB / Tenant`、`PipelineID`、MQ `Handle` 与 `Kind`（`Ingestion | Memory` 两类执行路径）。`LoadFromIngestionTask` 沿 `document → kb → tenant` 加载并解析 `pipelineID` [internal/ingestion/task/task_context.go:45-140]()<!-- anchor: type TaskContext struct { … return "" -->。
+把 `ingestion_task` 行加载成 worker 的执行边界，沿 FK 链带上 `Doc / KB / Tenant`、`PipelineID`、MQ `Handle` 与 `Kind`（`Ingestion | Memory` 两类执行路径）。`LoadFromIngestionTask` 沿 `document → kb → tenant` 加载并解析 `pipelineID` [internal/ingestion/task/task_context.go:45-164]()。
+  <!-- anchor: type TaskContext struct { … return "" -->
 
 ### 解析结果与 chunk 结构
 
-- `schema.Page`：解析器输出的一页（`text` + `doc_type_kwd` + 可选 `image` / `positions` / `page_number`），是 parser 与 chunker 之间的中间形态；`jsonItemsToPages` 把解析 JSON 逐项转成一页、并按 0 基顺序赋 `page_number` 保证确定性合并 [internal/ingestion/component/parser.go:333-357]()<!-- anchor: // Inputs returns the static parameter metadata. The component … //	name    string        — carried over from the upstream file/document -->。
-- `ChunkDoc`：切分后进入 tokenizer 的 chunk 结构，显式字段含 `Text`、`ContentWithWeight`、`DocTypeKWD`、`TKNums`、`Positions`、`ImgID`，动态字段进 `Extra` 保留前向兼容 [internal/ingestion/component/schema/chunk_types.go:101-128]()<!-- anchor: type ChunkDoc struct { … Extra             map[string]json.RawMessage `json:"-"` -->。
+- `schema.Page`：解析器输出的一页（`text` + `doc_type_kwd` + 可选 `image` / `positions` / `page_number`），是 parser 与 chunker 之间的中间形态；`jsonItemsToPages` 把解析 JSON 逐项转成一页、并按 0 基顺序赋 `page_number` 保证确定性合并 [internal/ingestion/component/parser.go:335-357]()。
+  <!-- anchor: // Inputs returns the static parameter metadata. The component … //	name    string        — carried over from the upstream file/document -->
+- `ChunkDoc`：切分后进入 tokenizer 的 chunk 结构，显式字段含 `Text`、`ContentWithWeight`、`DocTypeKWD`、`TKNums`、`Positions`、`ImgID`，动态字段进 `Extra` 保留前向兼容 [internal/ingestion/component/schema/chunk_types.go:101-128]()。
+  <!-- anchor: type ChunkDoc struct { … Extra             map[string]json.RawMessage `json:"-"` -->
 
-- 索引文档字段（写检索引擎前，`ProcessChunksForPipeline` 补充）：`doc_id`、`docnm_kwd`、`create_time`、`create_timestamp_flt`、确定性 `id`、把 `text` 更名为 `content_with_weight`、处理 `positions` [internal/ingestion/task/indexdoc/process.go:69-95]()<!-- anchor: func ProcessChunksForPipeline( … RenameTextToContentWithWeight(ck) -->。
+- 索引文档字段（写检索引擎前，`ProcessChunksForPipeline` 补充）：`doc_id`、`docnm_kwd`、`create_time`、`create_timestamp_flt`、确定性 `id`、把 `text` 更名为 `content_with_weight`、处理 `positions` [internal/ingestion/task/indexdoc/process.go:69-95]()。
+  <!-- anchor: func ProcessChunksForPipeline( … RenameTextToContentWithWeight(ck) -->
 
 ---
 
@@ -155,44 +198,115 @@ flowchart TD
 
 ### 分段链路拆解
 
-**上传落库**：`UploadLocalDocuments` 把文件字节 `Put` 到对象存储，`bucket=kb.ID, key=location` [internal/service/document/document_upload.go:91]()<!-- anchor: if err = storageImpl.Put(ctx, kb.ID, location, blob); err != nil { -->。
+**上传落库**：`UploadLocalDocuments` 把文件字节 `Put` 到对象存储，`bucket=kb.ID, key=location` [internal/service/document/document_upload.go:91-91]()。
+  <!-- anchor: if err = storageImpl.Put(ctx, kb.ID, location, blob); err != nil { … if err = storageImpl.Put(ctx, kb.ID, location, blob); err != nil { -->
 
-**任务入队**：`IngestionTaskService.CreateAndEnqueue` 为每文档建 `ingestion_task`（FAILED/STOPPED 旧任务可复用为 CREATED 以支持重试），`enqueueTask` 向 `tasks.RAGFLOW` 发消息 [internal/service/ingestion_task_service.go:388-512]()<!-- anchor: func (s *IngestionTaskService) CreateAndEnqueue(ctx context.Context, task *entity.IngestionTask) (*entity.IngestionTask, error) { … return s.taskPublisher.PublishTaskMessage("tasks.RAGFLOW", taskMessage) -->。
+**任务入队**：`IngestionTaskService.CreateAndEnqueue` 为每文档建 `ingestion_task`（FAILED/STOPPED 旧任务可复用为 CREATED 以支持重试），`enqueueTask` 向 `tasks.RAGFLOW` 发消息 [internal/service/ingestion_task_service.go:393-514]()。
+  <!-- anchor: func (s *IngestionTaskService) CreateAndEnqueue(ctx context.Context, task *entit … return nil, fmt.Errorf("enqueue task %s: %w (rollback failed: %w)", retried.ID,  -->
 
-**消费与调度**：`processMessage` 做状态路由——非摄取任务 Ack、缺失任务 Ack、`ErrTaskNotFound` 跳过、已是 `RUNNING` 时用 `claimTask` 防止 MQ 重投递导致的重复执行 [internal/ingestion/service/ingestion_service.go:341-470]()<!-- anchor: func (e *Ingestor) processMessage(handle common.TaskHandle) { … // first few parse" defect. -->。
+**消费与调度**：`processMessage` 做状态路由——非摄取任务 Ack、缺失任务 Ack、`ErrTaskNotFound` 跳过、已是 `RUNNING` 时用 `claimTask` 防止 MQ 重投递导致的重复执行 [internal/ingestion/service/ingestion_service.go:341-469]()。
+  <!-- anchor: mq := engine.GetMessageQueueEngine() … return -->
 
-**worker 执行 + 心跳/取消**：`executeTask` 为每个任务建立可取消 context，启动 `pollCancel` goroutine 轮询 Redis `{task_id}-cancel` 旗标与 DB `STOPPING` 状态；`runTask` 推进 run-count、清旧组件进度、跑管线 [internal/ingestion/service/ingestion_service.go:608-1070]()<!-- anchor: func (e *Ingestor) executeTask(ctx context.Context, taskCtx *taskpkg.TaskContext) { … return true -->。
+> **演进说明（v0.27.2）**：同一套状态机在同一版里被**换掉了调度骨架**，任务分发从「批量预取 + 阻塞投递」改为**worker 拉取式**。旧路径是 `consumeLoop` 调 `GetMessages` 批量取一批、把 `*TaskContext` 阻塞式塞进容量 `maxConcurrency*2` 的 `taskChan`，靠阻塞发送实现背压（`fetchBudget` 用剩余容量裁剪批量）。新路径只有一个 dispatcher 协程：先等一个空闲 worker（`workerQueue <- *worker`），再同步 `PullMessage`（1s deadline）投进该 worker 私有 `inbox`（[internal/ingestion/service/ingestion_service.go:231-234]()）；worker 池与循环见 [internal/ingestion/service/ingestion_service.go:549-560]()、
+  <!-- anchor: // consumeLoop is the worker dispatcher for tasks.RAGFLOW. It waits for an … func (e *Ingestor) consumeLoop() { -->
+  <!-- anchor: func (e *Ingestor) startWorkerPool() { … func (e *Ingestor) workerLoop(w *worker) { -->
+> [internal/ingestion/service/ingestion_service.go:560-576]()，单个 handle 的完整生命周期（取 handle→起 Heartbeat→执行→结算）收敛在 `handleAndExecute` 里（[internal/ingestion/service/ingestion_service.go:379-400]()）。
+  <!-- anchor: func (e *Ingestor) workerLoop(w *worker) { … return -->
+  <!-- anchor: // handleAndExecute owns one handle from its hand-off to final settlement. It … defer e.unregisterLease(hb) -->
+> `engine.MessageQueue` 接口随之从「取一批」改成 pull-only 的 `PullMessages(ctx,n)` / `PullMessage(ctx)`（[internal/engine/engine.go:111-118]()、
+  <!-- anchor: type MessageQueue interface { … ListMessages(messageType string, pending bool) ([]map[string]string, error) -->
+> NATS 实现 [internal/engine/nats/nats.go:260-269]()），新增管理端批量上限 `MaxManualPullMessages=100`（[internal/common/task.go:27-29]()）。**收益**：结构性消除预取——任一时刻只有一次未决 broker 请求，不再需要「批量容量启发式」；**代价**：dispatcher 串行化，worker 全闲时一次 pull 往返（含最多 1s 空拉）成为时延下界。
+  <!-- anchor: // PullMessages fetches up to messageCount messages before ctx expires. … return nil, errors.New("pull messages context must have a deadline") -->
+  <!-- anchor: // MaxManualPullMessages is the largest task batch the administrative queue … MaxManualPullMessages = 100 -->
+>
+> 同一版把心跳与租约**类型化**：内联 `startHeartbeat` 闭包换成可复用的 `Heartbeat` 类型（契约是 `Stop` **阻塞直到没有 InProgress 在途**，因此 Ack/Nack 与续约不再竞态），文档任务与内存任务共用同一套租约语义（[internal/ingestion/service/heartbeat.go:28-37]()、[internal/ingestion/service/heartbeat.go:100-122]()）。
+  <!-- anchor: // Heartbeat renews one broker message's AckWait deadline by calling … // same message. -->
+  <!-- anchor: // Stop signals the renewal goroutine to exit and BLOCKS until it has, so no … func (h *Heartbeat) loop() { -->
+> 内存任务身份改为**信封里的 taskID**（不再从 payload 猜 id，[internal/ingestion/task/task_context.go:114-122]()），入队即 claim、结算收敛为单一 deferred 闭环。
+  <!-- anchor: // ID returns the task identifier for claim/release and logging. It is the … return c.taskID -->
+> 关机路径新增 `abandoned` 标记：被放弃的 lease 在 `ackHandle/nackHandle` 里**不结算消息**，留给 broker 重投（[internal/ingestion/service/ingestion_service.go:507-549]()、[internal/ingestion/service/ingestion_service.go:1230-1234]()）。
+  <!-- anchor: func (e *Ingestor) registerLease(hb *Heartbeat) { … func (e *Ingestor) startWorkerPool() { -->
+  <!-- anchor: // Stop first stops worker registration and the dispatcher's Pull, then cancels … e.dispatchCancel() -->
+>
+> 第三处是**检查点粒度的重定价**：`WithInterruptAfterNonTerminalCpn()`（每个非终态组件后都打断/恢复）收敛为**只在 Parser 之后打断一次**（[internal/ingestion/pipeline/pipeline.go:441-457]()），checkpoint TTL 从 24h 提到 7d（[internal/ingestion/pipeline/pipeline.go:230-236]()）；
+  <!-- anchor: compileOpts = append(compileOpts, … // Run-level setups (keyed by cpnID) override the DSL-baked component -->
+  <!-- anchor: // defaultCheckpointTTL is the expiry applied to the eino checkpoint payload … var defaultCheckpointTTL = 7 * 24 * time.Hour -->
+> 恢复后 chunker 会重跑，但昂贵的 LLM/embedding 结果由新增的 `internal/ingestion/chunkcache` 按 `(kind, modelID, chunkID)` 记忆（TTL 7d、`kc:manifest:<taskID>` 逐任务登记、全部持久化成功后才 `PurgeTask`）兜住，因此「少打断」不等于「多付费」（[internal/ingestion/chunkcache/chunkcache.go:45-48]()、[internal/ingestion/chunkcache/chunkcache.go:76-102]()、
+  <!-- anchor: // TTL bounds how long a cached per-chunk result stays useful. It matches the … const TTL = 7 * 24 * time.Hour -->
+  <!-- anchor: // Key builds the cache key for one (kind, model, chunk) triple, mixing any … h := xxhash.New() -->
+> [internal/ingestion/task/pipeline_executor.go:327-336]()）。注意 `WithRequireResume` 与 Redis checkpoint **都没有被移除**，每任务 Redis cancel flag 也仍是主取消信号，新机制是叠加而非替换。
+  <!-- anchor: // Persist is now fully durable: every failure-capable step above … chunkcache.PurgeTask(ctx, chunkcache.Client(), s.taskCtx.IngestionTask.ID) -->
+>
+> 第四处是**重解析语义对齐 Python**：任务处于 `SCHEDULED/RUNNING/STOPPING` 时再次发起解析不再直接报「already exists」，而是走 `supersedeAndRetryTask`——先 `RequestStop`，最多等 8s（250ms 轮询）转终态，超时则 `forceTerminalTask` 强制收尾，随后清掉陈旧的 Redis cancel flag 并以 `CREATED` 重新入队，同时放开 `COMPLETED→CREATED`（[internal/service/ingestion_task_service.go:423-424]()、[internal/service/ingestion_task_service.go:453-469]()）。
+  <!-- anchor: case common.SCHEDULED, common.RUNNING, common.STOPPING: … return s.supersedeAndRetryTask(ctx, existing) -->
+  <!-- anchor: // (SCHEDULED/RUNNING/STOPPING) and re-queues it for a fresh parse, mirroring … func (s *IngestionTaskService) supersedeAndRetryTask(ctx context.Context, existi -->
+> worker 侧新增运行所有权校验 `ownsTaskRun`：启动时记下本 run 的 `run_count`，四条终态写入前都比对，被新 run 超越就跳过，避免僵尸 worker 覆盖新 run 的状态（[internal/ingestion/service/ingestion_service.go:698-714]()）。副作用是一次 ingest 请求最坏阻塞 8s。
+  <!-- anchor: // ownsTaskRun reports whether the calling run still owns the task: a newer … return current == myRun -->
+>
+> 最后是**「排队中」状态可见性**：文档列表 `LEFT JOIN` 最新一条 `ingestion_task`（用 `NOT EXISTS` 取「无更新行」的那条，排序键 `create_time DESC, id DESC`）透出 `ingestion_status` 投影列，并新增 `has_active_tasks`（查询失败时 fail-open 为 true，宁可多轮询也不漏状态）与 `CountActiveByDatasetID`（[internal/dao/document.go:140-162]()、[internal/dao/ingestion.go:219-241]()）。
+  <!-- anchor: // only the newest row, with ID as a deterministic tie-breaker for equal … listQuery = applyDocumentListFilters(listQuery, opts, true) -->
+  <!-- anchor: // CountActiveByDatasetID returns the number of ingestion tasks for the … return count, err -->
+> 配套新增复合索引 `idx_ingestion_task_dataset_status(dataset_id,status)`（[internal/entity/ingestion_task.go:22-30]()），并让不带 `--migrate` 的启动也 `AutoMigrate` Go 专有运行表（[internal/dao/database.go:298-310]()）。
+  <!-- anchor: DocumentID string  `gorm:"column:document_id;size:32;not null;uniqueIndex:idx_in … ComponentTotal int `gorm:"column:component_total;default:0" json:"component_tota -->
+  <!-- anchor: // autoMigrateRuntimeModels ensures Go-exclusive runtime tables exist even if … return nil -->
+> 要区分的是：`ingestion_status` **不是物理列**，它只是 `DocumentListItem` 的查询投影（[internal/entity/document.go:73-73]()）。
+  <!-- anchor: IngestionStatus *string    `gorm:"column:ingestion_status" json:"ingestion_statu … IngestionStatus *string    `gorm:"column:ingestion_status" json:"ingestion_statu -->
 
-**Pipeline 编排**：`defaultRunDocumentTask` 加载上下文、解析管线、构造 `PipelineExecutor`，内置模板用 `LoadBuiltinDSL`；执行时 `WithRequireResume()` + `WithProgressSink`，把进度回灌到服务层 [internal/ingestion/service/ingestion_service.go:1081-1122]()<!-- anchor: func (e *Ingestor) defaultRunDocumentTask(ctx context.Context, ingestionTask *entity.IngestionTask) error { … return nil -->。
+  <!-- anchor: mq := engine.GetMessageQueueEngine() … return -->
 
-`Pipeline.Run` 编译 dataflow canvas：要求续传但无法解析到 checkpoint store 时直接报错拒绝启动 [internal/ingestion/pipeline/pipeline.go:430-442]()<!-- anchor: if p.requireResume && store == nil { … canvas.WithInterruptAfterNonTerminalCpn(), -->；可续传路径先 `guardDSLChange`（DSL 或 override 变更则丢弃陈旧 checkpoint），再 `runResumable` 循环执行 [internal/ingestion/pipeline/pipeline.go:433-497]()<!-- anchor: resumable := store != nil … return p.runResumable(ctx, runCtx, current, compiled, store, tracker, runState) -->。
+**worker 执行 + 心跳/取消**：`executeTask` 为每个任务建立可取消 context，启动 `pollCancel` goroutine 轮询 Redis `{task_id}-cancel` 旗标与 DB `STOPPING` 状态；`runTask` 推进 run-count、清旧组件进度、跑管线 [internal/ingestion/service/ingestion_service.go:653-1161]()。
+  <!-- anchor: func (e *Ingestor) executeTask(ctx context.Context, taskCtx *taskpkg.TaskContext … return true -->
 
-**Parser 分流**：`parser_dispatch.go` 按后缀解析出 `fileType`，`GetParser` 分发到具体格式解析器 [internal/parser/parser/parser_type.go:31-68]()<!-- anchor: func GetParser(fileType utility.FileType) (ParseResultProducer, error) { … return nil, fmt.Errorf("unsupported file type: %s", fileType) -->；`ParseWithResult` 执行 [internal/ingestion/component/parser_dispatch.go:200-224]()<!-- anchor: p, err := parser.GetParser(fileType) … HTML:         res.HTML, -->。PDF 走 DeepDoc（OCR/版面/TSR），`parsePDFWithDeepDoc` 调用 `deepDocAnalyzerFromEnv()` [internal/parser/parser/pdf_parser_common.go:677-707]()<!-- anchor: func parsePDFWithDeepDoc(ctx context.Context, filename string, data []byte, parseFn func(context.Context, []byte, deepdoctype.DocAnalyzer) (*deepdoctype.ParseResult, error)) ParseResult { … return res -->。
+**Pipeline 编排**：`defaultRunDocumentTask` 加载上下文、解析管线、构造 `PipelineExecutor`，内置模板用 `LoadBuiltinDSL`；执行时 `WithRequireResume()` + `WithProgressSink`，把进度回灌到服务层 [internal/ingestion/service/ingestion_service.go:1172-1213]()。
+  <!-- anchor: func (e *Ingestor) defaultRunDocumentTask(ctx context.Context, ingestionTask *en … return nil -->
 
-**切分 → 元数据 → 向量**：Chunker 产出 `chunks`（output_format="chunks"），打好确定性 id、上传内嵌图；Extractor 抽取关键词/问题/摘要；Tokenizer 用 `Encode` 批量做 embedding [internal/ingestion/task/embedder.go:48-58]()<!-- anchor: func (e *embedder) Encode(ctx context.Context, texts []string) ([]componentpkg.EmbeddingResult, error) { … for i, v := range embeds { -->。
+`Pipeline.Run` 编译 dataflow canvas：要求续传但无法解析到 checkpoint store 时直接报错拒绝启动 [internal/ingestion/pipeline/pipeline.go:434-446]()；可续传路径先 `guardDSLChange`（DSL 或 override 变更则丢弃陈旧 checkpoint），再 `runResumable` 循环执行 [internal/ingestion/pipeline/pipeline.go:437-516]()。
+  <!-- anchor: if p.requireResume && store == nil { … // Extractor / Tokenizer stages do NOT take a checkpoint of their own — -->
+  <!-- anchor: resumable := store != nil … return p.runResumable(ctx, runCtx, current, compiled, store, tracker, runState) -->
 
-**索引写入 + 编译产物**：`processOutput` 归一 chunk → `ProcessChunksForPipeline` 补索引字段 → `indexWriter.Write(chunks)` 批量写检索引擎 [internal/ingestion/task/pipeline_executor.go:224-295]()<!-- anchor: func (s *PipelineExecutor) processOutput(ctx context.Context, pipelineOutput map[string]any, start time.Time) (*PipelineResult, error) { … return nil, fmt.Errorf("persist Wiki active MAP state: %w", err) -->。带 `compile_kwd` 的编译产物被标 `available_int=0` 隐藏 [internal/ingestion/task/pipeline_executor.go:435-538]()<!-- anchor: func markCompiledProductsHidden(chunks []map[string]any) { … ck["available_int"] = 0 -->，并 `PublishCompleted` 通知数据集级 consumer 去合并 [internal/ingestion/task/pipeline_executor.go:311-314]()<!-- anchor: eventVariants := mergeCompiledVariants(oldCompiledVariants, compiledVariants(chunks)) … common.Logger.Warn(fmt.Sprintf("knowledge_compile: publish doc_completed for %s failed: %v", s.taskCtx.Doc.ID, err)) -->。
+**Parser 分流**：`parser_dispatch.go` 按后缀解析出 `fileType`，`GetParser` 分发到具体格式解析器 [internal/parser/parser/parser_type.go:31-66]()；`ParseWithResult` 执行 [internal/ingestion/component/parser_dispatch.go:200-224]()。
+  <!-- anchor: func GetParser(fileType utility.FileType) (ParseResultProducer, error) { … return nil, fmt.Errorf("unsupported file type: %s", fileType) -->
+  <!-- anchor: p, err := parser.GetParser(fileType) … HTML:         res.HTML, -->
 
-**回写文档**：`docState.apply` 合并（LLM/内建）元数据，累加文档 + 数据集 chunk/token 计数 [internal/ingestion/service/doc_state.go:56-78]()<!-- anchor: func (u *docStateUpdater) apply(ctx context.Context, r *taskpkg.PipelineResult) { … common.Warn(fmt.Sprintf("failed to apply doc counts: %v", err)) -->。
+PDF 走 DeepDoc（OCR/版面/TSR），`parsePDFWithDeepDoc` 调用 `deepDocAnalyzerFromEnv()` [internal/parser/parser/pdf_parser_common.go:677-707]()。
+  <!-- anchor: func parsePDFWithDeepDoc(ctx context.Context, filename string, data []byte, pars … return res -->
 
-**Ack / 终态**：`completeTask` 用 backoff 重试 `MarkCompleted`；若任务已离开 `RUNNING`（并发 stop 等），`settleToTerminal` 按当前状态收敛，最终 Ack [internal/ingestion/service/ingestion_service.go:800-1122]()<!-- anchor: func (e *Ingestor) completeTask(ctx context.Context, taskID string) error { … return nil -->。
+**切分 → 元数据 → 向量**：Chunker 产出 `chunks`（output_format="chunks"），打好确定性 id、上传内嵌图；Extractor 抽取关键词/问题/摘要；Tokenizer 用 `Encode` 批量做 embedding [internal/ingestion/task/embedder.go:48-58]()。
+  <!-- anchor: func (e *embedder) Encode(ctx context.Context, texts []string) ([]componentpkg.E … for i, v := range embeds { -->
+
+**索引写入 + 编译产物**：`processOutput` 归一 chunk → `ProcessChunksForPipeline` 补索引字段 → `indexWriter.Write(chunks)` 批量写检索引擎 [internal/ingestion/task/pipeline_executor.go:225-296]()。
+  <!-- anchor: func (s *PipelineExecutor) processOutput(ctx context.Context, pipelineOutput map … return nil, fmt.Errorf("persist Wiki active MAP state: %w", err) -->
+
+带 `compile_kwd` 的编译产物被标 `available_int=0` 隐藏 [internal/ingestion/task/pipeline_executor.go:448-551]()，并 `PublishCompleted` 通知数据集级 consumer 去合并 [internal/ingestion/task/pipeline_executor.go:312-315]()。
+  <!-- anchor: func markCompiledProductsHidden(chunks []map[string]any) { … ck["available_int"] = 0 -->
+  <!-- anchor: eventVariants := mergeCompiledVariants(oldCompiledVariants, compiledVariants(chu … common.Logger.Warn(fmt.Sprintf("knowledge_compile: publish doc_completed for %s  -->
+
+**回写文档**：`docState.apply` 合并（LLM/内建）元数据，累加文档 + 数据集 chunk/token 计数 [internal/ingestion/service/doc_state.go:56-80]()。
+  <!-- anchor: func (u *docStateUpdater) apply(ctx context.Context, r *taskpkg.PipelineResult)  … // mergeDocMetadata reads existing metadata, unions it with the freshly -->
+
+**Ack / 终态**：`completeTask` 用 backoff 重试 `MarkCompleted`；若任务已离开 `RUNNING`（并发 stop 等），`settleToTerminal` 按当前状态收敛，最终 Ack [internal/ingestion/service/ingestion_service.go:922-1213]()。
+  <!-- anchor: func (e *Ingestor) completeTask(ctx context.Context, taskID string) error { … return nil -->
 
 ### 数据集级后处理（knowledge_compile）
 
-`Ingestor` 另起 `kcConcurrency` 个 `knowledge_compile.Consumer` worker，驱动“数据集级闭合批次 → 合并 → ack”。选主靠 MySQL `knowledge_compile_docs` 调度行（而非 broker），同一 KB 由同一 worker 串行、不同 KB 并行；`processOutput` 的 `PublishCompleted` 就是喂给它的入口 [internal/ingestion/knowledge_compile/consumer.go:104-120]()<!-- anchor: // Run is one owned worker loop (Option E §11.5/§11.7): it wakes on NATS notify … case datasetID, ok := <-notifyCh: -->。
+`Ingestor` 另起 `kcConcurrency` 个 `knowledge_compile.Consumer` worker，驱动“数据集级闭合批次 → 合并 → ack”。选主靠 MySQL `knowledge_compile_docs` 调度行（而非 broker），同一 KB 由同一 worker 串行、不同 KB 并行；`processOutput` 的 `PublishCompleted` 就是喂给它的入口 [internal/ingestion/knowledge_compile/consumer.go:104-120]()。
+  <!-- anchor: // Run is one owned worker loop (Option E §11.5/§11.7): it wakes on NATS notify … case datasetID, ok := <-notifyCh: -->
 
 ### 任务队列驱动、重试与重新解析
 
 - **驱动**：NATS（`engine.GetMessageQueueEngine`，主题 `tasks.RAGFLOW`）投递 `{TaskID, TaskType}`；`GetMessages(4)` 批量拉取，`Ack/Nack` 控制投递语义。
 - **重试**：worker 内业务失败分“终态失败（Ack，不重投）”与“瞬时失败（Nack，重投递）”两条路。
-- **重新解析**：对已 `FAILED`/`STOPPED` 的文档再次 `CreateAndEnqueue`，会复用旧任务行置回 `CREATED`、清 Redis cancel 旗标、重发队列 [internal/service/ingestion_task_service.go:393-419]()<!-- anchor: if existing != nil { … return nil, fmt.Errorf("document id %s already exists, status: %s, task id: %s", task.DocumentID, existing.Status, existing.ID) -->。新 run 通过 `IncrementRunCount` + `ClearComponentProgress` + Redis checkpoint 断点续传实现“已完成节点不重做” [internal/ingestion/service/ingestion_service.go:710-754]()<!-- anchor: if err := e.ingestionTaskSvc.IncrementRunCount(dbCtx, task.ID); err != nil { … return nil // Delete returns bool; false may mean "key not found" or "error" -->。
+- **重新解析**：对已 `FAILED`/`STOPPED` 的文档再次 `CreateAndEnqueue`，会复用旧任务行置回 `CREATED`、清 Redis cancel 旗标、重发队列 [internal/service/ingestion_task_service.go:398-426]()。新 run 通过 `IncrementRunCount` + `ClearComponentProgress` + Redis checkpoint 断点续传实现“已完成节点不重做” [internal/ingestion/service/ingestion_service.go:807-856]()。
+  <!-- anchor: if existing != nil { … return nil, fmt.Errorf("document id %s already exists, status: %s, task id: %s", -->
+  <!-- anchor: if err := e.ingestionTaskSvc.IncrementRunCount(dbCtx, task.ID); err != nil { … return nil // Delete returns bool; false may mean "key not found" or "error" -->
 
 ---
 
 ## 模块协同
 
 - **与 `internal/agent/canvas` + `internal/agent/runtime`（dataflow 运行时）**：摄取 DSL 复用 Agent 的 canvas 编译 / 执行 / checkpoint 机制（`Compile`、`WithCheckPointStore`、`CanvasState.Globals`），多处注释直接引用 port 计划文档。
-- **与 `internal/storage`**：文件字节的 PUT/GET 对象存储抽象，Parser 取二进制、chunker 再取源来裁图，统一走 `Storage` 接口（MinIO/S3/OSS/GCS/Azure）[internal/storage/types.go:58-103]()<!-- anchor: // Storage defines the interface for storage operations … Close() error -->。
+- **与 `internal/storage`**：文件字节的 PUT/GET 对象存储抽象，Parser 取二进制、chunker 再取源来裁图，统一走 `Storage` 接口（MinIO/S3/OSS/GCS/Azure）[internal/storage/types.go:58-102]()。
+  <!-- anchor: // Storage defines the interface for storage operations … Close() error -->
 - **与 `internal/engine`**：检索 / 写入引擎抽象（ES/Infinity/SereneDB/OceanBase/ClickHouse），`InsertChunks` 是摄取侧的写入入口；`knowledge_compile` 的 reader/writer 同样基于 `engine`。
 - **与 `internal/service`（DocumentService / IngestionTaskService / MemoryMessageService）**：摄取是“任务账本”的消费者与文档状态的生产者；`doc_state.go` 依赖 DocumentService 回写文档。
 - **与 Python 引擎层**：Go 是新生代主服务，Python 承担传统 `deepdoc/vision`（识别模型）、`deepdoc/server`（DeepDoc HTTP 服务，Go 经 `EnvDeepDocURL` 调用）、`rag/flow` / `rag/app` 传统切分器。战略方向是“Go 侧逐步把 Python 的解析 / 切分 / 编排平替成原生实现”——`parser.go` 大量 “WHAT IS / NOT YET PORTED” 注释即是证据。
@@ -205,19 +319,26 @@ flowchart TD
 ### 决策一：任务状态机 + worker 池 + 断点续传取代“入库同步解析”
 
 **换来**：解析不阻塞 API、可并发、可取消、可心跳 / 超时、MQ 重投递容错、断点续传（`WithRequireResume` + Redis checkpoint）实现“重跑不重做已完成节点”。
-**代价**：复杂度陡增——引入状态机合法性校验（`validateTransition`、`InvalidTaskTransitionError`、CAS 冲突 [internal/service/ingestion_task_service.go:28-39]()<!-- anchor: func (e *InvalidTaskTransitionError) Error() string { … func (e *TaskStatusConflictError) Error() string { -->）、NATS 重投递语义、Redis checkpoint TTL，以及 `taskChan` 的背压处理（用阻塞发送防丢任务，避免 start 后任务卡在 RUNNING）[internal/ingestion/service/ingestion_service.go:462-470]()<!-- anchor: // Push to the task channel. Use a blocking send so backpressure is … // first few parse" defect. -->。
+**代价**：复杂度陡增——引入状态机合法性校验（`validateTransition`、`InvalidTaskTransitionError`、CAS 冲突 [internal/service/ingestion_task_service.go:28-39]()）、NATS 重投递语义、Redis checkpoint TTL，以及 `taskChan` 的背压处理（用阻塞发送防丢任务，避免 start 后任务卡在 RUNNING）[internal/ingestion/service/ingestion_service.go:462-469]()。
+  <!-- anchor: func (e *InvalidTaskTransitionError) Error() string { … func (e *TaskStatusConflictError) Error() string { -->
+  <!-- anchor: taskMessage.TaskID, task.ID, task.DocumentID, task.DatasetID)) … return -->
 **替代的代价**：保持“入库即解析”（同步）实现最简，但无法支撑大文档 / 并发 / 取消 / 重试，且进度不可按节点拆分——被放弃，换取昂贵但可控的编排。
 
 ### 决策二：模板式切分（DSL 声明式）取代“按 parser_id 硬编码 if/else”
 
-**换来**：`ingestion_pipeline_*.json` 一套模板声明 13 类解析策略，组件可替换 / 组合，UI 能枚举与可视化（`BuiltinPipelineListResponse`、前端 `parserLabel.*` 映射）[internal/ingestion/pipeline/builtin_registry.go:44-55]()<!-- anchor: type BuiltinPipelineMeta struct { … Total            int64                  `json:"total"` -->；历史 parser_id 用别名“naive→general”兼容 [internal/ingestion/pipeline/builtin_registry.go:139-141]()<!-- anchor: func builtinAliases() map[string]string { … "naive": "general", -->。
+**换来**：`ingestion_pipeline_*.json` 一套模板声明 12 类解析策略，组件可替换 / 组合，UI 能枚举与可视化（`BuiltinPipelineListResponse`、前端 `parserLabel.*` 映射）[internal/ingestion/pipeline/builtin_registry.go:44-55]()；历史 parser_id 用别名“naive→general”兼容 [internal/ingestion/pipeline/builtin_registry.go:139-141]()。
+  <!-- anchor: type BuiltinPipelineMeta struct { … Total            int64                  `json:"total"` -->
+  <!-- anchor: func builtinAliases() map[string]string { … "naive": "general", -->
 **代价**：DSL 需自身 schema 与解析 / 校验，模板与 Python 运行时的行为契约须逐项对齐（大量 `_test.go` 就是 parity 测试）；存在语义漂移时“模板声明与实际 chunker 不一致”的风险。
 **替代的代价**：硬编码最省“基建”，但每条新格式都要动包源码，无法给用户可视化可编辑的切分策略——与 README “template-based, intelligent and explainable”卖点冲突。
 
 ### 决策三：`parse_method` 可插拔解析后端（DeepDoc 内置 + MinerU/Docling 等外部）
 
-**换来**：开箱即用（DeepDoc 本地推理 + pdfium/pdf_oxide）并按需接入更强解析器（MinerU/Docling/paddleocr/somark/tcadp，各自 HTTP API）[internal/parser/parser/pdf_parser_common.go:42-51]()<!-- anchor: var supportedPDFParseMethods = map[string]struct{}{ … "tcadp":          {}, -->。
-**代价**：`PDFParser` 膨胀出 30+ 配置字段（各后端 URL/key/参数）；`validateParseMethod` 只放行白名单，且明言自定义 IMAGE2TEXT/VLM 名称暂不支持 [internal/parser/parser/pdf_parser_common.go:290-295]()<!-- anchor: func (p *PDFParser) validateParseMethod() error { … return fmt.Errorf("parser: unsupported PDF parse_method %q (Go currently supports: deepdoc, plain_text, mineru, paddleocr, docling, opendataloader, somark, tcadp; tenant-resolved custom IMAGE2TEXT/VLM model names are not supported in the Go parser layer)", p.ParseMethod) -->；渲染 / 裁图、OCR、TSR 之间需协调页面索引（0/1 基转换有专门的函数与归零注释 [internal/parser/parser/pdf_parser_common.go:611-651]()<!-- anchor: // normalizePDFPageNumber converts a DeepDoc 0-indexed page number to the … return 0, false -->）。
+**换来**：开箱即用（DeepDoc 本地推理 + pdfium/pdf_oxide）并按需接入更强解析器（MinerU/Docling/paddleocr/somark/tcadp，各自 HTTP API）[internal/parser/parser/pdf_parser_common.go:42-51]()。
+  <!-- anchor: var supportedPDFParseMethods = map[string]struct{}{ … "tcadp":          {}, -->
+**代价**：`PDFParser` 膨胀出 30+ 配置字段（各后端 URL/key/参数）；`validateParseMethod` 只放行白名单，且明言自定义 IMAGE2TEXT/VLM 名称暂不支持 [internal/parser/parser/pdf_parser_common.go:290-295]()；渲染 / 裁图、OCR、TSR 之间需协调页面索引（0/1 基转换有专门的函数与归零注释 [internal/parser/parser/pdf_parser_common.go:611-651]()）。
+  <!-- anchor: func (p *PDFParser) validateParseMethod() error { … return fmt.Errorf("parser: unsupported PDF parse_method %q (Go currently support -->
+  <!-- anchor: // normalizePDFPageNumber converts a DeepDoc 0-indexed page number to the … return 0, false -->
 **替代的代价**：只保留内置 DeepDoc 最简单，但更强的解析要改源码；全走外部服务则丢掉离线 / 隐私场景。折中 = 内置兜底 + 外部可选。
 
 ---

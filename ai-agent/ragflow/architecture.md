@@ -1,3 +1,10 @@
+---
+type: 架构解读
+title: RAGFlow 架构总览
+description: RAGFlow 整体架构与双栈演进：Go(迁移目标)+Python(默认) 运行时切换、单二进制四 mode 启动初始化、模块职责目录映射、典型聊天请求链路，以及 in-process native DeepDoc 与摄取调度重构带来的边界推移。
+tags: [ragflow, architecture, go, python, dual-stack, deepdoc]
+---
+
 # RAGFlow 架构总览：以“文档高保真 + 双栈演进”为核心的 RAG 引擎
 
 > 本文档解读 [infiniflow/ragflow](https://github.com/infiniflow/ragflow)（Apache-2.0）的整体架构，作为本知识库 RAGFlow 档案的入口。本档案按 **ai-infra 类规格**产出，叠加 **ai-agent ⊗ framework** 副类型。真源引用以源码仓库 `/Users/morehao/Documents/study/ai-agent/ragflow` 为根。
@@ -42,6 +49,7 @@ RAGFlow 的回应是 README 点明的“**Quality in, quality out**”——先�
 ## 架构总览：双栈并存的演进史
 
 RAGFlow 最鲜明的架构事实是 **Go 与 Python 双栈并存**，且由**运行时环境变量**决定哪套在跑，而非编译期写死。核心证据在 docker `.env` 的 `API_PROXY_SCHEME`，当前默认取 `python`，且 `go` / `hybrid` 两种部署模式被显式注释出来（[docker/.env:250-251]()）：
+  <!-- anchor: # API_PROXY_SCHEME=go # use go server deployment … API_PROXY_SCHEME=python # use pure python server deployment -->
 
 <!-- anchor: # API_PROXY_SCHEME=go # use go server deployment … API_PROXY_SCHEME=python # use pure python server deployment -->
 
@@ -52,7 +60,12 @@ entrypoint 按此开关选择 nginx 后端 `ragflow.conf.*` 与启动进程（`r
 
 两种栈共享同一套外部依赖（MySQL/ES/Infinity/MinIO/Redis/NATS），由 docker-compose 按 profile 编排。Go 栈不能脱离 Python 独立提供全能力（如 DeepDoc 解析仍依赖 Python `deepdoc/server`），因此迁移是逐步的、混合的（`API_PROXY_SCHEME=hybrid` 双起）。
 
-> **演进说明（dev-20260902）**：上述对 Python 的依赖已破开一环。Go 主服务在 `c28edde` 起内建 **in-process native DeepDoc 后端**：`cmd/ragflow_server.go` 的 `registerNativeDeepDoc` 把 `internal/deepdoc/parser/pdf/inference/native_analyzer` 注册为本机推理后端（`-tags cgo` 静态链接 ONNX Runtime，经 `dlopen(NULL)` 加载，无需外部 DeepDoc HTTP 服务、无动态 `.so` 部署）；`api`/`ingestor` 两个 mode 启动时按 `NeedsDeepDoc` 强制实例化并 fail-fast——本机 ORT + 模型缺失直接 `common.Fatal`，不做静默降级（[cmd/ragflow_server.go:1091-1119]()<!-- anchor: // registerNativeDeepDoc wires the in-process (Go) DeepDoc backend as the local … common.Info("in-process DeepDoc backend registered (production backend)", -->）。模型目录由 `DEEPDOC_MODEL_DIR` 指定、默认落到 `rag/res/deepdoc`，drop-score 语义对齐 Python `Recognizer.drop_score`（[cmd/ragflow_server.go:1123-1157]()<!-- anchor: // resolveDeepDocModelDir picks the model directory: the explicit DEEPDOC_MODEL_DIR … return infnative.DefaultDropScore -->）。docker-compose 随之移除了独立的 `deepdoc` profile 容器（见 [deployment-admin.md](deployment-admin.md)）。**默认交付仍是 Python 栈**，但 Go 栈已具备「不依赖 Python 解析服务」的自足能力，双栈边界从「解析必须 Python」推进到「Python 负责默认运行、Go 可独立完整解析」。
+> **演进说明（dev-20260902）**：上述对 Python 的依赖已破开一环。Go 主服务在 `c28edde` 起内建 **in-process native DeepDoc 后端**：`cmd/ragflow_server.go` 的 `registerNativeDeepDoc` 把 `internal/deepdoc/parser/pdf/inference/native_analyzer` 注册为本机推理后端（`-tags cgo` 静态链接 ONNX Runtime，经 `dlopen(NULL)` 加载，无需外部 DeepDoc HTTP 服务、无动态 `.so` 部署）；`api`/`ingestor` 两个 mode 启动时按 `NeedsDeepDoc` 强制实例化并 fail-fast——本机 ORT + 模型缺失直接 `common.Fatal`，不做静默降级（[cmd/ragflow_server.go:1084-1114]()）。模型目录由 `DEEPDOC_MODEL_DIR` 指定、默认落到 `rag/res/deepdoc`，drop-score 语义对齐 Python `Recognizer.drop_score`（[cmd/ragflow_server.go:1117-1151]()）。
+  <!-- anchor: // registerNativeDeepDoc wires the in-process (Go) DeepDoc backend as the local … zap.String("model_dir", modelDir)) -->
+  <!-- anchor: // resolveDeepDocModelDir picks the model directory: the explicit DEEPDOC_MODEL_ … return infnative.DefaultDropScore -->
+> **v0.27.2 又补了一刀权重格式**：Go 侧读取的四个模型从 protobuf `.onnx` 换成 FlatBuffer `.ort`（[internal/common/environments.go:229-253]()、[internal/deepdoc/native/det_core.go:105-105]()）——因为静态链接进二进制的 ONNX Runtime 构建只认 `.ort`，而 Python DeepDoc 服务继续用 `.onnx`，两个清单**故意分离**，注释明确要求不得把 `.onnx` 名字加回 Go 列表。docker-compose 随之移除了独立的 `deepdoc` profile 容器（见 [deployment-admin.md](deployment-admin.md)）。**默认交付仍是 Python 栈**，但 Go 栈已具备「不依赖 Python 解析服务」的自足能力，双栈边界从「解析必须 Python」推进到「Python 负责默认运行、Go 可独立完整解析」。
+  <!-- anchor: // DeepDocModelFiles is the single source of truth for the weights the … "ocr.res", -->
+  <!-- anchor: sess, release, e := getDetSession(filepath.Join(modelDir, "det.ort"), int64(rh), … sess, release, e := getDetSession(filepath.Join(modelDir, "det.ort"), int64(rh), -->
 
 ```mermaid
 flowchart LR
@@ -116,7 +129,11 @@ flowchart LR
 
 ## 启动流程
 
-docker compose 启动后，entrypoint 按 `API_PROXY_SCHEME` 选择后端，Go 栈四种 mode 从同一个 `main` 出发走公共初始化（配置 → DB → 文档引擎 → Redis → 存储 → 消息队列），再进各 mode 分支（[cmd/ragflow_server.go:302-441]()<!-- anchor: 	switch *arguments.mode { … 		fmt.Printf("Invalid server mode: %s\n", *arguments.mode) -->）。`api`/`ingestor` 两个 mode 在初始化尾部按 `NeedsDeepDoc` 注册 in-process native DeepDoc 后端（见上节演进说明，[cmd/ragflow_server.go:295-296]()<!-- anchor: if servermode.NeedsDeepDoc(*arguments.mode) { … 		registerNativeDeepDoc() -->）：
+docker compose 启动后，entrypoint 按 `API_PROXY_SCHEME` 选择后端，Go 栈四种 mode 从同一个 `main` 出发走公共初始化（配置 → DB → 文档引擎 → Redis → 存储 → 消息队列），再进各 mode 分支（[cmd/ragflow_server.go:288-429]()）。`api`/`ingestor` 两个 mode 在初始化尾部注册 in-process native DeepDoc 后端（见上节演进说明）。
+  <!-- anchor: switch *arguments.mode { … fmt.Printf("Invalid server mode: %s\n", *arguments.mode) -->
+**v0.27.2 修正**：`internal/servermode` 这个「哪个 mode 需要 DeepDoc」的独立判定包已被删除，注册调用直接内联进 mode switch 的两个 case（`api` 见 [cmd/ragflow_server.go:289-290]()，`ingestor` 见 [cmd/ragflow_server.go:310-311]()）——代价是失去 `NeedsDeepDoc` 的纯函数单测，收益是不再为「只是策略」单开一个包：
+  <!-- anchor: case "api": … registerNativeDeepDoc() -->
+  <!-- anchor: case "ingestor": … registerNativeDeepDoc() -->
 
 ```mermaid
 flowchart TD
@@ -174,7 +191,7 @@ RAGFlow 的所有设计都可归到一条主线：**先保证入料质量（Deep
 ## 参考与勘误
 
 - 真源仓库：`/Users/morehao/Documents/study/ai-agent/ragflow`（Apache-2.0，infiniflow/ragflow）。
-- 重要澄清：`docker/init.sql` 已退化为仅 `CREATE DATABASE` 的占位（[docker/init.sql:1-2]()）；真正的 MySQL 表结构真源是 Go 的 GORM `AutoMigrate`（[internal/dao/database.go:257]()）与 Python `api/db/db_models.py`，详见 [data-model.md](data-model.md)。
-<!-- anchor: CREATE DATABASE IF NOT EXISTS rag_flow; … USE rag_flow; -->
-<!-- anchor: 	//err := db.Debug().AutoMigrate(model) // to print debug info … 	err := db.WithContext(ctx).AutoMigrate(model) -->
+- 重要澄清：`docker/init.sql` 已退化为仅 `CREATE DATABASE` 的占位（[docker/init.sql:1-2]()）；真正的 MySQL 表结构真源是 Go 的 GORM `AutoMigrate`（[internal/dao/database.go:256-256]()）与 Python `api/db/db_models.py`，详见 [data-model.md](data-model.md)。
+  <!-- anchor: CREATE DATABASE IF NOT EXISTS rag_flow; … USE rag_flow; -->
+  <!-- anchor: return "", fmt.Errorf("conf/models not found") … return "", fmt.Errorf("conf/models not found") -->
 - 部署草稿发现一处注释与实现不符：源码注释写“5 seconds”但心跳存活阈值实际是 45s（详见 [deployment-admin.md](deployment-admin.md)）。

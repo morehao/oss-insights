@@ -1,6 +1,13 @@
+---
+type: 关注面解读
+title: RAGFlow 检索-重排-上下文-生成管线
+description: RAGFlow RAG 管线深读：引擎内 weighted_sum 融合 + 引擎外分级重排（RerankByModel/两遍 KNN/本地重排）、tk/vt/rank_fea 打分公式与 vector_similarity_weight 调优、Grounded citation 双保险（ID 编号 + 句子级 embedding 校验）、Agentic RAG 图式状态机与 GraphRAG 检索路径。
+tags: [ragflow, retrieval, rerank, hybrid-search, citation, agentic-rag, graphrag]
+---
+
 # RAGFlow 检索-重排-上下文-生成管线：多路召回 + 融合重排 + Grounded 引用
 
-> 本解读按 **ai-infra（叠加 ai-agent ⊗ framework）类规格**产出。定位：RAGFlow 双栈中围绕「query → 多路召回 → 融合重排 → 上下文组装 → LLM 生成 → 带引用输出」完整 RAG 管线的深读，覆盖 Go 新生代主服务（`internal/agent/retrievalbridge/`、`internal/agent/harness/`、`internal/service/`）与 Python 传统引擎（`rag/nlp/`、`rag/llm/`、`rag/graphrag/`）。真源引用以源码仓库 `/Users/morehao/Documents/study/ai-agent/ragflow`（当前 `dev-20260826`，`git 2db8eb6` 初版基线；本次增量已核对 `internal/agentic_rag/` → `internal/agent/harness/` 重构，见 [CHANGELOG.md](CHANGELOG.md)）为根，引用后紧邻 `<!-- anchor: 首行 … 末行 -->` 指纹供程序重定位校验。
+> 本解读按 **ai-infra（叠加 ai-agent ⊗ framework）类规格**产出。定位：RAGFlow 双栈中围绕「query → 多路召回 → 融合重排 → 上下文组装 → LLM 生成 → 带引用输出」完整 RAG 管线的深读，覆盖 Go 新生代主服务（`internal/agent/retrievalbridge/`、`internal/agent/harness/`、`internal/service/`）与 Python 传统引擎（`rag/nlp/`、`rag/llm/`、`rag/graphrag/`）。真源引用以源码仓库 `/Users/morehao/Documents/study/ai-agent/ragflow`（**当前基线 `v0.27.2`，`git a024bea0`**）为根，引用后紧邻 `<!-- anchor: 首行 … 末行 -->` 指纹供程序重定位校验。
 
 **分析结构对位**（对应模块级解构七点）：①角色→「在项目中的角色」；②根因→「解决什么问题与根因」；③设计思路→「设计思路」；④数据结构→「关键数据结构」；⑤核心流程→「核心流程」（含传统/Agentic/GraphRAG 三条 mermaid）；⑥协同→「与其他模块协同」；⑦设计决策→「关键设计决策」。标题采用语义式命名，不绑定序号。
 
@@ -24,8 +31,8 @@ RAGFlow 的信条是 **"Quality in, quality out"**——答案质量的上限由
 3. **图结构（graph，可选）**：实体/关系/社区报告，回答跨实体"谁干了谁"的关联问题，纯向量检索对这种"多跳"问题几乎盲区。
 4. **文档级信号**：PageRank、标签（tag）打分，提升权威文档。
 
-单一路径看到的只是其中一个维度（`rag/nlp/search.py` 只在 query 字段上限定不同 boost，[rag/nlp/query.py:32-40]()），其余维度被丢弃。RAGFlow 的做法不是"用哪一路",而是**把所有路都召回，用统一打分模型把它们拼到一个可比较的[0,1]尺子上，再排序、过滤、分页**。
-  <!-- anchor: self.query_fields = [ … ] -->
+单一路径看到的只是其中一个维度（`rag/nlp/search.py` 只在 query 字段上限定不同 boost，[rag/nlp/query.py:32-39]()），其余维度被丢弃。RAGFlow 的做法不是"用哪一路",而是**把所有路都召回，用统一打分模型把它们拼到一个可比较的[0,1]尺子上，再排序、过滤、分页**。
+  <!-- anchor: self.query_fields = [ … "content_sm_ltks", -->
 
 ## 设计思路（方案与放弃）
 
@@ -33,19 +40,19 @@ RAGFlow 的信条是 **"Quality in, quality out"**——答案质量的上限由
 
 RAGFlow 在**两个层面做"召回后处理"**，分工明确：
 
-- **第一层：引擎内融合（fusion expression）**。把向量匹配、全文匹配一起塞给搜索引擎，由引擎在返回候选集时就做加权求和。Infinity 的 `weighted_sum` 权重来自用户配置的 `vector_similarity_weight`（[internal/service/nlp/retrieval.go:566-580]()，Python 侧 [rag/nlp/search.py:35-42]()）。
-  <!-- anchor: func buildInfinityFusionExpr(topn int, vectorSimilarityWeight *float64) *types.F … } -->
-  <!-- anchor: def build_fusion_expr(topn: int, vector_similarity_weight: float = 0.3) -> Fusio … ) -->
-  权重形如 `权重="term_weight,vector_weight"`，`MatchExprs` 是 `[matchText, matchDense, fusionExpr]`（[internal/service/nlp/retrieval.go:714]()）。
-  <!-- anchor: searchRequest.MatchExprs = []interface{}{matchText, matchDense, fusionExpr} … searchRequest.MatchExprs = []interface{}{matchText, matchDense, fusionExpr} -->
-- **第二层：引擎外重排（rerank）**。候选集返回后再做更精细的融合排序，选择路径取决于引擎与是否配了 reranker（[internal/service/nlp/retrieval.go:464-546]()）。
-  <!-- anchor: func (s *RetrievalService) scoreSearchResult(ctx context.Context, req *Retrieval … } -->
+- **第一层：引擎内融合（fusion expression）**。把向量匹配、全文匹配一起塞给搜索引擎，由引擎在返回候选集时就做加权求和。Infinity 的 `weighted_sum` 权重来自用户配置的 `vector_similarity_weight`（[internal/service/nlp/retrieval.go:566-580]()，Python 侧 [rag/nlp/search.py:36-42]()）。
+  <!-- anchor: // Hybrid search path retries with lower thresholds if no results found. … numCandidates := req.KNNNumCandidates -->
+  <!-- anchor: def build_fusion_expr(topn: int, vector_similarity_weight: float = 0.3) -> Fusio … {"weights": f"{term_similarity_weight:g},{vector_similarity_weight:g}"}, -->
+  权重形如 `权重="term_weight,vector_weight"`，`MatchExprs` 是 `[matchText, matchDense, fusionExpr]`（[internal/service/nlp/retrieval.go:714-714]()）。
+  <!-- anchor: engineResult, err = s.docEngine.Search(ctx, searchRequest) … engineResult, err = s.docEngine.Search(ctx, searchRequest) -->
+- **第二层：引擎外重排（rerank）**。候选集返回后再做更精细的融合排序，选择路径取决于引擎与是否配了 reranker（[internal/service/nlp/retrieval.go:464-548]()）。
+  <!-- anchor: *req.RankFeature, … type RetrievalSearchResult struct { -->
   - 配了外部 reranker → `RerankByModel`，用模型分数当 `vsim` 参与融合。
   - Infinity → 直接读 `_score`（引擎已在 fusion 里归一化）。
   - OceanBase/SereneDB → 本地 `RerankStandard`（引擎会把 chunk 向量带回来）。
   - Elasticsearch → 两遍法 `RerankWithKNN`：第一遍文本检索，第二遍只按候选 chunk id 过滤做 KNN 算干净余弦分。
 
-**放弃的替代方案**：把 chunk 向量全部搬运到应用层做本地余弦。这个方案实现简单，但①每个检索都要把大批向量序列化传回，网络/内存开销大；②分页+重排时向量反复传输。RAGFlow 的取舍是**让向量留在引擎里算**（ES/Infinity 侧算），应用层只拿分数——这一点在 Python `_knn_scores` 里有明确注释"让 chunk vectors never leave the engine"（[rag/nlp/search.py:431-462]()）。
+**放弃的替代方案**：把 chunk 向量全部搬运到应用层做本地余弦。这个方案实现简单，但①每个检索都要把大批向量序列化传回，网络/内存开销大；②分页+重排时向量反复传输。RAGFlow 的取舍是**让向量留在引擎里算**（ES/Infinity 侧算），应用层只拿分数——这一点在 Python `_knn_scores` 里有明确注释"让 chunk vectors never leave the engine"（[rag/nlp/search.py:427-458]()）。
   <!-- anchor: async def _knn_scores(self, sres: "Dealer.SearchResult", idx_names: str | list[s … return self.dataStore.get_scores(res) -->
 
 ### 融合公式：不是"二选一"，而是"词面分数×权重 + 语义分数×权重 + 排名特征加成"
@@ -56,19 +63,19 @@ RAGFlow 在**两个层面做"召回后处理"**，分工明确：
 sim = tkWeight * tksim + vtWeight * vsim + rank_fea
 ```
 
-- `tksim`（词面）：不是简单子串，而是**加权词袋命中率**——一元词权重 0.4、相邻二元组权重取 max 再乘 0.6（[internal/service/nlp/reranker.go:435-443]()）；Python 侧同算法（[rag/nlp/query.py:186-190]()）。
+- `tksim`（词面）：不是简单子串，而是**加权词袋命中率**——一元词权重 0.4、相邻二元组权重取 max 再乘 0.6（[internal/service/nlp/reranker.go:441-449]()）；Python 侧同算法（[rag/nlp/query.py:186-190]()）。
   <!-- anchor: d[t] += c * 0.4 … d[k] += math.Max(c, _c) * 0.6 -->
   <!-- anchor: for i, (t, c) in enumerate(wts): … d[t + _t] += max(c, _c) * 0.6 -->
   最后以 `s/q`（查询权重命中比）归一（[rag/nlp/query.py:202-208]()）。
   <!-- anchor: s = 1e-9 … q += v  # * v -->
 
-- `vsim`（语义）：余弦相似度（[internal/service/nlp/reranker.go:611-632]()），或外部 reranker 的归一化分数。
+- `vsim`（语义）：余弦相似度（[internal/service/nlp/reranker.go:617-638]()），或外部 reranker 的归一化分数。
   <!-- anchor: func cosineSimilarity(a, b []float64) float64 { … return dot / (common.PySqrt(normA) * common.PySqrt(normB)) -->
 - `rank_fea`（文档信号）：`tag_score * 10 + pagerank`（[internal/service/nlp/reranker.go:746-749]()），让带标签/权威文档的 chunk 略胜。
-  <!-- anchor: // Final score: tag_score * 10 + pagerank … } -->
+  <!-- anchor: for _, v := range denorBuf { … if denor == 0 { -->
 
-这会带来一个关键的可调性：`vector_similarity_weight`（默认 0.3，Python 侧 [rag/nlp/search.py:589]()）在 0⇄1 之间滑，等于在"纯全文"和"纯语义"之间连续调节，而非二值切换。
-  <!-- anchor: vector_similarity_weight=0.3, … vector_similarity_weight=0.3, -->
+这会带来一个关键的可调性：`vector_similarity_weight`（默认 0.3，Python 侧 [rag/nlp/search.py:588-590]()）在 0⇄1 之间滑，等于在"纯全文"和"纯语义"之间连续调节，而非二值切换。
+  <!-- anchor: return tkweight * np.array(tksim) + vtweight * vtsim + rank_fea, tksim, vtsim … def hybrid_similarity(self, ans_embd, ins_embd, ans, inst): -->
 
 ### Grounded citation 机制：两头夹逼，防"模型编出处"
 
@@ -76,13 +83,13 @@ sim = tkWeight * tksim + vtWeight * vsim + rank_fea
 
 - **上游①（编号注入）**：每个知识块前标注 `\nID: n`（可选把真实 chunk_id 哈希成 500 内整数隐藏原始 ID），让模型按编号引用（[internal/service/deep_researcher.go:765-775]()）。
   <!-- anchor: cnt := fmt.Sprintf("\nID: %d", id) … cnt += "\n└── Content:\n" -->
-  同构的 Python 端 `kb_prompt` 以 `cnt = "\nID: {}"` 给 chunk 编号（[rag/prompts/generator.py:163]()）。
-  <!-- anchor: cnt = "\nID: {}".format(i if not hash_id else hash_str2int(get_value(ck, "id", " … cnt = "\nID: {}".format(i if not hash_id else hash_str2int(get_value(ck, "id", " -->
-- **上游②（引用指令）**：Go 侧追加专用 `citationPrompt`，要求"每句后用 `[ID:N]` 标出信息来源"（[internal/service/chat_pipeline.go:3101]()）。
-  <!-- anchor: func citationPrompt() string { … func citationPrompt() string { -->
-  该指令在 Python 端由 `rag/prompts/generator.py` 的 `citation_prompt` 用 Jinja 模板渲染（[rag/prompts/generator.py:215-217]()）。
+  同构的 Python 端 `kb_prompt` 以 `cnt = "\nID: {}"` 给 chunk 编号（[rag/prompts/generator.py:163-163]()）。
+  <!-- anchor: knowledges = [] … knowledges = [] -->
+- **上游②（引用指令）**：Go 侧追加专用 `citationPrompt`，要求"每句后用 `[ID:N]` 标出信息来源"（[internal/service/chat_pipeline.go:3100-3102]()）。
+  <!-- anchor: Return ONLY SQL.` … // esMissingColumnsRepairPromptTemplate — 4 %s args: table_name, -->
+  该指令在 Python 端由 `rag/prompts/generator.py` 的 `citation_prompt` 用 Jinja 模板渲染（[rag/prompts/generator.py:216-218]()）。
   <!-- anchor: def citation_prompt(user_defined_prompts: dict = {}) -> str: … return template.render() + "\n\nIMPORTANT: The example IDs above (45, 46, 78, et -->
-- **下游（答案侧）**：当模型没有按格式引用（或被禁用引用时），Python 侧 `insert_citations` 在生成后对答案做**句子切分→逐句向量化→与各 chunk 算混合相似度**（阈值 0.63 起步、逐轮 ×0.8 放宽），命中才补打 `[ID:x]` 引用（[rag/nlp/search.py:320-397]()）。这是"用 embedding 校验模型说法的来源"，把幻觉风险降到"模型胡说但恰好在某个 chunk 语义里找得到锚点"这一层。
+- **下游（答案侧）**：当模型没有按格式引用（或被禁用引用时），Python 侧 `insert_citations` 在生成后对答案做**句子切分→逐句向量化→与各 chunk 算混合相似度**（阈值 0.63 起步、逐轮 ×0.8 放宽），命中才补打 `[ID:x]` 引用（[rag/nlp/search.py:316-393]()）。这是"用 embedding 校验模型说法的来源"，把幻觉风险降到"模型胡说但恰好在某个 chunk 语义里找得到锚点"这一层。
   <!-- anchor: def insert_citations(self, answer, chunks, chunk_v, embd_mdl, tkweight=0.1, vtwe … return res, seted -->
 
 ### 何时走 GraphRAG：一种"问题拆解 + 图检索"的特殊召回路
@@ -92,18 +99,31 @@ GraphRAG 不在默认召回里，而是独立的一条 `KGSearch` 检索路径�
 1. **LLM 改写**：把问题转债成 `answer_type_keywords`（问题要什么类型答案）+ `entities_from_query`（问题里的实体）([rag/graphrag/search.py:46-66]())。
   <!-- anchor: async def query_rewrite(self, llm, question, idxnms, kb_ids): … raise e -->
 2. **按多条路取图元素**：按实体做嵌入召回、按类型按 pagerank 召回、按文本关系召回、按 n-hop 路径聚合([rag/graphrag/search.py:168-191]())。
-  <!-- anchor: ents_from_query = await self.get_relevant_ents_by_keywords(ents, filters, idxnms, kb_i … logging.info("Retrieved N-hops: {}".format(list(nhop_pathes.keys()))) -->
+  <!-- anchor: ents_from_query = await self.get_relevant_ents_by_keywords(ents, filters, idxnms … logging.info("Retrieved N-hops: {}".format(list(nhop_pathes.keys()))) -->
 3. **融合加分**：类型命中的实体 sim×2、关系所在边命中则×(s+1)、n-hop 附加路径一并并入([rag/graphrag/search.py:193-218]())。
   <!-- anchor: # P(E|Q) => P(E) * P(Q|E) => pagerank * sim … rels_from_txt[(f, t)] = {"sim": nhop_pathes[(f, t)]["sim"] * (s + 1), "pagerank" -->
 4. **排序**：实体/关系都按 `sim * pagerank` 排序截断([rag/graphrag/search.py:220-221]())，命中不够就再取社区报告([rag/graphrag/search.py:277-295]())。
   <!-- anchor: ents_from_query = sorted(ents_from_query.items(), key=lambda x: x[1]["sim"] * x[ … rels_from_txt = sorted(rels_from_txt.items(), key=lambda x: x[1]["sim"] * x[1][" -->
   <!-- anchor-base64:ZGVmIF9jb21tdW5pdHlfcmV0cmlldmFsXyhzZWxmLCBlbnRpdGllcywgY29uZGl0aW9uLCBrYl9pZHMsIGlkeG5tcywgdG9wbiwgbWF4X3Qg4oCmIHJldHVybiAiXG4tLS0tIENvbW11bml0eSBSZXBvcnQgLS0tLVxuIiArICJcbiIuam9pbih0eHRzKQ== -->
-5. 最终拼成**一个特殊 chunk**（内容 = Entities 的 CSV + Relations CSV + Community Report）注入上下文([rag/graphrag/search.py:261-275]())。
-  <!-- anchor: return { … } -->
+5. 最终拼成**一个特殊 chunk**（内容 = Entities 的 CSV + Relations CSV + Community Report）注入上下文([rag/graphrag/search.py:261-274]())。
+  <!-- anchor: return { … "positions": [], -->
 
-代价是构建侧昂贵（LLM 抽实体/关系、可能多篇文档并发、逐阶段超时/重试/检查点([rag/graphrag/general/index.py:256-375]())），所以它默认关闭，由 `use_kg` 开关开启（[internal/service/chat_pipeline.go:788]()）。
+代价是构建侧昂贵（LLM 抽实体/关系、可能多篇文档并发、逐阶段超时/重试/检查点([rag/graphrag/general/index.py:256-375]())），所以它默认关闭，由 `use_kg` 开关开启（[internal/service/chat_pipeline.go:788-788]()）。
   <!-- anchor: async def run_graphrag_for_kb( … _has_cancel_and_exit(task_id, f"Task {task_id} cancelled before loading chunks f -->
-  <!-- anchor: if useKG, _ := chat.PromptConfig["use_kg"].(bool); useKG && chatModel != nil &&  … if useKG, _ := chat.PromptConfig["use_kg"].(bool); useKG && chatModel != nil &&  -->
+  <!-- anchor: // Knowledge Graph retrieval … // Knowledge Graph retrieval -->
+>
+> **演进说明（v0.27.2）**：这一版**把 GraphRAG / RAPTOR 的自动触发通路摘掉了，但没有删代码**——这是最容易误读的一处。任务创建阶段，`TaskService.get_task` 在取任务详情时直接从 `parser_config` 与 `kb_parser_config` 里剔除 `graphrag`/`raptor` 两个键，因此下游 `handle_task` 永远看不到这两个开关（[api/db/services/task_service.py:221-224]()）；
+  <!-- anchor: doc = docs[0] … doc[config_key] = {key: value for key, value in doc[config_key].items() if key n -->
+> REST 层的默认解析模板也不再产出这两段，并新增 `strip_graphrag_raptor_config` 在所有出口统一剥离（[api/utils/api_utils.py:615-620]()、[api/utils/api_utils.py:380-389]()）。
+  <!-- anchor: def strip_graphrag_raptor_config(source_data: dict) -> dict: … return result -->
+  <!-- anchor: "tag": None, … "knowledge_graph": { -->
+> **但**：`rag/graphrag/` 目录在本区间零 diff 仍在树中，Python 侧 `use_kg` 检索路径完全可达（[api/apps/restful_apis/chunk_api.py:516-519]() → `settings.kg_retriever`）；
+  <!-- anchor: if use_kg: … if ck["content_with_weight"]: -->
+> Go 侧的 `use_kg` 则是「有字段、无实现」的兼容占位，检索时打一条 Warn 就跳过（[internal/service/dataset/search.go:332-333]()），Agent 工具更直接返回 `ErrGraphRAGNotSupported`（[internal/agent/tool/retrieval.go:39-39]()）。RAPTOR 实现同样仍散落在 `rag/utils/raptor_utils.py`、`rag/svr/task_executor_refactor/raptor_service.py`、`internal/ingestion/component/knowledge_compiler/tree/raptor.go` 等处——被移除的只是 **`parser_config.raptor` 这条自动触发通路**。
+  <!-- anchor: if useKG { … common.Warn("use_kg is not yet implemented in Go - skipping KG retrieval") -->
+  <!-- anchor: var ErrGraphRAGNotSupported = errors.New("GraphRAG 检索暂不支持，请使用 Python Canvas 或关闭  … var ErrGraphRAGNotSupported = errors.New("GraphRAG 检索暂不支持，请使用 Python Canvas 或关闭  -->
+> 另有一处知识编译侧的收敛：编译产物不再把全量实体/关系拼成一个 graph chunk（[internal/ingestion/component/knowledge_compiler/structure/structure.go:158-167]()）。
+  <!-- anchor-base64:Ly8gLS0tLSBHUkFQSCAtLS0tIOKApiBwcm9kdWN0cyA6PSBhcHBlbmQoW11jb21tb24uUHJvZHVjdHt9LCBwcm9kcy4uLik= -->
 
 ## 关键数据结构
 
@@ -111,20 +131,20 @@ GraphRAG 不在默认召回里，而是独立的一条 `KGSearch` 检索路径�
 
 ### 检索请求与响应（Go 侧服务层）
 
-- `nlp.RetrievalRequest` 表达用户检索意图：`[path:[internal/service/nlp/retrieval.go:49-65]()]()`
-  <!-- anchor: type RetrievalRequest struct { … } -->
+- `nlp.RetrievalRequest` 表达用户检索意图：`[internal/service/nlp/retrieval.go:49-65]()`
+  <!-- anchor: type RetrievalRequest struct { … Highlight              *bool -->
   > 含 `Question`、`TenantIDs/KbIDs/DocIDs`（租户/知识库/文档三级作用域）、`Top/Page/PageSize`（候选池与分页）、`SimilarityThreshold/VectorSimilarityWeight`（两个核心调优旋钮）、`RerankModel/EmbeddingModel`（是否需要外部重排）、`RankFeature`（文档级标签权重）。
-- `nlp.RetrievalResult` 是给上层（chat / agent 工具）看的最终形态：`chunks + doc_aggs + total`（[internal/service/nlp/retrieval.go:68-72]()），其中每个 chunk 同时携带 `similarity / term_similarity / vector_similarity` 三种相似度，便于上层区分"它因词面还是语义命中"（[internal/service/nlp/retrieval.go:295-297]()）。
-  <!-- anchor: type RetrievalResult struct { … } -->
+- `nlp.RetrievalResult` 是给上层（chat / agent 工具）看的最终形态：`chunks + doc_aggs + total`（[internal/service/nlp/retrieval.go:69-72]()），其中每个 chunk 同时携带 `similarity / term_similarity / vector_similarity` 三种相似度，便于上层区分"它因词面还是语义命中"（[internal/service/nlp/retrieval.go:298-300]()）。
+  <!-- anchor: // RetrievalResult result from retrieval search … DocAggs []map[string]interface{} // Aggregated document counts, sorted by count  -->
   <!-- anchor: resultChunk["similarity"] = sim[i] … resultChunk["vector_similarity"] = vectorSimilarity[i] -->
 - 引擎底层返回的 `nlp.RetrievalSearchResult` 才是候选集全貌：`IDs`（有序 chunk id）、`Field`（id→字段映射）、`QueryVector`（供重排用）、`Keywords`（供高亮）、`Total`（阈值内总数）([internal/service/nlp/retrieval.go:594-605]())。
-  <!-- anchor: type RetrievalSearchResult struct { … } -->
+  <!-- anchor: "doc_id", "chunk_order_int", "page_num_int", "top_int", "create_timestamp_flt",  … IndexNames:   buildIndexNames(req.TenantIDs), -->
 
 ### 融合策略的数据载体：`FusionExpr`
 
-`buildRetrievalFusionExpr` 依引擎生成不同权重：Infinity 用配置的 `vector_similarity_weight`（默认 0.3），ES/OceanBase 用固定 `0.05,0.95`——前者让用户在 Infinity 上连续可调，后者对 ES 保持词面主导（[internal/service/nlp/retrieval.go:582-592]()），最终作为 `fusionExpr` 打进引擎搜索请求的 `MatchExprs`（[internal/service/nlp/retrieval.go:714]()）。
-  <!-- anchor: func buildRetrievalFusionExpr(docEngineType string, topn int, vectorSimilarityWe … } -->
-  <!-- anchor: searchRequest.MatchExprs = []interface{}{matchText, matchDense, fusionExpr} … searchRequest.MatchExprs = []interface{}{matchText, matchDense, fusionExpr} -->
+`buildRetrievalFusionExpr` 依引擎生成不同权重：Infinity 用配置的 `vector_similarity_weight`（默认 0.3），ES/OceanBase 用固定 `0.05,0.95`——前者让用户在 Infinity 上连续可调，后者对 ES 保持词面主导（[internal/service/nlp/retrieval.go:582-592]()），最终作为 `fusionExpr` 打进引擎搜索请求的 `MatchExprs`（[internal/service/nlp/retrieval.go:714-714]()）。
+  <!-- anchor: numCandidates = 2048 … src := []string{ -->
+  <!-- anchor: engineResult, err = s.docEngine.Search(ctx, searchRequest) … engineResult, err = s.docEngine.Search(ctx, searchRequest) -->
 
 ### 上下文组装：`kbinfos` map
 
@@ -132,20 +152,34 @@ GraphRAG 不在默认召回里，而是独立的一条 `KGSearch` 检索路径�
   <!-- anchor: "chunks":   []map[string]interface{}{}, … kbinfos = map[string]interface{}{ -->
 Go 的 `kbPrompt` 给每个 chunk 加 `\nID: n` + `Content` 等树节点（[internal/service/deep_researcher.go:715-784]()）。
   <!-- anchor: func kbPrompt(kbinfos map[string]interface{}, maxTokens int, hashID bool) []stri … return knowledges -->
-Python 的 `kb_prompt` 同构实现（[rag/prompts/generator.py:139-174]()）。
+Python 的 `kb_prompt` 同构实现（[rag/prompts/generator.py:140-175]()）。
   <!-- anchor: def kb_prompt(kbinfos, max_tokens, hash_id=False): … return knowledges -->
 
 ### Agent 侧的最小契约：`RetrievalChunk` 与工具参数
 
 桥梁层把上层多样检索统一成 `RetrievalChunk`（id/content/document_id/dataset_id），使 `search_chunks`、`grep_chunks`、`list_chunks`、memory 检索都能以同一形状被 agent 消费（[internal/agent/retrievalbridge/memory.go:43-87]()）；canvas 检索工具则用 `retrievalArgs`（query/dataset_ids/top_n/top_k/keywords_similarity_weight/rerank_id/cross_languages/toc_enhance/meta_data_filter...）暴露参数面（[internal/agent/tool/retrieval.go:50-66]()）。
-  <!-- anchor: func (a *MemoryAdapter) Search( … } -->
-  <!-- anchor: type retrievalArgs struct { … } -->
+  <!-- anchor: func (a *MemoryAdapter) Search( … DatasetID:  memoryID, -->
+  <!-- anchor: // compatibility with existing Canvas DSLs that reference the tool by name. … TopK                     int            `json:"top_k,omitempty"` -->
 
 ## 核心流程：一条 query 从嵌入到带引用输出的完整链路
 
 ### 传统管线（Go chat / Python dialog 双实现）
 
 下面这条完整链路在 Python 引擎（`rag/nlp/search.py` + `rag/prompts/generator.py` + `rag/llm/chat_model.py`）与 Go 服务层（`internal/service/nlp/` + `internal/service/chat_pipeline.go`）各实现了一遍，逻辑逐行对齐。核心是：**引擎内加权融合（召回→候选集）+ 引擎外重排（排序→分页）+ 上下文转知识块（编号）+ LLM 生成 + 引用于 prompt 与 post-hoc 双侧落地。**
+
+> **演进说明（v0.27.2）**：这条管线的**入参契约与暴露面**在这一版被收敛。上游 `b7e577ce`（#19303）把三条各自独立的检索 API——`POST /datasets/search`、`POST /datasets/<dataset_id>/search`、`POST /retrieval`——合并到**同一个实现**上：Python 侧三个 route 现在装饰在 `api/apps/restful_apis/chunk_api.py` 的同一个 handler，`dataset_id` 存在时被改写成 `dataset_ids=[dataset_id]`（[api/apps/restful_apis/chunk_api.py:333-338]()）。
+  <!-- anchor: @manager.route("/datasets/<dataset_id>/search", methods=["POST"])  # noqa: F821 … async def retrieval_test(tenant_id, dataset_id=None): -->
+>
+> Go 侧新增 `POST /api/v1/retrieval` 并保留旧的两条数据集搜索路由（[internal/router/router.go:343](internal/router/router.go)，旧路由见 [internal/router/router.go:389-390]()）；hybrid nginx 随之把 `/datasets/search` 交回 Python(9380)。同时 Go 的请求结构补齐了 `page_size`、`document_ids`、`metadata_condition` 三个字段，`doc_ids`/`use_kg` 退化为兼容别名（[internal/service/dataset_types.go:40-48]()）。**解读取这条管线时，把这三条路由当成同一实现的不同别名**；`api/apps/services/dataset_api_service.py` 里同名旧函数已无调用方。
+  <!-- anchor: datasets.POST("/search", r.datasetsHandler.SearchDatasets) … datasets.POST("/:dataset_id/search", r.datasetsHandler.SearchDataset) -->
+  <!-- anchor: DatasetIDs             []string               `json:"dataset_ids" binding:"requi … UseKG                  *bool                  `json:"use_kg,omitempty"` -->
+>
+> 另一处与重排直接相关的新开关是 `RERANK_TOKEN_LIMIT_MODE`：`truncate`（默认，按 `maxTokens - queryTokens` 逐文档截断）/ `passthrough` / `raise_error`，Go 侧解析与三态校验在 [internal/entity/models/types.go:314-323]()，越界策略错误会经 `ErrRerankTokenLimitPolicy` 一路上抛到检索服务（[internal/service/nlp/reranker.go:163-164]()）。
+  <!-- anchor: maxTokens := r.MaxTokens … return nil, fmt.Errorf("%w: invalid %s %q; expected %q, %q, or %q", ErrRerankTok -->
+  <!-- anchor: if errors.Is(err, models.ErrRerankTokenLimitPolicy) { … return nil, nil, nil, err -->
+>
+> Python 侧的对称实现见 [rag/llm/rerank_model.py:76-87]()。它把此前"供应商自己兜底/静默截断"的灰区变成了**显式策略**：默认截断保证不因超长而整批失败，`raise_error` 则让超限在调用外部 rerank 前就暴露。
+  <!-- anchor: if not query or not texts: … raise ValueError(f"Rerank input at document index {index} has {input_tokens} tok -->
 
 ```mermaid
 sequenceDiagram
@@ -182,21 +216,39 @@ sequenceDiagram
 流程关键点解读：
 
 - **融合进引擎**：向量与文本的加权求和发生在引擎侧（`FusionExpr`），应用层不搬运 chunk 向量（`internal/service/nlp/retrieval.go:704,714`）。
-- **重排是优雅分级的**：有外部 reranker 用模型（`RerankByModel`），Infinity 直接读 `_score`，OceanBase 本地重排，ES 用两遍 KNN（[internal/service/nlp/retrieval.go:472-545]()）。
-  <!-- anchor: if req.RerankModel != nil && searchResult.Total > 0 { … ) -->
+- **重排是优雅分级的**：有外部 reranker 用模型（`RerankByModel`），Infinity 直接读 `_score`，OceanBase 本地重排，ES 用两遍 KNN（[internal/service/nlp/retrieval.go:472-544]()）。
+  <!-- anchor: sim, tsim, vsim := RerankStandard( … FusionParams: map[string]interface{}{"weights": "0.05,0.95"}, -->
 - **分页基于一个"rerank 候选窗口"**：重排候选数由显式 `rerank_candidates_count` 参数控制（默认 64），运行时不靠预计算窗口函数而是**在入口断言分页不越界**——`page * page_size <= rerank_candidates_count`，且 `rerank_mdl` 存在时强制 `page=1`（Python [rag/nlp/search.py:574](rag/nlp/search.py) / [rag/nlp/search.py:593-596](rag/nlp/search.py)），Go 侧同构计算（`RerankCandidatesCount` 默认 64，`req.Page > rerankCandidatesCount/pageSize` 时拒绝 [internal/service/nlp/retrieval.go:117-123](internal/service/nlp/retrieval.go)）。
   <!-- anchor: rerank_candidates_count=64, -->
   <!-- anchor: if page * page_size > rerank_candidates_count: -->
   <!-- anchor: if req.RerankCandidatesCount == nil { … return nil, fmt.Errorf("rerank_candidates_count(%d) must be greater than or equal to page(%d) * page_size(%d)", … -->
   > **演进说明（dev-20260826）**：本段初版描述的分页窗口函数 `_rerank_window` 已在上游移除，改为上述内联的 `rerank_candidates_count` 参数 + 入口断言（见 [CHANGELOG.md](CHANGELOG.md)）。
-- **查后清洗**：候选集在做重排前先 `PruneDeletedChunks`，剔除文档已被删的孤儿 chunk（[internal/service/nlp/retrieval.go:1013-1110]()，Python [rag/nlp/search.py:87-129]()）。
-  <!-- anchor: // PruneDeletedChunks removes chunks whose documents no longer exist … } -->
-  <!-- anchor: async def _prune_deleted_chunks(self, sres: SearchResult) -> SearchResult: … ) -->
-- **上下文预算**：`kbPrompt` 在 *0.97 的 token 预算处截断，保证塞进模型 window（[rag/prompts/generator.py:139-152]()）。
-  <!-- anchor: def kb_prompt(kbinfos, max_tokens, hash_id=False): … break -->
+- **查后清洗**：候选集在做重排前先 `PruneDeletedChunks`，剔除文档已被删的孤儿 chunk（[internal/service/nlp/retrieval.go:1012-1110]()，Python [rag/nlp/search.py:86-129]()）。
+  <!-- anchor: return result, nil … if err != nil { -->
+  <!-- anchor: return set() … return sres -->
+- **上下文预算**：`kbPrompt` 在 *0.97 的 token 预算处截断，保证塞进模型 window（[rag/prompts/generator.py:140-151]()）。
+  <!-- anchor: def kb_prompt(kbinfos, max_tokens, hash_id=False): … logging.warning(f"Not all the retrieval into prompt: {len(selected_chunks)}/{kwl -->
 ### Agentic RAG：route 驱动的图式检索状态机
 
-> **演进说明（dev-20260826）**：本档案初版（基线 `git 2db8eb6`）记录的 Agentic RAG 是随 `internal/agentic_rag/` 一起的「ReAct 多轮思考-检索-阅读」形态（think / todo_write / grep_chunks / search_chunks / list_chunks / run_javascript 六工具，`DefaultTools`）。上游其后以 `23a0711`（Revert "port smart-reasoning agentic RAG to eino ADK"）**删除 `internal/agentic_rag/`** 后，Agentic RAG 改为 `internal/agent/harness/` 下统一的**图式状态机**——不再把检索拆成专用工具交给模型任意组合，而是由 route 决定策略、按 mode 裁剪一套系统检索工具、走「pre_search → planner → orchestrator → formalize_answer」的固定流水线。下列节点/行号均以当前 `dev-20260826` 为准。
+> **演进说明（dev-20260826）**：本档案初版（基线 `git 2db8eb6`）记录的 Agentic RAG 是随 `internal/agentic_rag/` 一起的「ReAct 多轮思考-检索-阅读」形态（think / todo_write / grep_chunks / search_chunks / list_chunks / run_javascript 六工具，`DefaultTools`）。上游其后以 `23a0711`（Revert "port smart-reasoning agentic RAG to eino ADK"）**删除 `internal/agentic_rag/`** 后，Agentic RAG 改为 `internal/agent/harness/` 下统一的**图式状态机**——不再把检索拆成专用工具交给模型任意组合，而是由 route 决定策略、按 mode 裁剪一套系统检索工具、走「pre_search → planner → orchestrator → formalize_answer」的固定流水线。下列节点/行号均以当前 `v0.27.2` 为准。
+>
+> **演进说明（v0.27.2）**：这一版把 Agentic RAG 的**收敛控制**做实了，且改动**全部落在 Python 线**（`rag/advanced_rag/`）——Go 侧 `internal/agent/harness/` 在本区间零改动，两条实现线并行推进，读的时候不要互相套用。Python 线三处变化：①**提示词层新增 TOOL PLAYBOOK**：`rag/prompts/action_run.md` 在 CRITICAL RULES 之后补了「工具组合链 + 收敛硬规则 + tool status→下一步动作表」（`ok/miss/empty/poor/redundant/error` 各有规定动作），目的不是教模型调工具，而是让它输出 **state patch** 而不是在已枯竭的方向上反复检索（[rag/prompts/action_run.md:40-58]()）；配套把 7 个工具 spec 从自然语言描述重写成 `WHEN TO CALL / DO NOT CALL / ARGUMENTS / OUTPUT / IF IT FAILS` 五段式契约（[rag/advanced_rag/harness/action_session.py:196-222]()）。
+  <!-- anchor: # TOOL PLAYBOOK … - `list_chunks` accepts ONLY `doc_id` (no `chunk_ids` argument) — you cannot ask -->
+  <!-- anchor: _RETRIEVE_TOOL_SPEC = { … _LIST_CHUNKS_TOOL_SPEC = { -->
+> ②**共享证据池封顶 60**（与 SCA 可读视图上限对齐）：满池即拒绝继续 admit 新证据，并让 `_route_sca` 直接短路去 finalize——理由是再研究一轮也无法改变 SCA 能读到的视图，实测该池此前会涨到 100+（[rag/advanced_rag/harness/action_session.py:57-64]()、[rag/advanced_rag/harness/action_session.py:632-646]()、
+  <!-- anchor: # Hard cap on the shared evidence pool (tools.kbinfos["chunks"]). Mirrors … _EVIDENCE_POOL_STATE = {"full_logged": False} -->
+  <!-- anchor: # Early-stop: the shared evidence pool is hard-capped. Once it reaches the … return False -->
+> [rag/advanced_rag/agentic_rag_graph.py:1217-1230]()）。③**研究循环的健壮性**：planner 返回散文（而非 JSON）时不再按行切成检索子问题（新增形状守卫拒掉 `http(s)://`、`**`、`sources:`/`reference`/`citation` 之类答案样式行与超长行，避免把幻觉实体当已知事实灌进 slot table）（[rag/advanced_rag/agentic_rag_graph.py:382-415]()）；
+  <!-- anchor: def _route_sca(state: AgenticState) -> str: … return "formalize_answer" -->
+  <!-- anchor: def _fanout_looks_like_query(line: str, loose: bool = False) -> bool: … return list(dict.fromkeys(kept))[:5] -->
+> SCA 无结构化 gap 或超时时由「默认判定充分」改为 **INSUFFICIENT**，不再把未验证草稿当最终答案（[rag/advanced_rag/agentic_rag_graph.py:1096-1099]()）；slot-table 分解的重试预算放宽为「下限=首次预算、上限=2× 且 ≤90s、deadline 预留 5s」（[rag/advanced_rag/harness/action_session.py:2073-2089]()）；并移除了 `graph.ainvoke()` 的整图超时，使 final answer 的流式阶段不再被研究预算打断（研究阶段各节点超时与 180s deadline 保留）。④**`navigate_structure` 从单策略改为三策略**，按「树能否给自己打分」分流：节点带互异 per-node embedding 时可把整份 TOC 交给 LLM 选节点（默认关，实测开启后每题 LLM 调用从 9-17 涨到 37、180s 预算基本耗尽）、RAPTOR 那种全节点共享同一 blob embedding 的路径改用 chunk 索引选（检索顺序即相关性顺序，树只负责标注位置）、否则回退向量 beam；
+  <!-- anchor: if not sca_payload: … status = "SUFFICIENT" if sca_payload.get("is_sufficient") else "INSUFFICIENT" -->
+  <!-- anchor: def _init_retry_timeout(first_tmo: float, deadline_left: float | None) -> float: … return max(first_tmo, min(2 * first_tmo, 90.0, deadline_left - 5.0)) -->
+> stats 里新增 `selector` 字段便于观测（[rag/advanced_rag/harness/tools/navigation.py:1073-1094]()、[rag/advanced_rag/harness/tools/navigation.py:1249-1265]()）。
+  <!-- anchor: _STRUCT_RECALL_TOP_N = 24 … _STRUCT_TOC_MAX_NODES = 120 -->
+  <!-- anchor: # Two selection strategies, chosen by whether the tree can score itself. … outline, stats, chunk_paths = await _render_toc_drilldown(query, qvec, entities, -->
+> 同批还修掉一个**静默摧毁召回**的 bug：编译行向量召回把第 4 个位置参数（`num_candidates`，HNSW 的 ef_search）当成了相似度阈值传 0.1，改为具名传参（[rag/advanced_rag/harness/tools/compiled_expansion.py:27-46]()）。
+  <!-- anchor: _VECTOR_NUM_CANDIDATES = 256 … similarity=_VECTOR_SIMILARITY, -->
 
 当前 Agentic RAG 由 `internal/agent/harness/` 承载，核心是**一条线性图式管线**：路由节点先判定是否需要多层分解，再决定走 `direct_search`（一次混合检索→答案）还是 `decompose_and_search / agentic_research / deep_research`（先 pre_search 喂给 planner、orchestrator 多轮到满足为止、formalize 出答案）。整条管线由 `RunAgenticRAG` 驱动，route 预计算后交给 `RunAgenticRAGWithRoute` 顺序执行（[internal/agent/harness/agentic_rag.go:54](internal/agent/harness/agentic_rag.go) / [internal/agent/harness/agentic_rag.go:60](internal/agent/harness/agentic_rag.go)）：
   <!-- anchor: func RunAgenticRAG(ctx context.Context, db *gorm.DB, question, keywords, modeLabel string, search SearchFn) AnswerResult { -->
@@ -273,23 +325,24 @@ sequenceDiagram
     Note over KG: content=E+R+Report
 ```
 
-这条路径回答的是"多跳/图结构"类问题，构建成本高（LLM 抽图），所以默认关、`use_kg` 才开（[internal/service/chat_pipeline.go:788]()），且在 Go 新生代 canvas 检索工具里尚不支持（[internal/agent/tool/retrieval.go:39]() 的 `ErrGraphRAGNotSupported`）。
-  <!-- anchor: if useKG, _ := chat.PromptConfig["use_kg"].(bool); useKG && chatModel != nil &&  … if useKG, _ := chat.PromptConfig["use_kg"].(bool); useKG && chatModel != nil &&  -->
+这条路径回答的是"多跳/图结构"类问题，构建成本高（LLM 抽图），所以默认关、`use_kg` 才开（[internal/service/chat_pipeline.go:788-788]()），且在 Go 新生代 canvas 检索工具里尚不支持（[internal/agent/tool/retrieval.go:39-39]() 的 `ErrGraphRAGNotSupported`）。
+  <!-- anchor: // Knowledge Graph retrieval … // Knowledge Graph retrieval -->
   <!-- anchor: var ErrGraphRAGNotSupported = errors.New("GraphRAG 检索暂不支持，请使用 Python Canvas 或关闭  … var ErrGraphRAGNotSupported = errors.New("GraphRAG 检索暂不支持，请使用 Python Canvas 或关闭  -->
 
 ## 与其他模块协同
 
 这条检索-生成管线站在**数据已被正确解析与索引**的假设之上，只负责把已索引的 chunk 变成高质量上下文：
 
-- **与 ingestion（解析/切分/索引）的关系**：检索质量的上限由 ingestion 决定的字段决定——重排依赖 `content_ltks / title_tks / important_kwd / question_tks` 这些索引字段是否齐备（[internal/service/nlp/reranker.go:302-317]()<!-- anchor: contentLtks := extractContentTokens(chunk, cfield) … tks = append(tks, questionTks...) -->），融合依赖 `content_with_weight` 与 `q_{dim}_vec` 向量列存在（[internal/service/nlp/retrieval.go:633-638]()<!-- anchor: // Check if EmbeddingModel is available … searchRequestWithRank.RankFeature = req.RankFeature -->）。反过来说，ingestion 若没产出 `important_kwd`、`pagerank_fea`、`tag_feas`，重排里的 `tag_score*10+pagerank` 加成就会退化为纯词面+语义融合——质量链条断在源头。这也解释了"Quality in"的价值主张：**检索-生成层是 ingestion 质量的放大器，不是补丁**。
-  <!-- anchor: src := []string{ … } -->
+- **与 ingestion（解析/切分/索引）的关系**：检索质量的上限由 ingestion 决定的字段决定——重排依赖 `content_ltks / title_tks / important_kwd / question_tks` 这些索引字段是否齐备（[internal/service/nlp/reranker.go:308-323]()），融合依赖 `content_with_weight` 与 `q_{dim}_vec` 向量列存在（[internal/service/nlp/retrieval.go:639-644]()）。反过来说，ingestion 若没产出 `important_kwd`、`pagerank_fea`、`tag_feas`，重排里的 `tag_score*10+pagerank` 加成就会退化为纯词面+语义融合——质量链条断在源头。这也解释了"Quality in"的价值主张：**检索-生成层是 ingestion 质量的放大器，不是补丁**。
+  <!-- anchor: contentLtks := extractContentTokens(chunk, cfield) … tks = append(tks, questionTks...) -->
+  <!-- anchor: // Check if EmbeddingModel is available … searchRequestWithRank.RankFeature = req.RankFeature -->
 - **与 agent-platform / canvas 的关系**：`internal/agent/retrievalbridge` 是刻意的**适配层**——它避免 `internal/agent/tool` 反向 import `internal/service`（[internal/agent/retrievalbridge/enhancer.go:17-19]()），把 service 层检索/重排接口以 `Enhancer`、`MemoryAdapter` 的形式暴露给 agent 工具，消除双向依赖。Canvas 检索工具（`RetrievalTool`）通过 `runtime.GetRetrievalService()` 注入 service 实现，做到了检索能力"一套实现、多前端消费"。
   <!-- anchor: // Package retrievalbridge connects the agent retrieval interfaces to the … package retrievalbridge -->
 - **与 data-model 的关系**：chunk 数据模型直接决定检索字段；`PruneDeletedChunks` 依赖 DAO 里 Document 的记录存在性做查后清洗（[internal/service/nlp/retrieval.go:1041-1049]()），把"数据库行已删但索引仍有残留向量"的 write 一致性缝隙在读路径兜住（Python 注释 [rag/nlp/search.py:121-126]()）。
-  <!-- anchor: docs, err := s.documentDAO.GetByIDs(ctx, dao.DB, uniqueDocIDs) … } -->
+  <!-- anchor: removed++ … filteredHighlight[chunkID] = hl -->
   <!-- anchor: async def _prune_deleted_chunks(self, sres: SearchResult) -> SearchResult: … # Keep this as a fallback, not as the primary delete mechanism. -->
-- **Go/Python 双栈的一致性**：Go 复用 Python 时代的算法（`RerankByModel` 等注释明确"mirrors Python search.py L404-L429"，[internal/service/nlp/reranker.go:40-51]()），关键 float 求和刻意用同样的累加顺序保证逐位一致（如 `tokensToDict` 与 Python dict 插入序对齐，[internal/service/nlp/reranker.go:451-452]()）。
-  <!-- anchor: // Rerank performs reranking based on whether a reranker model is provided … // -->
+- **Go/Python 双栈的一致性**：Go 复用 Python 时代的算法（`RerankByModel` 等注释明确"mirrors Python search.py L404-L429"，[internal/service/nlp/reranker.go:41-51]()），关键 float 求和刻意用同样的累加顺序保证逐位一致（如 `tokensToDict` 与 Python dict 插入序对齐，[internal/service/nlp/reranker.go:457-458]()）。
+  <!-- anchor: // Rerank performs reranking based on whether a reranker model is provided … //   - qb: QueryBuilder instance for token processing -->
   <!-- anchor: // Python iterates dict.items() in insertion order (guaranteed since Python 3.7) … // Floating-point addition is non-associative, so the iteration order matters. -->
 
 ## 关键设计决策（权衡与代价）
@@ -299,23 +352,23 @@ sequenceDiagram
 **决策**：融合用 `sim = tk*vt + vt*vsim + rank_fea`，`vector_similarity_weight` 默认 0.3。
 
 **为什么**：0.3 语义 / 0.7 词面意味着 RAGFlow 默认更信任全文匹配而非纯语义——因为词面命中率在短查询与术语查询上远更可靠，且能直接映射到用户可理解的"命中"。**放弃**了对各引擎做统一权重：Infinity 连续可调，ES/OceanBase 固定 `0.05,0.95`（[internal/service/nlp/retrieval.go:582-592]()），因为后两者引擎内部 fusion 的归一化行为不同，强行走同一个权重会引入偏差。**代价**：默认更偏向全文，对仅有语义关联、无词面重叠的长查询召回偏弱；`vector_similarity_weight` 滑到 1 才是纯向量。
-  <!-- anchor: func buildRetrievalFusionExpr(docEngineType string, topn int, vectorSimilarityWe … } -->
+  <!-- anchor: numCandidates = 2048 … src := []string{ -->
 
 ### 决策二：外部重排器的"分数归一化"投资
 
-**决策**：`Base.similarity` / Go `NormalizeRerankScores` 把不同厂商 reranker 的输出统一 min-max 到 [0,1]（[rag/llm/rerank_model.py:38-95]()，[internal/service/nlp/reranker.go:213-255]()）。
+**决策**：`Base.similarity` / Go `NormalizeRerankScores` 把不同厂商 reranker 的输出统一 min-max 到 [0,1]（[rag/llm/rerank_model.py:61-129]()，[internal/service/nlp/reranker.go:213-256]()）。
   <!-- anchor: def similarity(self, query: str, texts: List) -> Tuple[np.ndarray, int]: … return (rank - min_rank) / span -->
-  <!-- anchor: func NormalizeRerankScores(scores []float64) []float64 { … } -->
+  <!-- anchor: // unbounded, often negative logits) is rescaled: a batch with usable … return scores -->
 
-**为什么**：Cohere/Jina/Voyage 输出校准过的 [0,1] 分数，NVIDIA 输出无界甚至为负的 logit。若不归一化，一个负 logit 在 `vtWeight=0.7` 加权后会**把相关 chunk 压到纯词面匹配之下**，破坏融合序。**代价/权衡**：min-max 依赖批内相对关系，单候选或等分批次丢失绝对语义（用 clamp 兜底，[internal/service/nlp/reranker.go:237-247]()）；且已校准厂商的 [0,1] 被原样保留，只有在越界时才重缩放，避免破坏已校准语义。
-  <!-- anchor: span := maxScore - minScore … } -->
+**为什么**：Cohere/Jina/Voyage 输出校准过的 [0,1] 分数，NVIDIA 输出无界甚至为负的 logit。若不归一化，一个负 logit 在 `vtWeight=0.7` 加权后会**把相关 chunk 压到纯词面匹配之下**，破坏融合序。**代价/权衡**：min-max 依赖批内相对关系，单候选或等分批次丢失绝对语义（用 clamp 兜底，[internal/service/nlp/reranker.go:235-247]()）；且已校准厂商的 [0,1] 被原样保留，只有在越界时才重缩放，避免破坏已校准语义。
+  <!-- anchor: maxScore = s … span := maxScore - minScore -->
 
 ### 决策三：GraphRAG 何时走——"贵但不常走"
 
 **决策**：GraphRAG 是独立开关（`use_kg`）且构建侧重（LLM 抽实体/关系/社区报告），默认关。
 
-**为什么**：图检索对"跨实体多跳"问题有质的提升（纯向量无法回答"谁杀了谁"的关联），但其构建成本与检索延迟远高于普通向量召回，且有**召回空/噪声**风险。**权衡**：RAGFlow 选择"默认不用、需要时显式开"，并让 GraphRAG 检索结果以**单个合成 chunk** 注入主流上下文（[rag/graphrag/search.py:261-275]()），从而**不改变下游 kbPrompt/LLM 的消费模式**——成本集中、接入无侵入。**代价**：图检索质量依赖 LLM 抽取质量与社区报告覆盖，且 Go 新生代工具尚未打通（[internal/agent/tool/retrieval.go:39]()），当前体验割裂（部分场景必须回退 Python Canvas）。
-  <!-- anchor: return { … } -->
+**为什么**：图检索对"跨实体多跳"问题有质的提升（纯向量无法回答"谁杀了谁"的关联），但其构建成本与检索延迟远高于普通向量召回，且有**召回空/噪声**风险。**权衡**：RAGFlow 选择"默认不用、需要时显式开"，并让 GraphRAG 检索结果以**单个合成 chunk** 注入主流上下文（[rag/graphrag/search.py:261-274]()），从而**不改变下游 kbPrompt/LLM 的消费模式**——成本集中、接入无侵入。**代价**：图检索质量依赖 LLM 抽取质量与社区报告覆盖，且 Go 新生代工具尚未打通（[internal/agent/tool/retrieval.go:39-39]()），当前体验割裂（部分场景必须回退 Python Canvas）。
+  <!-- anchor: return { … "positions": [], -->
   <!-- anchor: var ErrGraphRAGNotSupported = errors.New("GraphRAG 检索暂不支持，请使用 Python Canvas 或关闭  … var ErrGraphRAGNotSupported = errors.New("GraphRAG 检索暂不支持，请使用 Python Canvas 或关闭  -->
 
 ## 路径偏差纠正：任务假设 vs 源码实际
@@ -362,8 +415,8 @@ sequenceDiagram
 
 ## 待主 agent 验证项
 
-- 【待主 agent 验证】`chat_pipeline.go` 的 **reference 展示**阶段（检索 chunk 如何转成 API 的 `reference` 对象、`formatted_chunks` 在哪组装）未逐行阅读，`formatReferenceChunks`（[internal/service/chat_session.go:1243]()）与被 `ans["reference"]` 消费的链路需在补扫 `chat_pipeline.go` 时确认。
-  <!-- anchor: func formatReferenceChunks(reference map[string]interface{}) []FormattedChunk { … func formatReferenceChunks(reference map[string]interface{}) []FormattedChunk { -->
+- 【待主 agent 验证】`chat_pipeline.go` 的 **reference 展示**阶段（检索 chunk 如何转成 API 的 `reference` 对象、`formatted_chunks` 在哪组装）未逐行阅读，`formatReferenceChunks`（[internal/service/chat_session.go:1242-1244]()）与被 `ans["reference"]` 消费的链路需在补扫 `chat_pipeline.go` 时确认。
+  <!-- anchor: return make([]map[string]interface{}, 0) … return messages -->
 - 【待主 agent 验证】LLM 实际输出的 `[ID:N]` 引用在 Go 侧如何被解析/校验（Python `insert_citations` 有 post-hoc 校验，Go 侧是否复用或依赖模型自觉）——`cleanCitationMarkers` 只负责去掉流式 `##N$$` 中间标记，真正"引用是否指向存在的 chunk id"的校验路径待确认。
 - 【待主 agent 验证】`use_kg` 在 Go dialog 检索（`graph.NewPipeline`）被调用，但 Go canvas 的 `RetrievalTool` 拒绝 `use_kg`（`ErrGraphRAGNotSupported`），两者对 GraphRAG 支持的不一致是否是有意的双栈迁移边界。
 - 【待主 agent 验证】`query_builder.go` 的 `Question()`、`min_match` 降级重试路径、`term_weight.go` 的权重算法只读了 Go 侧一部分，需与 Python [rag/nlp/query.py:42-168]() 逐行比对确认一致。
@@ -373,7 +426,7 @@ sequenceDiagram
 ## 核心发现与设计启示
 
 1. **"多层融合"是 RAGFlow 区别于工具拼接的核心**：引擎内 `weighted_sum` 融合（召回初筛）+ 引擎外 `Rerank*` 重排（排序/分页），且统一到 `sim = tk*vt + vt*vsim + rank_fea` 这一条公式，Go 与 Python 逐位对齐。
-2. **"向量永不离引擎"**是性能关键取舍：ES 用两遍 KNN（先文本召回→再按 chunk id 过滤算干净余弦），避免批量向量回传应用层（[rag/nlp/search.py:431-462]()）。
+2. **"向量永不离引擎"**是性能关键取舍：ES 用两遍 KNN（先文本召回→再按 chunk id 过滤算干净余弦），避免批量向量回传应用层（[rag/nlp/search.py:427-458]()）。
   <!-- anchor: async def _knn_scores(self, sres: "Dealer.SearchResult", idx_names: str | list[s … return self.dataStore.get_scores(res) -->
 3. **Grounded citation 是双保险**：prompt 侧 `ID:n` 编号 + citation 指令，Python 侧 post-hoc `insert_citations` 句子级 embedding 校验补引用，堵住"模型自由发挥出处"。
 4. **路径偏差**：任务给的 `rag/app/qa.py`、`rag/app/one.py` 实为 ingestion chunker，非生成管线；真正的上下文组装在 `rag/prompts/generator.py` 与 Go `chat_pipeline.go` Phase 10。

@@ -1,3 +1,10 @@
+---
+type: 关注面解读
+title: RAGFlow 部署、Admin 控制面与运维
+description: RAGFlow 交付层深读：多 mode 单二进制（admin/api/ingestor/syncer）、Admin GlobalServerStore 心跳存活判定与远程关停、docker compose profile 驱动的依赖编排、.env→service_conf.yaml→viper 三级配置、引擎/设备切换开关与运维要点。
+tags: [ragflow, deployment, docker-compose, admin, heartbeat, configuration, operations]
+---
+
 # RAGFlow 部署、Admin 控制面与运维：多 mode 二进制 + 心跳 + 配置分级
 
 > 本解读按 **ai-infra 类规格**产出，叠加 **ai-agent ⊗ framework** 副类型；聚焦 RAGFlow 的「部署、Admin 控制面与运维」子域。真源引用以源码仓库 `/Users/morehao/Documents/study/ai-agent/ragflow` 为根，路径均为仓库相对路径。全文核心主张：**把自托管 RAG 的整套进程与外部依赖收敛成 `docker compose up -d` + 一个 `.env`，并用一个单二进制多 mode + Admin 内存控制面的手段统一管理所有 worker 的存活与远端关停**。
@@ -13,18 +20,22 @@ RAGFlow 是要跑在用户自有机器上的全栈 RAG 引擎：上层有 API �
 
 ## 角色：一个多 mode 的 Go 二进制 + 一座 Admin 控制面
 
-RAGFlow 用单个 Go 二进制承载四种 mode，由 `--api | --admin | --ingestor | --syncer` 决定进程形态。`serverArgs` 的注释直接点明分工——`adminHost` 只被 api/ingestor/syncer 使用，它们是**心跳发送方**；admin 是**心跳接收方**（[cmd/ragflow_server.go:71-81]()）：
+RAGFlow 用单个 Go 二进制承载四种 mode，由 `--api | --admin | --ingestor | --syncer` 决定进程形态。`serverArgs` 的注释直接点明分工——`adminHost` 只被 api/ingestor/syncer 使用，它们是**心跳发送方**；admin 是**心跳接收方**（[cmd/ragflow_server.go:70-80]()）：
+  <!-- anchor: mode          *string // admin | api | ingestor | syncer … name          *string // server name -->
 
 <!-- anchor: 	mode          *string // admin | api | ingestor | syncer … 	name          *string // server name -->
 
 | mode | 入口 | 职责 | 对外端口 |
 |------|------|------|---------|
-| `--admin` | `runAdmin` | 控制面：用户/服务管理、license、接收心跳、`/healthz` | 9383（[internal/server/config/admin_config.go:31]()）|
-| `--api` | `runAPI`→`startServer` | 对外业务 API：service→handler→router 装配 + MCP，并定时向 admin 心跳 | 9384（[internal/server/config/api_server_config.go:36]()）|
+| `--admin` | `runAdmin` | 控制面：用户/服务管理、license、接收心跳、`/healthz` | 9383（[internal/server/config/admin_config.go:31-31]()）|
+  <!-- anchor: c.admin.HTTPPort = 9383 … c.admin.HTTPPort = 9383 -->
+| `--api` | `runAPI`→`startServer` | 对外业务 API：service→handler→router 装配 + MCP，并定时向 admin 心跳 | 9384（[internal/server/config/api_server_config.go:36-36]()）|
+  <!-- anchor: c.apiServer.HTTPPort = 9384 … c.apiServer.HTTPPort = 9384 -->
 | `--ingestor` | `runIngestor` | 摄取 worker：消费队列做解析/切块/知识编译 | 无（心跳 port 传 -1）|
 | `--syncer` | `runSyncer` | 文件同步 worker：数据源→RAGFlow | 无（心跳 port 传 -1）|
 
-模式与帮助文本一一对应（[cmd/ragflow_server.go:174-177]()）：
+模式与帮助文本一一对应（[cmd/ragflow_server.go:173-176]()）：
+  <!-- anchor-base64:Zm10LkZwcmludGYob3MuU3RkZXJyLCAiICAtLWFwaSAgICAgICAgICBcdFJ1biBhcyBBUEkgc2VydmVyXG4iKSDigKYgZm10LkZwcmludGYob3MuU3RkZXJyLCAiICAtLXN5bmNlciAgICAgICBcdFJ1biBhcyBmaWxlIHN5bmMgc2VydmljZVxuXG4iKQ== -->
 
 <!-- anchor-base64:CQlmbXQuRnByaW50Zihvcy5TdGRlcnIsICIgIC0tYXBpICAgICAgICAgIFx0UnVuIGFzIEFQSSBzZXJ2ZXJcbiIpCiDigKYgCgkJZm10LkZwcmludGYob3MuU3RkZXJyLCAiICAtLXN5bmNlciAgICAgICBcdFJ1biBhcyBmaWxlIHN5bmMgc2VydmljZVxuXG4iKQ== -->
 
@@ -49,24 +60,29 @@ RAGFlow 用单个 Go 二进制承载四种 mode，由 `--api | --admin | --inges
 ## Admin 控制面＋心跳：把「进程活着吗」集中化
 
 多开 worker 后没有单一视角看清「集群里几个 api、几个 ingestor、哪个最近没报到」。RAGFlow 用服务端 `GlobalServerStore`——一个线程安全的 `map[server_id]*BaseMessage` 作为**内存注册表**（[internal/admin/state.go:30-35]()）：
+  <!-- anchor: servers map[string]*common.BaseMessage // key: server_id … servers: make(map[string]*common.BaseMessage), -->
 
 <!-- anchor: 	servers map[string]*common.BaseMessage // key: server_id … 	servers: make(map[string]*common.BaseMessage), -->
 
 worker 每次心跳通过 `POST /api/v1/admin/reports` 把 `BaseMessage`（含 server 标识、宿主、端口、版本、时间戳）写入该表（[internal/common/status_message.go:42-47]()）：
+  <!-- anchor: ServerName  string      `json:"server_id"` … Timestamp   time.Time   `json:"timestamp"` -->
 
 <!-- anchor: 	ServerName  string      `json:"server_id"` … 	Timestamp   time.Time   `json:"timestamp"` -->
 
 worker 类型由枚举区分：api/ingestor/file_syncer 三种（[internal/common/status_message.go:34-36]()）。
+  <!-- anchor: ServerTypeAPI        ServerType = "api_server"  // API server … ServerTypeFileSyncer ServerType = "file_syncer" // File syncer server -->
 
 <!-- anchor: 	ServerTypeAPI        ServerType = "api_server"  // API server … 	ServerTypeFileSyncer ServerType = "file_syncer" // File syncer server -->
 
-**存活判定 = 最近心跳窗口**：admin 的 `ListServices` 逐项比较 `now - server.Timestamp`，45 秒内记为 `alive`，超时标 `timeout`（[internal/admin/service.go:1043-1053]()）：
+**存活判定 = 最近心跳窗口**：admin 的 `ListServices` 逐项比较 `now - server.Timestamp`，45 秒内记为 `alive`，超时标 `timeout`（[internal/admin/service.go:1047-1057]()）：
+  <!-- anchor: serverList := GlobalServerStore.ListInfos() … results = append(results, serverItem) -->
 
 <!-- anchor: 	serverList := GlobalServerStore.ListInfos() … 	results = append(results, serverItem) -->
 
 > **缺陷提醒**：此处源码注释写「less than 5 seconds」但实现阈值是 `45*time.Second`，注释与实现不符，属遗留问题（最终文档按实现写 45s，并在「待验证」节标注）。
 
 `CleanupStaleStatuses` 可按超时主动剔除失联 server（[internal/admin/state.go:104-110]()）：
+  <!-- anchor: func (s *ServerStore) CleanupStaleStatuses(maxAge time.Duration) { … delete(s.servers, id) -->
 
 <!-- anchor: func (s *ServerStore) CleanupStaleStatuses(maxAge time.Duration) { … 				delete(s.servers, id) -->
 
@@ -75,35 +91,66 @@ worker 类型由枚举区分：api/ingestor/file_syncer 三种（[internal/commo
 ## docker 全栈编排：profile 是核心开关
 
 compose 分两层文件，`docker-compose.yml` 通过 `include` 合并 `docker-compose-base.yml`（[docker/docker-compose.yml:1-3]()）：
+  <!-- anchor: include: … # To ensure that the container processes the locally modified `service_conf.yaml -->
 
 <!-- anchor: include: … # To ensure that the container processes the locally modified `service_conf.yaml.template` instead of the one included in its image, you need to mount the local `service_conf.yaml.template` to the container. -->
 
 每个外部服务都打 profile，是否启动由 `docker/.env` 的四个变量拼成 `COMPOSE_PROFILES`（[docker/.env:21-38]()）：
+  <!-- anchor: DOC_ENGINE=${DOC_ENGINE:-elasticsearch} … COMPOSE_PROFILES=${DOC_ENGINE},${DEVICE},metadata-${METADATA_DB_PROFILE} -->
 
 <!-- anchor: DOC_ENGINE=${DOC_ENGINE:-elasticsearch} … COMPOSE_PROFILES=${DOC_ENGINE},${DEVICE},metadata-${METADATA_DB_PROFILE} -->
 
 由此 `DOC_ENGINE=infinity` 带起 Infinity 容器并过滤掉 ES/OpenSearch；`DEVICE=gpu` 带起 `ragflow-gpu` 容器（叠加 NVIDIA device reservation，[docker/docker-compose.yml:133-139]()）：
+  <!-- anchor: deploy: … capabilities: [gpu] -->
 
 <!-- anchor: 	    deploy: … 	              capabilities: [gpu] -->
 业务容器 `ragflow-cpu` 关键编排包括端口映射（9380/9381/9382/9383/9384）、挂载 `service_conf.yaml.template` 与 `entrypoint.sh`（本地改配置免重打镜像）、`depends_on: mysql 的 service_healthy`、`restart: unless-stopped`，镜像/端口均可由 `.env` 覆盖。**编排不是写死矩阵，而是 env 驱动 profile 自由组合**。
 
-> **演进说明（dev-20260902）**：编排面上的「独立 DeepDoc 解析服务」已从默认 compose 移除——`docker-compose.yml` 删去 `deepdoc` profile 容器（原由 `Dockerfile_deepdoc_oss` 构建、healthcheck 监听 9390），因为 Go 侧 `api`/`ingestor` 已内置 in-process native DeepDoc（ORT 静态链接、无外部 HTTP 服务，详见 [ingestion-deepdoc.md](ingestion-deepdoc.md) 演进说明与 [architecture.md](architecture.md)）。`.env` 默认镜像同步升到 `infiniflow/ragflow:v0.27.1`（[docker/.env:258-262]()<!-- anchor: RAGFLOW_IMAGE=infiniflow/ragflow:v0.27.1 … # RAGFLOW_IMAGE=registry.cn-hangzhou.aliyuncs.com/infiniflow/ragflow:v0.27.1 -->）；另新增两类可运维开关——admin 首次启动会创建默认超管 `admin@ragflow.io`，密码取 `ADMIN_DEFAULT_PASSWORD`，不设时随机生成并只写一次到 `logs/admin_bootstrap_password.txt`（mode 0600，[docker/.env:244-247]()<!-- anchor: # written once to logs/admin_bootstrap_password.txt (mode 0600, the container's … ADMIN_DEFAULT_PASSWORD=admin -->）；沙箱执行器管理器新增共享密钥 `SANDBOX_EXECUTOR_MANAGER_API_TOKEN`（`/run` 端点 Bearer/X-Sandbox-Token）与容器网络开关 `SANDBOX_CONTAINER_NETWORK`（默认 `none` = 沙箱代码无外网，需要出网才改 `bridge`）。
+> **演进说明（dev-20260902）**：编排面上的「独立 DeepDoc 解析服务」已从默认 compose 移除——`docker-compose.yml` 删去 `deepdoc` profile 容器（原由 `Dockerfile_deepdoc_oss` 构建、healthcheck 监听 9390），因为 Go 侧 `api`/`ingestor` 已内置 in-process native DeepDoc（ORT 静态链接、无外部 HTTP 服务，详见 [ingestion-deepdoc.md](ingestion-deepdoc.md) 演进说明与 [architecture.md](architecture.md)）。`.env` 默认镜像同步升到 `infiniflow/ragflow:v0.27.1`（[docker/.env:258-262]()）；另新增两类可运维开关——admin 首次启动会创建默认超管 `admin@ragflow.io`，密码取 `ADMIN_DEFAULT_PASSWORD`，不设时随机生成并只写一次到 `logs/admin_bootstrap_password.txt`（mode 0600，[docker/.env:244-247]()）；沙箱执行器管理器新增共享密钥 `SANDBOX_EXECUTOR_MANAGER_API_TOKEN`（`/run` 端点 Bearer/X-Sandbox-Token）与容器网络开关 `SANDBOX_CONTAINER_NETWORK`（默认 `none` = 沙箱代码无外网，需要出网才改 `bridge`）。
+  <!-- anchor: RAGFLOW_IMAGE=infiniflow/ragflow:v0.27.2 … # RAGFLOW_IMAGE=registry.cn-hangzhou.aliyuncs.com/infiniflow/ragflow:v0.27.2 -->
+  <!-- anchor: # written once to logs/admin_bootstrap_password.txt (mode 0600, the container's … ADMIN_DEFAULT_PASSWORD=admin -->
+
+> **演进说明（v0.27.2）**：这一版把交付面收敛成「一个默认镜像 + 一组运行时开关」，并把 schema 初始化责任明确交还 Go。①默认镜像升 `infiniflow/ragflow:v0.27.2`（[docker/.env:258-262]()）。
+  <!-- anchor: RAGFLOW_IMAGE=infiniflow/ragflow:v0.27.2 … # RAGFLOW_IMAGE=registry.cn-hangzhou.aliyuncs.com/infiniflow/ragflow:v0.27.2 -->
+>
+> ②rerank 超长输入从「隐式截断」变成显式策略 `RERANK_TOKEN_LIMIT_MODE`（`truncate` 默认 / `passthrough` / `raise_error`，[docker/.env:315-320]()），Go 侧同一开关的解析与三态校验见 [internal/entity/models/types.go:314-323]()。
+  <!-- anchor: # Controls how rerank inputs that exceed the configured model token limit are ha … RERANK_TOKEN_LIMIT_MODE=${RERANK_TOKEN_LIMIT_MODE:-truncate} -->
+  <!-- anchor: maxTokens := r.MaxTokens … return nil, fmt.Errorf("%w: invalid %s %q; expected %q, %q, or %q", ErrRerankTok -->
+>
+> ③知识编译（wiki 映射/精炼、页结构编译、知识图谱批大小、共享 LLM 池限流重试）的 20+ 个运行时旋钮集中进 `.env`，改完重启 Python 服务生效（[docker/.env:420-422]()）；④Python `task_executor` 可配 `MAX_TASKS_PER_WORKER`/`RECYCLE_SHUTDOWN_TIMEOUT` 定期回收 worker 进程，用来释放长跑累积的 ONNX Runtime / CUDA arena 碎片（默认关闭，由 entrypoint 的 supervisor 循环重启，[docker/.env:456-459]()）。
+  <!-- anchor: # Wiki LLM pool and phase timeouts. Values are read when the Python service … WIKI_MAP_LLM_POOL_SIZE=20 -->
+  <!-- anchor: # MAX_TASKS_PER_WORKER=0 … # RECYCLE_SHUTDOWN_TIMEOUT=300 -->
+>
+> ⑤修正容器内 ClickHouse 原生 TCP 端口 9900→9000（宿主机映射口仍是 9900，[docker/.env:203-206]()）。
+  <!-- anchor: # Native TCP port used by RAGFlow's Go services to connect to ClickHouse inside … CLICKHOUSE_TCP_PORT=9000 -->
+>
+> ⑥Go 镜像把自己的表结构初始化责任收回来——`entrypoint-go.sh` 不再执行 Python 迁移脚本，`syncer/admin/api` 三个进程一律显式带 `--migrate`（[docker/entrypoint-go.sh:291-298]()），`entrypoint.sh` 的 `ensure_db_init` 也从 webserver 分支前移为全局执行，避免只跑 admin/data_sync/task_executor 的宿主从不建表（[docker/entrypoint.sh:281-285]()）。
+  <!-- anchor-base64:I3Rvb2xzL3NjcmlwdHMvcnVuX21pZ3JhdGlvbnMuc2gg4oCmIHJ1bl93aXRoX3Jlc3RhcnQgIlJBR0Zsb3cgZ28gc2VydmVyIiBiaW4vcmFnZmxvd19zZXJ2ZXIgLS1zeW5jZXIgLS1taWdyYXRlICY= -->
+  <!-- anchor: # Initialize the database schema before any of the services below start. … ensure_db_init -->
+>
+> 构建侧同步改写：ORT 静态链接从 `--whole-archive` 全量拖入改为 `--undefined=OrtGetApiBase` + `--dynamic-list` 按需拉取（前者会强制带进所有未裁剪的 kernel，使 ORT 的算子裁剪失效），并把 dynamic list 落到固定路径 `.cache/ort_dynamic_list.txt` 以保证 `CGO_LDFLAGS` 可复现（[build.sh:586-598]()）；`Dockerfile_go` 重排 stage（web/go 构建器统一到同一基础镜像、删掉独立 cpp-builder、Go module 缓存前移），并预置 ORT 静态库与 `.ort` 权重——否则链接会静默跳过、启动直接报「no in-process DeepDoc backend serving」。
+  <!-- anchor: local ort_dynamic_list="${PROJECT_ROOT}/.cache/ort_dynamic_list.txt" … echo "  onnxruntime (static) → $ONNXRUNTIME_STATIC_PREFIX" -->
 
 ## 配置三级：`.env` → `service_conf.yaml` → viper＋`RAGFLOW_`
 
-- **第一级 `.env`**：定义服务拓扑、连接串与资源上限，被 compose 经 `env_file: .env` 注入容器（[docker/docker-compose.yml:71]()）。
+- **第一级 `.env`**：定义服务拓扑、连接串与资源上限，被 compose 经 `env_file: .env` 注入容器（[docker/docker-compose.yml:71-71]()）。
+  <!-- anchor: ragflow-gpu: … ragflow-gpu: -->
 - **第二级 `service_conf.yaml`**：entrypoint 从模板渲染生成，逻辑为替换 `${VAR:-default}`（[docker/entrypoint.sh:174-193]()）：
+  <!-- anchor: CONF_DIR="/ragflow/conf" … done < "${TEMPLATE_FILE}" -->
 
 <!-- anchor: CONF_DIR="/ragflow/conf" … done < "${TEMPLATE_FILE}" -->
 
 模板含 general/ragflow/admin/mysql/minio/es/os/infinity/redis/nats/clickhouse/ingestor/file_syncer 等切片（[docker/service_conf.yaml.template:1-99]()）：
+  <!-- anchor: general: … max_concurrent_syncs: 5 -->
 
 <!-- anchor: general: … max_concurrent_syncs: 5 -->
 - **第三级 viper＋`RAGFLOW_` 环境变量**：Go 侧 `server.Init` 顺序读各切片（`internal/server/config.go`），viper 前缀 `RAGFLOW` 且 `.`→`_`（[internal/server/config.go:57-59]()）：
+  <!-- anchor: v.SetEnvPrefix("RAGFLOW") … v.AutomaticEnv() -->
 
 <!-- anchor: 	v.SetEnvPrefix("RAGFLOW") … 	v.AutomaticEnv() -->
 
 引擎/存储的运行时切换由 `GetEnvironments` 从裸环境变量（`DOC_ENGINE`/`DB_TYPE` 等）读入，优先级高于 yaml 的 general 切块（[internal/server/config/environments.go:152-155]()）：
+  <!-- anchor: docEngine := common.GetEnvSmall(common.EnvDocEngine) … case "infinity", "elasticsearch", "oceanbase", "seekdb": -->
 
 <!-- anchor: 	docEngine := common.GetEnvSmall(common.EnvDocEngine) … 		case "infinity", "elasticsearch", "oceanbase", "seekdb": -->
 
@@ -140,11 +187,13 @@ flowchart TD
     M --> L
 ```
 
-Go 栈每个进程统一 `main`，初始化顺序固化：`dao.InitDB → engine.InitDocEngine → redis.Init → storage.Init`，并将关闭动作 `defer` 反向（[cmd/ragflow_server.go:377-397]()）：
+Go 栈每个进程统一 `main`，初始化顺序固化：`dao.InitDB → engine.InitDocEngine → redis.Init → storage.Init`，并将关闭动作 `defer` 反向（[cmd/ragflow_server.go:365-385]()）：
+  <!-- anchor: // Initialize database … defer storage.CloseStorage() -->
 
 <!-- anchor: 	// Initialize database … 	defer storage.CloseStorage() -->
 
-完成基建后 `server.StartServer` 再按 mode 分支进各 run 函数（[cmd/ragflow_server.go:302-421]()）：
+完成基建后 `server.StartServer` 再按 mode 分支进各 run 函数（[cmd/ragflow_server.go:288-409]()）：
+  <!-- anchor: switch *arguments.mode { … if err = runAPI(ctx, arguments); err != nil { -->
 
 <!-- anchor: 	switch *arguments.mode … 		if err = runAPI(ctx, arguments); err != nil { -->
 
@@ -171,11 +220,13 @@ sequenceDiagram
     Note over S: CleanupStaleStatuses 剔除超时
 ```
 
-接收端收尾是 `Service.HandleHeartbeat → UpdateServer → GlobalServerStore.UpdateServerInfo`，`UpdateServer` 最后回 `CheckLicense()` 结果（[internal/admin/service_ee.go:29-32]()）：
+接收端收尾是 `Service.HandleHeartbeat → UpdateServer → GlobalServerStore.UpdateServerInfo`，`UpdateServer` 最后回 `CheckLicense()` 结果（[internal/admin/service_ee.go:29-31]()）：
+  <!-- anchor: func UpdateServer(serverName string, status *common.BaseMessage) (common.ErrorCo … return CheckLicense() -->
 
 <!-- anchor: func UpdateServer(serverName string, status *common.BaseMessage) (common.ErrorCode, string) { … 	return CheckLicense() -->
 
-发送端 `startHeartbeat` 用 `ScheduledTask` 周期调 `SendHeartbeat`（[cmd/ragflow_server.go:515]()），并把结果写进 `local.SetAdminStatus`（0 健康 / 1 异常）；Ingest 与 Syncer 心跳端口传 `-1`（无对外端口）。心跳失败仅降级标记、不阻塞业务——api 继续服务，只是控制面失联。
+发送端 `startHeartbeat` 用 `ScheduledTask` 周期调 `SendHeartbeat`（[cmd/ragflow_server.go:516-516]()），并把结果写进 `local.SetAdminStatus`（0 健康 / 1 异常）；Ingest 与 Syncer 心跳端口传 `-1`（无对外端口）。心跳失败仅降级标记、不阻塞业务——api 继续服务，只是控制面失联。
+  <!-- anchor: common.Info("Admin HTTP server exited") … common.Info("Admin HTTP server exited") -->
 
 ### 优雅关闭：信号 → `cancel` → 各 mode 收尾
 
@@ -192,7 +243,8 @@ flowchart LR
     C -->|all| J["defer ShutdownServer"]
 ```
 
-全局信号在 `main` 顶部用 `signal.NotifyContext` 只注册一次（SIGINT/SIGTERM/SIGQUIT），各 mode 在 run 内 `<-ctx.Done()` 感知并自行调用 `http.Server.Shutdown`（带 30s 超时防长请求阻塞）；`defer server.ShutdownServer(ctx)` 是 EE stub（开源态记状态）。**双向关闭**：OS 信号与 admin 命令（`ShutdownCh`）都会触发，二者汇合于 `select`，如 ingestor 收到 admin 关停后回调 `cancel()` 收拢整个进程树（[cmd/ragflow_server.go:646-699]()）：
+全局信号在 `main` 顶部用 `signal.NotifyContext` 只注册一次（SIGINT/SIGTERM/SIGQUIT），各 mode 在 run 内 `<-ctx.Done()` 感知并自行调用 `http.Server.Shutdown`（带 30s 超时防长请求阻塞）；`defer server.ShutdownServer(ctx)` 是 EE stub（开源态记状态）。**双向关闭**：OS 信号与 admin 命令（`ShutdownCh`）都会触发，二者汇合于 `select`，如 ingestor 收到 admin 关停后回调 `cancel()` 收拢整个进程树（[cmd/ragflow_server.go:634-687]()）：
+  <!-- anchor: case <-ingestor.ShutdownCh: … cancel() -->
 
 <!-- anchor: 	case <-ingestor.ShutdownCh: … 		cancel() -->
 
@@ -225,11 +277,12 @@ flowchart LR
 ## 全局关联：回扣双栈演进
 
 部署模块是 RAGFlow「双栈演进」在交付层的投影：**Python 与 Go 并存，靠运行时 `API_PROXY_SCHEME`（`python`/`go`/`hybrid`）决定谁在跑**——当前 `.env` 默认 `python`，`go`/`hybrid` 为显式注释（[docker/.env:249-251]()）：
+  <!-- anchor: # API_PROXY_SCHEME=hybrid # go and python hybrid deploy mode … API_PROXY_SCHEME=python # use pure python server deployment -->
 
 <!-- anchor: # API_PROXY_SCHEME=hybrid … API_PROXY_SCHEME=python # use pure python server deployment -->
 
-entrypoint 按此选 nginx 后端与启动进程（`ragflow_server.py` 或 `bin/ragflow_server --api`），并用 `run_with_restart` 守护式拉起、崩溃自愈；`hybrid` 时 admin/api/ingestor 的 python 与 go 版本**同起并存**（如 313-320 行 python 与 go 两套 API server 同时拉起的 if 分支，[docker/entrypoint.sh:295-320]()）：
-<!-- anchor-base64:aWYgW1sgIiR7QVBJX1BST1hZX1NDSEVNRX0iID09ICJoeWJyaWQiIF1dIHx8IFtbICIke0FQSV9QUk9YWV9TQ0hFTUV9IiA9PSAicHl0aG9uIiBdXTsgdGhlbiDigKYgICAgICAgICBydW5fd2l0aF9yZXN0YXJ0ICJSQUdGbG93IGdvIHNlcnZlciIgYmluL3JhZ2Zsb3dfc2VydmVyIC0tYXBpICY= -->
+entrypoint 按此选 nginx 后端与启动进程（`ragflow_server.py` 或 `bin/ragflow_server --api`），并用 `run_with_restart` 守护式拉起、崩溃自愈；`hybrid` 时 admin/api/ingestor 的 python 与 go 版本**同起并存**（如 313-320 行 python 与 go 两套 API server 同时拉起的 if 分支，[docker/entrypoint.sh:301-325]()）：
+  <!-- anchor-base64:aWYgW1sgIiR7QVBJX1BST1hZX1NDSEVNRX0iID09ICJoeWJyaWQiIF1dIHx8IFtbICIke0FQSV9QUk9YWV9TQ0hFTUV9IiA9PSAicHl0aG8g4oCmIHJ1bl93aXRoX3Jlc3RhcnQgIlJBR0Zsb3cgZ28gc2VydmVyIiBiaW4vcmFnZmxvd19zZXJ2ZXIgLS1hcGkgJg== -->
 
 
 由此四件事在部署层被统一心智模型串起：**多 mode 单二进制（Go 迁移目标）**、**Admin 心跳控制面（跨进程存活）**、**profile 驱动拓扑 + 配置三级（可插拔）**、**env 决定双栈（平滑迁移）**。它们共同回答了同一个根因——「自托管一个企业级 RAG 平台，要够简单、可扩展、可插拔」。
@@ -239,30 +292,36 @@ entrypoint 按此选 nginx 后端与启动进程（`ragflow_server.py` 或 `bin/
 ## 运维要点
 
 - **硬性前提**：CPU≥4 核 / RAM≥16G / `vm.max_map_count≥262144`；ES 内存锁定需 `ulimits.memlock: -1`（[docker/docker-compose-base.yml:27-35]()）：
+  <!-- anchor: ulimits: … retries: 120 -->
 
 <!-- anchor: 	    ulimits: … 	      timeout: 10s -->
 
 Redis 用 valkey 镜像并 `--maxmemory 128mb` 设上限（[docker/docker-compose-base.yml:269-373]()）：
+  <!-- anchor: redis: … retries: 120 -->
 
 <!-- anchor: 	  redis: … 	      retries: 120 -->
 
 - **配置面**：切引擎/设备只动 `.env` 的 `DOC_ENGINE/DEVICE/DB_TYPE`；连接串改对应 `.env` 项；进程内参数改 `service_conf.yaml.template`；后者与 `entrypoint.sh` 已挂载为可覆盖文件（[docker/docker-compose.yml:60-120]()）：
+  <!-- anchor: - ./service_conf.yaml.template:/ragflow/conf/service_conf.yaml.template … - ./entrypoint.sh:/ragflow/entrypoint.sh -->
 
 <!-- anchor: 	      - ./service_conf.yaml.template:/ragflow/conf/service_conf.yaml.template … 	      - ./entrypoint.sh:/ragflow/entrypoint.sh -->
 
 本地改即生效免重打镜像。
-- **健康检查**：admin 暴露 `/healthz`（聚合 db/redis/es/storage/msgQueue，任一挂则 503）、`/live`（存活）、`/ping`（通断）（[internal/admin/handler.go:58-82]()）：
+- **健康检查**：admin 暴露 `/healthz`（聚合 db/redis/es/storage/msgQueue，任一挂则 503）、`/live`（存活）、`/ping`（通断）（[internal/admin/handler.go:59-82]()）：
+  <!-- anchor: // Healthz to get system health … common.SuccessNoData(c, "pong") -->
 
 <!-- anchor: // Healthz to get system health … 	common.SuccessNoData(c, "pong") -->
 
 `/api/v1/admin/services` 一屏看全部服务与 45s 存活窗口。依赖层靠各服务自身 healthcheck，业务容器用 `depends_on: service_healthy` 编排。
 - **日志**：默认 `logs/{serverName}.log`（`main` 按 mode 推导：`admin_server.log`/`api_server_9384.log` 等），轮转参数在被注释的 `log:` 段（max_size/max_backups/max_age/compress）；日志级别改 `--debug` 或运行时 `/api/v1/admin/config/log`。
-- **DeepDoc 解析依赖（dev-20260902 起）**：Go `api`/`ingestor` 生产路径只认 in-process native backend——部署节点须具备 ORT（`-tags cgo` 静态链接）与模型权重，缺失即启动期 `common.Fatal`，不会静默降级到空解析。模型目录用 `DEEPDOC_MODEL_DIR` 覆盖（默认 `rag/res/deepdoc`，权重快照由 `ragflow_deps/download_deps.py` 拉取），置信度阈值 `DEEPDOC_DROP_SCORE`（默认 0.5，语义对齐 Python `Recognizer.drop_score`，两后端共用同一 blank 契约）[internal/common/environments.go:214-224]()<!-- anchor: // EnvDeepDocModelDir points the in-process (Go) DeepDoc backend at the … EnvDeepDocDropScore = "DEEPDOC_DROP_SCORE" -->；`admin`/`syncer` mode 不实例化解析器、本节点可无模型文件（[cmd/ragflow_server.go:1091-1099]()<!-- anchor: // registerNativeDeepDoc wires the in-process (Go) DeepDoc backend as the local … // if the backend is not serving, the server aborts. -->）。
+- **DeepDoc 解析依赖（dev-20260902 起）**：Go `api`/`ingestor` 生产路径只认 in-process native backend——部署节点须具备 ORT（`-tags cgo` 静态链接）与模型权重，缺失即启动期 `common.Fatal`，不会静默降级到空解析。模型目录用 `DEEPDOC_MODEL_DIR` 覆盖（默认 `rag/res/deepdoc`，权重快照由 `ragflow_deps/download_deps.py` 拉取），置信度阈值 `DEEPDOC_DROP_SCORE`（默认 0.5，语义对齐 Python `Recognizer.drop_score`，两后端共用同一 blank 契约）[internal/common/environments.go:217-226]()；`admin`/`syncer` mode 不实例化解析器、本节点可无模型文件（[cmd/ragflow_server.go:1084-1093]()）。
+  <!-- anchor: // EnvDeepDocModelDir points the in-process (Go) DeepDoc backend at the … EnvDeepDocDropScore = "DEEPDOC_DROP_SCORE" -->
+  <!-- anchor: // registerNativeDeepDoc wires the in-process (Go) DeepDoc backend as the local … // if the backend is not serving, the server aborts. -->
 - **扩展性**：ingestor/syncer 通过提高 `max_concurrent_workers`/`max_concurrent_syncs` 或**多开进程**扩展（多副本靠独立 `--name` 区分；`build.sh --run` 与 entrypoint 的 `while true` 守护是两种拉起来源）。K8s 用 `helm/`，为每个依赖各派一个 Deployment，主工作负载在 `helm/templates/ragflow.yaml`。
 
 ## 待验证与缺口
 
-- **心跳注释缺陷**：`internal/admin/service.go:1047` 注释写「5 seconds」，实际阈值 `45*time.Second`（`service.go:1048`）——已在文档按 45s 写，需人工确认是否上游有意为之。
+- **心跳注释缺陷**：`internal/admin/service.go:1051` 注释写「5 seconds」，实际阈值 `45*time.Second`（`service.go:1052`）——已在文档按 45s 写，需人工确认是否上游有意为之。
 - **`engine.InitDocEngine` 选型分支**：本文仅核到配置面（`DocEngineType()`/`GetEnvironments`），未逐行确认 `internal/engine/` 各 driver 是否严格按类型路由。
 - **`common.InitLogger` 约定**：文件/路径是否与 `service_conf.yaml.template` 的 `log:` 切片完全一致，未逐行核对。
 - **`service.AdminClient.clusterInfo`**：`admin_client.go:120` 的 `Ext` 注入是否仅 EE 分支装配、OSS 态为 nil，未核对 EE 侧。

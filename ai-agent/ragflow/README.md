@@ -1,6 +1,15 @@
+---
+type: 项目解读
+title: RAGFlow 深度解读
+description: RAGFlow（infiniflow/ragflow）解读总入口：Deep Doc Understanding 高保真解析、模板式切分、多路召回+融合重排+Grounded 引用的混合检索、Canvas DSL+eino 的 Agent 平台、Go/Python 双栈与多 mode 部署，含架构/数据模型/摄取/检索/Agent/部署六篇子文档索引。
+tags: [ragflow, rag, ai-agent, deepdoc, hybrid-retrieval, go, python]
+---
+
 # RAGFlow — 高保真文档驱动的开源 RAG 引擎与 Agent 平台
 
 > 本档案解读 [infiniflow/ragflow](https://github.com/infiniflow/ragflow)（**Apache-2.0**）。按 **ai-infra 类规格**产出，叠加 **ai-agent ⊗ framework** 副类型。真源引用以源码仓库 `/Users/morehao/Documents/study/ai-agent/ragflow` 为根，全部 `路径:行号` 均已由 `verify-references.mjs` 程序重定位验证。
+>
+> 解读基线：`v0.27.2`（`a024bea0`）——本档案全部 `路径:行号` 以该 tag 的工作树为准。
 
 ## 一句话定位
 
@@ -16,9 +25,9 @@
 - [deployment-admin.md](deployment-admin.md) — 部署与运维：多 mode 二进制 + Admin 心跳 + 三级配置
 - [CHANGELOG.md](CHANGELOG.md) — 各版本变更汇总（跨版本演进一览）
 
-## 本版增量说明（dev-20260902）
+## 本版增量说明（v0.27.2）
 
-> 对照 dev-20260826（基线 `git 6c2bca8`）的增量更新：①Go 主服务内建 **in-process native DeepDoc**（`-tags cgo` 静态链接 ONNX Runtime），解析生产路径移除外部 Python `deepdoc/server` HTTP 服务，docker-compose 删除独立 `deepdoc` profile 容器；②同步器连接器净增 9 个（Box/Asana/Airtable/OneDrive/OCI Storage/Zendesk/Xquik/SeaFile/BigQuery），注册面 29→38；③`paddleocr` 解析后端支持自托管 PaddleX 部署；④Python 侧 `rag/advanced_rag/harness` 的 agentic search 三次重构；⑤默认镜像升 `v0.27.1`，新增 `ADMIN_DEFAULT_PASSWORD`/`SANDBOX_EXECUTOR_MANAGER_API_TOKEN`/`DEEPDOC_MODEL_DIR` 等部署开关，ingestor 默认并发 1→2；⑥架构/摄取/部署篇引用行号按 dev-20260902 重核零 STALE。详见 [CHANGELOG.md](CHANGELOG.md)。
+> 对照 dev-20260902（基线 `git 4168b3f`）的增量更新，共 197 commits，上游同期发布 v0.27.2（`docs/release_notes.md`）：①**Agentic RAG 重构**（官方列为 v0.27.2 头条，落点在 Python `rag/advanced_rag/`：`rag/prompts/action_run.md` 新增 TOOL PLAYBOOK、7 个工具 spec 重写为 WHEN TO CALL/DO NOT CALL 契约、共享证据池封顶 60 并据此短路 SCA 路由、SCA 超时改为续跑而非终止、final answer 流式不再被整图超时打断）——**Go 侧 `internal/agent/harness/` 本区间零改动**，两条实现线并行；②新增 **Sitemap 数据源连接器**（内置连接器去重别名后 38→39 类）与 **MonkeyOCRv2 解析后端**、**EPUB 预览**、**Sofya 联网搜索工具**、Hubris/llmman 两个模型 provider；③三个检索 API（`/datasets/search`、`/datasets/<id>/search`、`/retrieval`）合并为同一实现，Go 侧新增 `POST /api/v1/retrieval`；④新增 `RERANK_TOKEN_LIMIT_MODE`（truncate/passthrough/raise_error）；⑤**任务创建不再产生 GraphRAG/RAPTOR 分支**（`parser_config` 里的 `graphrag`/`raptor` 被剥离），但 `rag/graphrag/` 与 Python `use_kg` 检索路径仍在；⑥部署面：默认镜像升 `v0.27.2`、知识编译 20+ 运行时旋钮进 `.env`、`MAX_TASKS_PER_WORKER` 回收长跑 worker、ClickHouse 容器内端口 9900→9000、Go 镜像建表责任交给 `--migrate`；⑦`chat_channel.agent_id` 让渠道可直连 Agent，团队共享会话改为只读、KB 权限判定改 fail-closed。详见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 核心能力
 
@@ -26,7 +35,7 @@
 |--------|------|---------|
 | 深度文档理解 | OCR / 版面分析 / 表格重组 / 多模态视觉 解析 PDF/DOCX 等复杂版式 | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
 | 模板式切分 | 内置切分模板，可视化与人工干预，可解释 | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
-| 异构数据源 | Word/Slides/Excel/图片/扫描件/结构化数据/网页 等本地格式 + 38 个同步连接器（Confluence/Notion/S3/Azure/OneDrive/Box/Asana/Airtable/BigQuery/SeaFile 等） | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
+| 异构数据源 | Word/Slides/Excel/图片/扫描件/结构化数据/网页 等本地格式 + 39 个同步连接器（Confluence/Notion/S3/Azure/OneDrive/Box/Asana/Airtable/BigQuery/SeaFile/Sitemap 等） | [ingestion-deepdoc.md](ingestion-deepdoc.md) |
 | 多路召回 + 融合重排 | 全文 + 向量 + 图等多路召回，`weighted_sum` 融合 + `Rerank*` 重排 | [rag-pipeline.md](rag-pipeline.md) |
 | Grounded 引用 | 带可溯源引用的回答，降幻觉；prompt 侧编号 + 句子级 embedding 校验 | [rag-pipeline.md](rag-pipeline.md) |
 | Agent 工作流 | Canvas DSL → eino 运行时，可编排、可恢复、可追踪 | [agent-platform.md](agent-platform.md) |

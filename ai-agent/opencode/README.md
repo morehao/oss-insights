@@ -33,6 +33,9 @@ tags: [opencode, ai-coding-agent, agent-runtime, event-sourcing, effect-ts, sess
 - [`platform-packages.md`](platform-packages.md) — 平台与支撑包：渲染、录制回放、模拟环境、自研持久层
 - [`deployment.md`](deployment.md) — 安装器、单二进制、服务选举与自更新、CI/CD 与发布
 - [`CHANGELOG.md`](CHANGELOG.md) — 各版本变更汇总
+- [`v1-to-v2-migration-guide.md`](v1-to-v2-migration-guide.md) — **迁移指南**：把实例从 V1 升到 V2 的操作路径（自动归一化的覆盖面与边界、`package` 缺失报错的成因、`tui.json` 搬迁、验证与回滚）
+
+> 以上均为源码级文档：每条机制论断都附可程序校验的 `文件:行号` 引用与逐字锚点指纹。最后一篇是**面向操作**的迁移指南（其余各篇面向"读懂架构"），它同样逐条挂源码引用，但基线只锚定一次升级路径——字段映射只对 V1 `1.18.31` → V2 `2.0.11` 的迁移语义成立，不等于对后续版本仍然成立的兼容承诺。
 
 ---
 
@@ -253,6 +256,8 @@ graph TB
 | **图形前端与周边** | Web app 分层、会话 UI 边界测试、Electron 三进程、控制台与官网 | [`web-and-desktop.md`](web-and-desktop.md) |
 | **平台与支撑包** | mermaid/LaTeX 渲染、HTTP 录制回放、模拟环境、自研 Drizzle+Effect 持久层 | [`platform-packages.md`](platform-packages.md) |
 | **部署与分发** | 安装器、单二进制内嵌资产、常驻服务选举与自更新、发布流水线 | [`deployment.md`](deployment.md) |
+
+> 上表是**架构解读**的入口。如果你要做的不是"读懂 opencode"而是"把自己的实例从 V1 升到 V2"（自定义 provider 的 `package` 从哪来、旧词表哪些能自动迁移、终端配置怎么办、怎么回滚），直接看迁移指南 [`v1-to-v2-migration-guide.md`](v1-to-v2-migration-guide.md)。
 
 ---
 

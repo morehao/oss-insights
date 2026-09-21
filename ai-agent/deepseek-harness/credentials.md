@@ -92,6 +92,8 @@ interface AuthorizationInteraction {
 `credentials-local` 把记录与引用落在一个文件：`$DSH_HOME/.credentials.yaml`（[packages/credentials/credentials-local/src/index.ts:60-61]()）。
 <!-- anchor: export const CREDENTIALS_FILENAME = '.credentials.yaml' … export const CREDENTIALS_FILENAME = '.credentials.yaml' -->
 
+同一个文件里还住着一条与 API 密钥性质迥异的记录：`client-connection/browser-session`——Web 浏览器会话 cookie 的 HMAC 签名密钥。删掉它并重启进程，就等于一次性吊销全部浏览器会话，机制见 [web-remote-access.md](web-remote-access.md)。
+
 ### 来源优先级：显式环境 > 托管文档 > 项目 `.env`
 
 实现顶部用一段注释把四个来源按信任程度排序（[packages/credentials/credentials-local/src/index.ts:6-21]()）：

@@ -82,7 +82,7 @@ flowchart TD
 
 - web 形态透传**宿主机行**与**前端（浏览器）插件 roster**：一个 `insert` 挂起 webserver、api-gateway、web-runtime、以及整套 `dsh-client-ui-*` 浏览器端插件行（[packages/bundle/web-app/cordis.patch.yml:44-177]()
 <!-- anchor: - insert: … name: '@deepseek-ai/dsh-client-modules' -->）。默认 `http://127.0.0.1:3080`，端口来自 `ctx.webStartup.port ?? 3080`（[packages/bundle/web-app/cordis.patch.yml:135-140]()
-<!-- anchor: - id: webserver … port: !!js ctx.webStartup.port ?? 3080 -->）。
+<!-- anchor: - id: webserver … port: !!js ctx.webStartup.port ?? 3080 -->）。这里的 `webserver.host` 也是远端访问能否用上 `Settings` 的分水岭：CLI 拒绝 `--host 0.0.0.0`，patch 却能绕过它，而客户端只认 loopback 页面（见 [web-remote-access.md](web-remote-access.md)）。
 - headless 形态**不挂 Host、HTTP、Web runtime、浏览器插件**：只插 `code-runtime` + `headless-startup` + `headless-runner` 三行（[packages/bundle/headless/cordis.patch.yml:18-31]()
 <!-- anchor: - insert: … task: !!js ctx.headlessStartup.task -->）。运行逻辑：先 `await loader.await()` 等整棵树装完，再 `agents.create` 建 Agent → `agent.followup` 发任务 → `agent.whenIdle` 等静默 → `sessions.flush` 持久化 → `summarize` 取最后一条 assistant 文本 → `ctx.get('appExit')` 退出（[packages/bundle/headless/src/index.ts:169-211]()
 <!-- anchor: async function run(ctx: Context, task: string, io: HeadlessIo): Promise<void> { … io.exit(outcome.reason?.kind === 'completed' ? 0 : 1) -->）。

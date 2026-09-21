@@ -61,6 +61,7 @@ DeepSeek Harness（`dsh`）是一个 TypeScript 编写的 agent harness（智能
 | 持久化数据模型 | 事件日志 JSONL 单一后端、session-persistence handle 化 seam + **跨进程写所有权租约**、per-record 域可声明 `compatibleVersions` + `invalidRecords:'backup-and-skip'`、projection-cache 冷读播种、chunked-list 持久长列表 | [data-model.md](data-model.md) |
 | 工作区文件能力面 | Session/绝对资源地址 + 双面文件 API + 有界字节区间读取 + 不可变交付（present）+ 本地应用打开 | [workspace-files.md](workspace-files.md) |
 | 浏览器客户端 | Client resource registry（保留订阅）+ slot roster + 侧栏 tab/dock 引擎 + 文档/图表预览 + 交付卡片 | [web-client.md](web-client.md) |
+| 远程访问自托管 dsh Web | 服务器只监听回环 + SSH 隧道从本地访问（不新增暴露面）；一次性 token 换取绑定 authority 的会话 cookie，Settings 因此完全可用；含启动取 token、免密 SSH、踩坑与解法、排障速查 | [web-remote-access.md](web-remote-access.md) |
 | 部署形态 | profile/bundle/patch 分层、web/headless/**desktop** 三形态、sdk-minimal/ACP/SDK app bundle | [deployment.md](deployment.md) |
 | 桌面形态 | Electron 壳 + 独立 Host 进程、跨平台打包/签名/公证、自动更新通道、原生 addon 分发 | [desktop-app.md](desktop-app.md) |
 | 持久化附件 | 不可变内容寻址对象库；0.1.3 起从 `ImageAttachmentRef` 泛化为**通用文件**制品与投影，prompt admission 上收 service | [attachments.md](attachments.md) |
@@ -170,6 +171,7 @@ graph TB
 | 数据模型 | 持久化布局与演进（JSONL 单一事件后端 + 写所有权租约） | [`data-model.md`](data-model.md) |
 | 工作区文件 | 资源寻址 + 双面 API + 有界读取 + 交付 | [`workspace-files.md`](workspace-files.md) |
 | 浏览器客户端 | resource registry + slot roster + 侧栏/预览/交付 | [`web-client.md`](web-client.md) |
+| 远程访问自托管 Web | SSH 隧道 + token/cookie 会话 + 客户端 loopback 降级 | [`web-remote-access.md`](web-remote-access.md) |
 | 部署形态 | profile/bundle/patch 与 web/headless/desktop 三形态 + SDK 分发 | [`deployment.md`](deployment.md) |
 | 桌面形态 | Electron 打包/签名/自动更新 + 原生 addon 家族 | [`desktop-app.md`](desktop-app.md) |
 | 持久化附件 | 不可变内容寻址对象库 + Ref 引用 | [`attachments.md`](attachments.md) |
@@ -202,6 +204,7 @@ graph TB
 - [`data-model.md`](data-model.md) — 持久化数据模型（JSONL 单一后端 + 写所有权租约 + per-record 存储）
 - [`workspace-files.md`](workspace-files.md) — 工作区文件能力面（资源寻址 + 双面 API + 有界读取 + 交付，0.1.5 新增）
 - [`web-client.md`](web-client.md) — 浏览器客户端（resource registry + slot roster + 侧栏/预览/交付，0.1.5 新增）
+- [`web-remote-access.md`](web-remote-access.md) — 远程访问自托管 dsh Web 实录（终局形态 + 隧道操作 + 踩坑与解法 + 排障速查，机制与源码依据入附录）
 - [`deployment.md`](deployment.md) — 部署形态（web/headless/desktop、profile/bundle/patch、SDK 分发）
 - [`desktop-app.md`](desktop-app.md) — 桌面形态（Electron 打包/签名/自动更新 + 原生 addon 家族，0.1.5 新增）
 - [`attachments.md`](attachments.md) — 持久化附件能力面（不可变内容寻址对象库 `ctx.attachments`，0.1.3 起泛化为通用文件）
@@ -233,6 +236,7 @@ graph TB
 - **连"收件箱"都从日志重建（0.1.5）**：inbox 原本是内存服务，重启即丢待处理投递；改成 durable projection 后，进程崩溃后能靠日志重放出未消费的唤醒——这是"日志即事实源"对**运行时可变状态**的最后一次收编（[agent-loop-runtime.md](agent-loop-runtime.md)）。
 - **有界窗口 > "读整份再切片"（0.1.5）**：把 range 读取做成 seam 上的一等能力（且必须可取消），而不是让上层读整个文件再切——后者在远端沙箱后端上会把网络与内存成本乘以文件大小（[workspace-files.md](workspace-files.md)、[sandbox-capability-seams.md](sandbox-capability-seams.md)）。
 - **客户端订阅要"保留"而不是"重建"（0.1.5）**：Client resource registry 把"组件要什么数据"注册成可保留的订阅，组件重挂/重连时续用同一份订阅，而不是重新拉一遍——把生命周期从组件扩到连接（[web-client.md](web-client.md)）。
+- **信任 ≠ 授权，而且要拆成可达性 / 请求可信 / 身份 / 能力四层（0.1.5）**：栅栏只证明「请求发给了本服务」，cookie 才建立身份，而「这个页面能不能持久化设置」是客户端主动放弃的能力、不是 Host 的权限判断——三层各有自己的失败码（403 / 401 / 页面级 `unavailable`），排障一步定位；这也解释了为什么把域名加进 `trustedHosts` 打通了 `/api` 却打不开 `Settings`（[web-remote-access.md](web-remote-access.md)）。
 - **"默认不代理本机"是安全默认（0.1.3）**：统一出站代理时最容易踩的坑是把自己的 loopback / 内网流量也塞进代理；把"本机流量豁免"做成默认策略而非配置项，比事后补救更省事（[networking-proxy.md](networking-proxy.md)）。
 - **原生错误形状必须逐字保真（0.1.3）**：subprocess 层专门收敛"spawn 错误的 stack/shape 与原生一致"，因为上层按 `code`/`path`/`errno` 做分支——包装层顺手美化错误，等于让上层的结构化判断全部失效（[subprocess.md](subprocess.md)）。
 - **提示缓存靠"稳定前缀 + 变动后缀"（0.1.3）**：把 cwd 这类每次会话都变的**环境事实**从系统提示开头挪到末尾、把可复用指令放前面，是零成本的缓存命中率优化——同时也解释了 v3 为什么要把 system prompt 变成可独立寻址的 surface 节点（[system-prompt.md](system-prompt.md)）。
@@ -255,6 +259,7 @@ graph TB
 - **迁移链只能逐代前进（0.1.3）**：相邻转换链保证每一步可验证，代价是跨多代升级要串行跑完整条链，冷启动成本随代数线性增长；且"已发布世代不可改"意味着早期代里的设计缺陷只能靠后续代修正，无法回头修补（见 [session-format-migration.md](session-format-migration.md)）。
 - **平台原生化带来的构建矩阵（0.1.3→0.1.5）**：subprocess 的 POSIX/Windows 双原生 runner、桌面端的 mac 签名公证 / Windows 签名、`node-addon-system` 的预编译产物，把"一次编译处处运行"换成多平台构建与发布流水线成本（见 [subprocess.md](subprocess.md)、[desktop-app.md](desktop-app.md)）。
 - **客户端包数量膨胀（0.1.5）**：`packages/client/ui-*` 细分成十几个包，换来关注面隔离与按需组合，代价是 slot/契约变更要跨多包同步，且 Host/Client 两侧存在重复投影（如系统提示词面的客户端推导）（见 [web-client.md](web-client.md)）。
+- **「非 loopback 页面用不了设置」是客户端自我约束而非 Host 强制（0.1.5）**：Host 侧并未按 loopback 收窄 settings 写入，所以它是产品策略而不是安全边界，且全有全无——远端页面连只读的设置视图也拿不到；官方推荐的解法是 SSH loopback 隧道，而不是放开 `trustedHosts`（见 [web-remote-access.md](web-remote-access.md)）。
 - **统一代理是全局开关（0.1.3）**：走 Node `fetch` 的出站（LLM 请求、web 搜索、HTTP MCP、E2B 等）都过同一策略，意味着代理配置错误会一次性影响它们；代价是例外必须显式管理——usage telemetry 的 OTLP exporter 用 Node 自带 HTTP 客户端、**刻意不代理**（导出失败静默丢弃，不影响任何功能）、loopback 结构性直连、模型自写代码拿不到代理设置、进程内 `worker_threads` 也不继承（逃逸防护），浏览器 Worker 侧则只求值、没有 transport 那一半（见 [networking-proxy.md](networking-proxy.md)）。
 - **有界读取把复杂度推给 provider（0.1.5）**：fs 的 range 能力要求每个后端（本地、沙箱、E2B）各自实现可取消的字节窗口，新增后端必须先补齐这块才算合格（见 [workspace-files.md](workspace-files.md)）。
 

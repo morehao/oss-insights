@@ -209,6 +209,8 @@ sequenceDiagram
 <!-- anchor: Remote calls use the Connection's `/api` route. The Client Remote calls -->
 <!-- anchor: Remote calls use the Connection's `/api` route. The Client Remote calls `connection.rpc.call('/api', … -->
 
+这道统一检查只覆盖「请求可信 + 身份」两件事；其上是客户端侧的 loopback 持久化判定（决定 `Settings` 能不能用），三者的分工、失败码与远端接入 runbook 见 [web-remote-access.md](web-remote-access.md)。
+
 事件侧则是一张**显式白名单**：`API_REMOTE_FORWARDED_EVENTS` 声明哪些 host 事件可转发、用什么模式（`emit` 或 `waterfall`）——它同时是 host 转发循环与消费方 `ctx.remote.$on` 的合法键集，两种编译器面读同一份声明、杜绝两份漂移[[packages/api/remotes/src/remote-events.ts:13-18]()]()
 <!-- anchor:  * Host events this application forwards without renaming. The explicit mode is …   { event: 'approval/request', mode: 'waterfall' }, -->。`approval/request` 以 waterfall 模式转发意味着**浏览器端插件可以参与 host 侧的审批瀑布**——这是把"策略挂到 seam 上"（[architecture.md](architecture.md) 支柱五）从 host 内扩展到浏览器域的实例。
 

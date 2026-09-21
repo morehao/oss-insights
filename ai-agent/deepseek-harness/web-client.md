@@ -23,7 +23,7 @@ dsh 的核心主张是**一切皆插件**：Host 侧把主循环、工具注册�
 
 - **进程/执行环境边界**：Host 树跑在 Node 里，握着文件系统、子进程、凭据文件、Landlock；浏览器没有这些能力，Host 的包也大多不能在浏览器里求值。两棵树共享的是**数据与协议**，不是对象。
 - **网络/信任边界**：浏览器经 `/api` 与 WebSocket 说话，每个 RPC 与流都要一个浏览器会话 cookie；Host 先做 Host/Origin 检查（拒 DNS rebinding 与跨站请求），再做 cookie 鉴权，两者都不建立身份，只建立「这次请求可信」（[packages/client/connection/src/client/connection.ts:1-20]()
-<!-- anchor: /** Connection generation readiness, cancellation, and continuous recovery. */ … const MANUAL_RECONNECT = new Error('connection: manual reconnect requested') -->，策略细节见 [remote-controllers.md](remote-controllers.md)）。
+<!-- anchor: /** Connection generation readiness, cancellation, and continuous recovery. */ … const MANUAL_RECONNECT = new Error('connection: manual reconnect requested') -->，策略细节见 [remote-controllers.md](remote-controllers.md)；这三层信任的拆分、为什么远端页面用不了 `Settings`、以及 loopback 隧道接入见 [web-remote-access.md](web-remote-access.md)）。
 - **权限/权威边界**：Host 拥有权威状态、持久化、变更顺序与访问策略；浏览器侧的 Client model 只是**身份稳定的本地投影**，编码「延迟响应与替换基线如何合并」，不是第二事实源（[docs/subsystems/web-client.md:36-52]()
 <!-- anchor: Each API controller package owns a paired Host and Client face. The Host side ow … This pairing is not a second source of business truth. Host controllers decide d -->）。这条边界直接决定了 UI 包不得自己重造传输状态。
 

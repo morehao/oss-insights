@@ -109,8 +109,8 @@ sequenceDiagram
     CON-->>C: 具体结果
 ```
 
-`SessionController` 是首个也是最重要的落地：它扩展 `TypertRemoteService`，把构造绑定到 `ctx.remote.session` 命名空间，暴露 `list`/`search`/`create`/`selectModel`/`modelCatalog` 等一组 Remote 方法（[packages/api/session-controller/src/index.ts:86-87]()）
-<!-- anchor: /** Host service backing the generated `ctx.remote.session` namespace. */ … export class SessionController extends TypertRemoteService { -->（[packages/api/session-controller/src/index.ts:222-223]()）
+`SessionController` 是首个也是最重要的落地：它扩展 `TypertRemoteService`，把构造绑定到 `ctx.remote.session` 命名空间，暴露 `list`/`search`/`create`/`selectModel`/`modelCatalog` 等一组 Remote 方法（[packages/api/session-controller/src/index.ts:98-99]()）
+<!-- anchor: /** Host service backing the generated `ctx.remote.session` namespace. */ … export class SessionController extends TypertRemoteService { -->（[packages/api/session-controller/src/index.ts:251-252]()）
 <!-- anchor:   @Remote('list') …   async list(_request: SessionListRequest, signal: AbortSignal): Promise<SessionListValue> { -->。其 lookup 解析语义（reuse live Agent、自动 resume 冷会话、去重并发 resume、拒绝 subagent 路由归属身份）是 api-gateway.md 记录的"标准解析策略"——这也是 `session/not-found`/`session/agent-busy` 这些 `RemoteError` 能带着自己的错误码原样过线的根因（`gateway/internal` 只折叠未分类异常）。
 
 ### 第二条链路：`ctx.remote.workspaceFiles` 的文件元数据订阅
@@ -142,13 +142,13 @@ sequenceDiagram
 这条链路上有三处值得单独点出的设计：
 
 - **地址是 Client 的唯一身份，Session 由地址携带。** `parseFileAddress` 把 `dsh-resource://file/…` 读成两种 scope——`session/<sessionId>/<path>`（携带授权身份）与 `absolute/<path>`（无可授权身份，直接以 `workspace-file/unknown-workspace` 失败，绝不借用"当前会话"或"当前 Tab 的会话"）（[packages/util/workspace-path/src/file-address.ts:27-39]()）
-<!-- anchor:     readonly scope: 'session' … /** Absolute `/`-separated path: `/a/b` on POSIX, -->；Client 只负责把地址里的 path 原样转交，**不读也不传 cwd**（[packages/api/workspace-files/src/client/provider.ts:115-124]()）
+<!-- anchor:     readonly scope: 'session' … /** Absolute `/`-separated path: `/a/b` on POSIX, -->；Client 只负责把地址里的 path 原样转交，**不读也不传 cwd**（[packages/api/workspace-files/src/client/provider.ts:119-127]()）
 <!-- anchor: function resolve(address: string): RemoteResult<HostFile> { …   return { ok: false, error: unknownWorkspace(address) } -->。
-- **根由 Host 解析，不由 Client 猜测。** 每个方法的第一参数都是 `workspaceFileScope`；Gateway 用 wire 上的 Session 身份查 `workspaceFileScope` lookup——先看 live Session header，冷会话退到 `sessionPersistence.stat`，两者都没有才用 sandbox policy 的部署根，**全程不激活 Agent、不读事件体、不继承父会话根**（[packages/api/workspace-files/src/index.ts:201-216]()）
+- **根由 Host 解析，不由 Client 猜测。** 每个方法的第一参数都是 `workspaceFileScope`；Gateway 用 wire 上的 Session 身份查 `workspaceFileScope` lookup——先看 live Session header，冷会话退到 `sessionPersistence.stat`，两者都没有才用 sandbox policy 的部署根，**全程不激活 Agent、不读事件体、不继承父会话根**（[packages/api/workspace-files/src/index.ts:202-217]()）
 <!-- anchor:     ctx.inject(['sessions', 'typert'], (scope) => { …             workspaceRoot: header.cwd ?? scope.sandboxPolicy.workspaceRoot, -->。
 - **一条 `changes` 流服务该会话的所有打开文件。** Client 侧 `ChangeFeed` 按会话复用一条被 Gateway supervisor 监管的重连流，订阅者按 `stat.absolutePath` 过滤；最后一个订阅者离开才销毁，插件卸载等待全部关闭（[packages/api/workspace-files/src/client/index.ts:16-34]()）
-<!-- anchor: /** Required browser services: the resource model, the Remote carrier and its namespace. */ …   }, 'workspace-files: file resource provider') -->。Host 侧的 `changes` 本身是 `mode: 'stream'` 的 Remote 方法（[packages/api/workspace-files/src/index.ts:364-366]()）
-<!-- anchor:   @Remote({ mode: 'stream' }) …     return this.feed.follow(workspaceFileScope.workspaceRoot, signal) -->，与 unary 方法共用同一套描述符/校验/lookup，只在投递方式上分叉。
+<!-- anchor: /** Required browser services: the resource model, the Remote carrier and its namespace. */ …   }, 'workspace-files: file resource provider') -->。Host 侧的 `changes` 本身是 `mode: 'stream'` 的 Remote 方法（[packages/api/workspace-files/src/index.ts:339-341]()）
+<!-- anchor: @Remote({ mode: 'stream' }) … return this.feed.follow(workspaceFileScope.workspaceRoot, path, signal) -->，与 unary 方法共用同一套描述符/校验/lookup，只在投递方式上分叉。
 
 ## 深挖一：编程模型——三个声明原语
 
@@ -156,9 +156,9 @@ sequenceDiagram
 
 业务包怎么"变成"可远程调用，全部浓缩在三个声明原语里：
 
-1. **`@Remote`**：标注一个 public 非泛型实例方法为直接 Remote 调用。方法参数必须 required 具名标识符（禁解构/默认值/rest/可选），Host 签名末尾的 `signal: AbortSignal` 记录进描述符而不进 `args`，客户端生成对应可选末参 `AbortSignal`（[packages/typert/protocol/src/index.ts:174-184]()）
+1. **`@Remote`**：标注一个 public 非泛型实例方法为直接 Remote 调用。方法参数必须 required 具名标识符（禁解构/默认值/rest/可选），Host 签名末尾的 `signal: AbortSignal` 记录进描述符而不进 `args`，客户端生成对应可选末参 `AbortSignal`（[packages/typert/protocol/src/index.ts:198-208]()）
 <!-- anchor: export function Remote<This extends object, Args extends unknown[], Result>( … export function Remote<This extends object, Args extends unknown[], Result>( -->。普通 JSON 可表示类型生成严格 schema；复杂对象（如 Agent）必须声明 `TypertLookupMap`。
-2. **`@RemoteScope`**：按作用域解析——先经 `ctx.typert.contexts` 把 wire 身份解析到 scoped Context，再从该 Context 取服务调用；用于依赖组合上下文、不需要显式接收 Agent 的方法（[packages/typert/protocol/src/index.ts:226-232]()）
+2. **`@RemoteScope`**：按作用域解析——先经 `ctx.typert.contexts` 把 wire 身份解析到 scoped Context，再从该 Context 取服务调用；用于依赖组合上下文、不需要显式接收 Agent 的方法（[packages/typert/protocol/src/index.ts:250-256]()）
 <!-- anchor: export function RemoteScope( …   return remoteDecorator({ kind: 'context', context: key }, undefined, exportName) -->。
 3. **`TypertRemoteService` / `bindTypertRemote`**：服务类绑定 Cordis service key 与默认 Remote namespace；两者都留下可检视的 public binding，不依赖编译器往构造器注入符号（[docs/api-gateway.md:15-15]()）
 <!-- anchor: Services normally extend `TypertRemoteService` so the constructor explicitly binds -->。
@@ -168,19 +168,20 @@ sequenceDiagram
 
 ### 第四个原语：`@Remote({ mode: 'stream' })`
 
-三个原语解决"怎么声明"，`RemoteMethodOptions` 补上"以什么投递方式声明"：普通 `@Remote` 是 unary（一次请求一次结果），显式传 `{ mode: 'stream' }` 则在描述符里记下 `mode: 'stream'`，方法返回 `Iterable`/`AsyncIterable`，每个元素被独立校验后经**共享的逻辑流载体**投递（[packages/typert/protocol/src/index.ts:83-103]()）
-<!-- anchor: /** Invocation mode recorded by a Remote method decorator. */ …   readonly mode: 'stream' -->。Gateway 对两者的入口做硬隔离：`invoke()` 遇到 stream 描述符直接报 `gateway/signature-invalid`，`stream()` 遇到 unary 描述符报同一错误码——**调用形态必须与声明形态一致，不允许"用 unary 端点拖一条流"**。这正是 `workspaceFiles.changes` 的做法（[packages/api/workspace-files/src/index.ts:364-366]()）
-<!-- anchor:   @Remote({ mode: 'stream' }) …     return this.feed.follow(workspaceFileScope.workspaceRoot, signal) -->：它和同命名空间里的 `read`/`stat` 共享生成管线、lookup 解析与错误编码，只在投递层换载体。反过来看，`docs/api-gateway.md` 的 Boundaries 仍写着"Remote 只处理 unary 调用"——那是 0.1.5 之前的口径，代码已经先走一步（见「不足 / 风险」）。
+三个原语解决"怎么声明"，`RemoteMethodOptions` 补上"以什么投递方式声明"：普通 `@Remote` 是 unary（一次请求一次结果），显式传 `{ mode: 'stream' }` 则在描述符里记下 `mode: 'stream'`，方法返回 `Iterable`/`AsyncIterable`，每个元素被独立校验后经**共享的逻辑流载体**投递（[packages/typert/protocol/src/index.ts:91-110]()）
+<!-- anchor: /** Invocation mode recorded by a Remote method decorator. */ …   readonly mode: 'stream' -->。Gateway 对两者的入口做硬隔离：`invoke()` 遇到 stream 描述符直接报 `gateway/signature-invalid`，`stream()` 遇到 unary 描述符报同一错误码——**调用形态必须与声明形态一致，不允许"用 unary 端点拖一条流"**。这正是 `workspaceFiles.changes` 的做法（[packages/api/workspace-files/src/index.ts:339-341]()）
+<!-- anchor: @Remote({ mode: 'stream' }) … return this.feed.follow(workspaceFileScope.workspaceRoot, path, signal) -->：它和同命名空间里的 `read`/`stat` 共享生成管线、lookup 解析与错误编码，只在投递层换载体。反过来看，`docs/api-gateway.md` 的 Boundaries 曾写着"Remote 只处理 unary 调用"——那是 0.1.5 之前的口径；0.1.7-rc.2 起该文档已追平代码，改述为"unary + stream 两种投递形态"（[docs/api-gateway.md:161-161]()）
+<!-- anchor: Remote handles unary method calls with one request and one result, and stream -->。
 
 ## 深挖二：生成管线——为什么必须是"严格 + 双产物"
 
-`typert-generator` 不是简单的模板生成器，它**严格分析** Remote 签名、类型图、lookups、Contexts 与源码位置（从 Host 的 `ts.Program` 出发），只给显式声明贡献入口的包生成产物[[docs/api-gateway.md:80-84]()]()
+`typert-generator` 不是简单的模板生成器，它**严格分析** Remote 签名、类型图、lookups、Contexts 与源码位置（从 Host 的 `ts.Program` 出发），只给显式声明贡献入口的包生成产物[[docs/api-gateway.md:82-86]()]()
 <!-- anchor: ## Component responsibilities … | Shared | `@deepseek-ai/dsh-typert-protocol` | Declares decorators, -->
 <!-- anchor: ## Component responsibilities … | Shared | `@deepseek-ai/dsh-typert-protocol` | Declares decorators, Gateway bindings, merge-extensible -->
 
-构建顺序是 load-bearing 的：root build 依次跑 `build:lib:host` → `build:lib:client` → `build:web`；Host lib 阶段先 tsc 再 tsdown（此间 Typert 生成器以 Host 聚合为唯一 `ts.Program` seed 运行），Client lib 阶段消费刚生成的 Remote Client 声明与运行时贡献、不再启动 Typert[[docs/api-gateway.md:97-99]()]()
-<!-- anchor: The root build runs `build:lib:host`, `build:lib:client`, and `build:web` … Both tsdown passes receive the complete workspace and bundle only JavaScript emitted to -->
-<!-- anchor: The root build runs `build:lib:host`, `build:lib:client`, and `build:web` in order. The Host lib … … Both tsdown passes receive the complete workspace and bundle only JavaScript emitted to -->
+构建顺序是 load-bearing 的：root build 依次跑 `build:lib:host` → `build:lib:client` → `build:web`；Host lib 阶段先 tsc 再 tsdown（此间 Typert 生成器以 Host 聚合为唯一 `ts.Program` seed 运行），Client lib 阶段消费刚生成的 Remote Client 声明与运行时贡献、不再启动 Typert[[docs/api-gateway.md:99-101]()]()
+<!-- anchor: The root build runs `build:lib:host`, `build:lib:client`, and `build:web` … Both tsdown passes match `vendor/*`, `packages/*/*`, and `apps/cli` -->
+<!-- anchor: The root build runs `build:lib:host`, `build:lib:client`, and `build:web` in order. The Host lib … Both tsdown passes match `vendor/*`, `packages/*/*`, and `apps/cli` -->
 
 产物写到业务包自己的 `lib/`（不污染源码目录），四类文件：`typert.host.js`/`.d.ts`（Host 面）、`typert.remote-client.js`/`.d.ts`（可挂载贡献 + 声明合并 + 源码映射）。声明映射把 `ctx.remote.goals.create` 生成的属性映射回 Host 源码里的 `@Remote` 方法——**编辑器从客户端调用一跳直达真实实现**[[docs/api-gateway.md:115-115]()]()
 <!-- anchor: Parameter names in Remote Client declarations come from wire fields, -->
@@ -195,9 +196,9 @@ sequenceDiagram
 修法是给解析加一条**包内转发走查**（[packages/typert/generator/src/analyzer.ts:877-909]()）
 <!-- anchor:    * Follow the import that names `symbol` at `site` through modules of the …     return walk(site.getSourceFile(), moduleSpecifier, authoredExportName(site, moduleSpecifier)) -->：
 
-- 相对 specifier 一律经 face 共享的 compiler host 与**模块解析缓存**解析，走查只在解析结果仍落在引用包内时继续（[packages/typert/generator/src/analyzer.ts:866-874]()）
+- 相对 specifier 一律经 face 共享的 compiler host 与**模块解析缓存**解析，走查只在解析结果仍落在引用包内时继续（[packages/typert/generator/src/analyzer.ts:867-875]()）
 <!-- anchor:   private resolveImport(specifier: string, fromFile: string): string | undefined { …     return resolved === undefined ? undefined : realPath(resolved.resolvedFileName) -->。复用缓存是有代价意识的：每个跨包相对引用按跳数各付一次模块解析，换来的是不再为同一 specifier 反复问编译器。
-- 每个转发模块收集"携带该导出名"的 `export` 边：带 specifier 的具名 re-export、由本模块 `import` 支撑的 `export { local }`、以及导出同一 symbol 的 star re-export；**显式边先于 star 边**，对应 TypeScript 本身"显式导出遮蔽 star 导出"的语义（[packages/typert/generator/src/analyzer.ts:911-935]()）
+- 每个转发模块收集"携带该导出名"的 `export` 边：带 specifier 的具名 re-export、由本模块 `import` 支撑的 `export { local }`、以及导出同一 symbol 的 star re-export；**显式边先于 star 边**，对应 TypeScript 本身"显式导出遮蔽 star 导出"的语义（[packages/typert/generator/src/analyzer.ts:912-936]()）
 <!-- anchor:   /** Export edges of `sourceFile` that carry `name`: explicit edges in source order, then star edges exporting `symbol`. */ …     return [...explicit, ...stars] -->。
 - 去重键是 **(已解析模块, 请求的导出名) 对**而非模块路径——所以环形 star 会终止，而"同一模块里两条改名的不同路由"仍各自可达；走查到第一个包 specifier 即停，并把该身份与导出名交回原有的公共导出检查，**转发不豁免公共性**。
 
@@ -211,7 +212,7 @@ sequenceDiagram
 
 这道统一检查只覆盖「请求可信 + 身份」两件事；其上是客户端侧的 loopback 持久化判定（决定 `Settings` 能不能用），三者的分工、失败码与远端接入 runbook 见 [web-remote-access.md](web-remote-access.md)。
 
-事件侧则是一张**显式白名单**：`API_REMOTE_FORWARDED_EVENTS` 声明哪些 host 事件可转发、用什么模式（`emit` 或 `waterfall`）——它同时是 host 转发循环与消费方 `ctx.remote.$on` 的合法键集，两种编译器面读同一份声明、杜绝两份漂移[[packages/api/remotes/src/remote-events.ts:13-18]()]()
+事件侧则是一张**显式白名单**：`API_REMOTE_FORWARDED_EVENTS` 声明哪些 host 事件可转发、用什么模式（`emit` 或 `waterfall`）——它同时是 host 转发循环与消费方 `ctx.remote.$on` 的合法键集，两种编译器面读同一份声明、杜绝两份漂移[[packages/api/remotes/src/remote-events.ts:17-22]()]()
 <!-- anchor:  * Host events this application forwards without renaming. The explicit mode is …   { event: 'approval/request', mode: 'waterfall' }, -->。`approval/request` 以 waterfall 模式转发意味着**浏览器端插件可以参与 host 侧的审批瀑布**——这是把"策略挂到 seam 上"（[architecture.md](architecture.md) 支柱五）从 host 内扩展到浏览器域的实例。
 
 ### 第二条暴露通道：feature 自有的精确 Fetch 路由
@@ -243,37 +244,40 @@ graph LR
 
 - `ctx.settingsController`：把 user-settings seam 投影到生成式 Remote namespace——**读取恒为 redacted 视图、每次 provider 拒绝都被分类**，这些策略住在控制器而非 seam Definition 上[[packages/api/settings-controller/src/index.ts:3-5]()]()
 <!-- anchor:  * seams. Two namespaces: `settings`, the redacted reads and writes of …  * here as its own plugin. -->；
-- `ctx.credentialsController`：批扇出、视图投影、拒绝映射同样住在控制器层（[docs/capability-seams.md:487-487]()）
+- `ctx.credentialsController`：批扇出、视图投影、拒绝映射同样住在控制器层（[docs/capability-seams.md:591-591]()）
 <!-- anchor: | `ctx.credentialsController` | `core` | [`api-settings-controller`]( -->；
-- `ctx.workspaceController`：workspace 命令 + reconnect-safe 状态投递 + 目录选择（`pick`/`list`/`createDirectory` 等 Remote）[[packages/api/workspace-controller/src/index.ts:57-58]()]()
+- `ctx.workspaceController`：workspace 命令 + reconnect-safe 状态投递 + 目录选择（`pick`/`list`/`createDirectory` 等 Remote）[[packages/api/workspace-controller/src/index.ts:85-86]()]()
 <!-- anchor:   @Remote('create') …   create(request: WorkspaceCreateRequest): Promise<WorkspaceCreateValue> { -->。
 
 演进的价值不在于"少写代码"，而在于**把「暴露面」变成源码声明**：以后每加一个 host 能力，业务包只需要 `@Remote` 标注 + 声明 lookup，契约一致性交给编译器与生成器——这与 dsh「无特权内核、可替换组件」的架构是一致的：API 面不再是 apiproxy 那样的独立"内核侧 RPC 层"，而是挂在每个业务包自己身上的声明。0.1.5 的下一段演进则把这套声明范式用在了文件面上。
 
 ### 第五个控制器：`workspace-files` 的双面契约
 
-0.1.5 新增的 `packages/api/workspace-files` 是本体系里第一个**不是从 apiproxy 迁移、而是直接按新范式长出来**的控制器：一个包同时出两面——Host 导出 `WorkspaceFiles` 服务（绑 `ctx.workspaceFiles`，Remote namespace 为 `workspaceFiles`），`./client` 导出真正的浏览器 `file` 资源 provider 插件，`dsh.client` 声明它是 web 平台插件，因此 web-app 只加一行 `workspace-files` 就同时装上 Host 与 Client 两面（[packages/api/workspace-files/src/index.ts:181-183]()）
+0.1.5 新增的 `packages/api/workspace-files` 是本体系里第一个**不是从 apiproxy 迁移、而是直接按新范式长出来**的控制器：一个包同时出两面——Host 导出 `WorkspaceFiles` 服务（绑 `ctx.workspaceFiles`，Remote namespace 为 `workspaceFiles`），`./client` 导出真正的浏览器 `file` 资源 provider 插件，`dsh.client` 声明它是 web 平台插件，因此 web-app 只加一行 `workspace-files` 就同时装上 Host 与 Client 两面（[packages/api/workspace-files/src/index.ts:182-184]()）
 <!-- anchor: /** Host Remote file reads and workspace directory observations over the composed filesystem. */ …   static inject = ['fs', 'sandboxPolicy', 'sessions', 'typert'] -->。这与 settings/workspace 控制器"Host 侧声明、Client 侧各自消费"的形态不同，动机是**文件能力的 wire 协议与它的 Client 模型本就要一起演进**：拆成两个包会立刻撞上 `remotes → workspace-files → resources → remotes` 这类项目引用环，而把 Client 的 `RemoteResult` 直接从 protocol 包取、把 Sidebar 参数声明留给预览包，环就消掉了。
 
-双契约的生成方式和其它控制器一致、没有为双面开特例：包的 `package.json#exports` 把 `./typert`（Host 面描述符产物）、`./remote`（Client 面可挂载贡献 + 声明合并）、`./types`（两面对等读取的 wire 类型，只有类型没有 Host 运行时代码）分成三个入口，Host 面的 `@Remote` 声明经同一次生成管线产出 `typert.host.*` 与 `typert.remote-client.*`；`./client` 则是**手写的浏览器插件**（资源 provider），不是生成物——生成物负责"跨线说什么"，手写件负责"浏览器怎么消费"。Client 编译面因此只依赖 protocol、resources 与 util-workspace-path，不反向依赖 `api/remotes` 或 Sidebar UI（[packages/api/remotes/src/client/index.ts:153-156]()）
-<!-- anchor:     for (const contribution of [ …       subagentsRemote, sessionRemote, workspaceRemote, workspaceFilesRemote, -->：Client 程序集把 `workspaceFilesRemote` 加进 `ctx.remote.$mount` 列表，是这条命名空间真正"到浏览器"的那一步；`declaration merging` 让业务包读到的是生成声明本身，而不是一份复述。
+双契约的生成方式和其它控制器一致、没有为双面开特例：包的 `package.json#exports` 把 `./typert`（Host 面描述符产物）、`./remote`（Client 面可挂载贡献 + 声明合并）、`./types`（两面对等读取的 wire 类型，只有类型没有 Host 运行时代码）分成三个入口，Host 面的 `@Remote` 声明经同一次生成管线产出 `typert.host.*` 与 `typert.remote-client.*`；`./client` 则是**手写的浏览器插件**（资源 provider），不是生成物——生成物负责"跨线说什么"，手写件负责"浏览器怎么消费"。Client 编译面因此只依赖 protocol、resources 与 util-workspace-path，不反向依赖 `api/remotes` 或 Sidebar UI（[packages/api/remotes/src/client/index.ts:177-181]()）
+<!-- anchor: for (const contribution of [ … permissionPresetsRemote, subagentsRemote, sessionRemote, -->：Client 程序集把 `workspaceFilesRemote` 加进 `ctx.remote.$mount` 列表，是这条命名空间真正"到浏览器"的那一步；`declaration merging` 让业务包读到的是生成声明本身，而不是一份复述。
 
 命名空间暴露七个方法，**全部以 `workspaceFileScope` 作第一参数**（`read`/`readBytes`/`readAll`/`readRelated`/`stat`/`list`/`changes`），Host 侧签名里的 scope 是必填具名标识符，正好满足 `@Remote` 的参数形状约束（[packages/api/workspace-files/src/index.ts:231-237]()）
 <!-- anchor:   @Remote …     signal: AbortSignal, -->。它在两个维度上偏离了"典型控制器"：
 
-- **输入有两套路径词汇，且各方法只用一套。** `read`/`readBytes`/`readAll`/`readRelated`/`stat`/`changes` 报 `absolutePath`（文件系统执行世界里的绝对路径，符号链接已解析），因为消费方是 Client 资源系统、其地址里携带的就是同一种路径；`list` 讲 workspace 路径，因为它的消费方是以工作区根为根的树（[packages/api/workspace-files/src/types.ts:5-12]()）
+> **演进说明(0.1.7-rc.2)**：上述枚举里的 `readAll` / `readRelated` 两个独立 Remote 方法已下线，改由 `readBytes` 的必填 options 对象一次性承担——不给 `range` 即整文件读取（受 `config.maxFileBytes` 约束，超限抛 `workspace-file/too-large` 而非截断），给 `baseFile` 即从该文件所在目录解析相对目标；故 `workspaceFiles` 现暴露 `read`/`readBytes`/`stat`/`list`/`changes` 五个方法（[packages/api/workspace-files/src/index.ts:256-279]()）
+<!-- anchor: async readBytes( … return { ...this.statOf(target, info), offset: 0, data, eof: true } -->
+
+- **输入有两套路径词汇，且各方法只用一套。** `read`/`readBytes`/`stat`/`changes` 报 `absolutePath`（文件系统执行世界里的绝对路径，符号链接已解析），因为消费方是 Client 资源系统、其地址里携带的就是同一种路径；`list` 讲 workspace 路径，因为它的消费方是以工作区根为根的树（[packages/api/workspace-files/src/types.ts:5-12]()）
 <!-- anchor:  * Two path vocabularies leave here, and each method uses exactly one: …  *   because its consumer is a tree rooted at the workspace root. -->。
-- **"读"与"列目录/看变更"的边界不一致，且是刻意的。** 文件方法只做 `lstat` 预检 + 再 `stat` 复检（防"检查后被换掉/换类型"），随后完全信任合成文件系统的读权限——**允许读工作区之外**；只有 `list` 额外要求解析结果仍在工作区根内，`changes` 也按根过滤（[packages/api/workspace-files/src/index.ts:429-447]()）
-<!-- anchor:   private async locateFile( …     return { target, info } -->、[packages/api/workspace-files/src/index.ts:416-422]()）
+- **"读"与"列目录/看变更"的边界不一致，且是刻意的。** 文件方法只做 `lstat` 预检 + 再 `stat` 复检（防"检查后被换掉/换类型"），随后完全信任合成文件系统的读权限——**允许读工作区之外**；只有 `list` 额外要求解析结果仍在工作区根内，`changes` 也按根过滤（[packages/api/workspace-files/src/index.ts:415-432]()）
+<!-- anchor:   private async locateFile( …     return { target, info } -->、[packages/api/workspace-files/src/index.ts:402-407]()）
 <!-- anchor:   private async confine(root: FsTarget, workspaceRoot: string, path: string, signal: AbortSignal): Promise<FsTarget> { …     return target -->。理由是两者的消费场景不同：预览一个 agent 在 `/tmp` 产出的文件是常态，而"工作区文件树"天然要有明确边界。
 
 ### session-controller 承接文件：从"文件端点宿主"退回生命周期控制器
 
 0.1.5 把 workspace-file 实现整体搬去 `workspace-files` 后，session-controller 的文件相关系数不是消失，而是**换了角色**：它不再实现 workspace 文件读写，改为三件与"会话"强相关的事。这也修正了 0.1.2 的一条历史包袱——文件端点当初挂在 Session Controller 上，只是因为"wire 入口在那儿"。
 
-- **上传受理**：注册 `fileUploads` 的 Agent resolver，把上传件绑定到某个会话的 Agent（[packages/api/session-controller/src/index.ts:125-129]()）
+- **上传受理**：注册 `fileUploads` 的 Agent resolver，把上传件绑定到某个会话的 Agent（[packages/api/session-controller/src/index.ts:140-144]()）
 <!-- anchor:     ctx.effect(() => ctx.fileUploads.registerAgentResolver(async (sessionId) => { …     }), 'session-controller: file-upload Agent resolver') -->。这让"文件属于哪个会话"由会话解析策略统一回答，而不是让上传服务自己猜。
-- **prompt 受理文件**：`prompt` 流程把内容里的 receipt 交给 `fileUploads.resolve(agent, receiptId)`，解析出的附件再经 `attachments.admitPromptContent` 受理并生成用户消息；随后 `bindPrompt(...)` 拿到一个**提交绑定**，成功提交才 `commit`——`using` 语义保证异常路径上自动回滚（[packages/api/session-controller/src/commands.ts:349-365]()）
+- **prompt 受理文件**：`prompt` 流程把内容里的 receipt 交给 `fileUploads.resolve(agent, receiptId)`，解析出的附件再经 `attachments.admitPromptContent` 受理并生成用户消息；随后 `bindPrompt(...)` 拿到一个**提交绑定**，成功提交才 `commit`——`using` 语义保证异常路径上自动回滚（[packages/api/session-controller/src/commands.ts:350-366]()）
 <!-- anchor:         const admission = resolvePromptFileReceipts( …         binding.commit() -->。把文件纳入命令流是一条比"独立上传接口"更强的承诺：文件与 prompt 同生共死。
 - **媒体路由**：`/api/file` 由 session-controller 的子插件 `SessionMediaReferences` 注册（见「第二条暴露通道」），因为它要复用会话侧的 `ctx.fs` 与附件上限，但**不再持有任何 workspace-file 实现**。
 
@@ -287,9 +291,9 @@ Remote 控制器体系是「可交换后端」（[architecture.md](architecture.
 
 - **严格性的陡峭学习曲线**：Remote 方法有严格的参数形状约束（禁默认值/rest/可选），复杂对象必须建 `TypertLookupMap`，否则构建或首次调用才失败。
 - **生成管线顺序敏感**：Host 阶段必须先于 Client 阶段，clean worktree 不能跳过 Host 阶段；CI 与本地 `pnpm run typecheck` 依赖同一顺序。
-- **unary-only 边界**：流式/分页/增量投影不走 Remote，需要各自的数据协议——文档明令"不得伪装成 Remote 方法"[[docs/api-gateway.md:160-162]()]()
-<!-- anchor: Remote handles only unary method calls with one request and one result. … The API layers are organized as `remotes → gateway → connection → webserver`. -->。
-<!-- anchor: Remote handles only unary method calls with one request and one result. Session event streams, … … even when they reuse the Connection, they must not masquerade as Remote methods or enter invocation descriptors. -->。
+- **描述符之外的流式语义**：Remote 支持 unary 与 stream 两种投递形态，但**会话事件流、分页、增量 reduce、投影与实体子流**仍不走 Remote，需要各自的数据协议与注册模型——文档明令这类流"不得伪装成 Remote 方法、不得进入调用描述符"（[docs/api-gateway.md:161-161]()）
+<!-- anchor: Remote handles unary method calls with one request and one result, and stream -->。
 - **控制器与 seam 语义的重复归属**：策略（redact/refusal 分类）住在控制器层而非 seam Definition，意味着同一语义有两处实现位，需警惕漂移。
-- **"unary-only"这条边界文档已落后于代码**：`@Remote({ mode: 'stream' })` 把多结果流正式纳入了 Remote 描述符（`workspaceFiles.changes` 就是落地样本），而上引 `docs/api-gateway.md` 的 Boundaries 仍写着"Remote 只处理 unary 调用、流必须另立协议"。两者不是非此即彼——真正的分界是"**是否复用描述符/校验/取消语义**"（stream 模式复用，事件流与分页不复用）——但文档口径待追平，读者若只读那份 reference 会得出错误结论。
-- **同一份文件内容存在两条暴露通道，授权与上限各不相同**：`remote.workspaceFiles.read/readBytes/readAll` 是 Session 作用域（`workspaceFileScope` lookup 解析根）且按页/窗口/整文件三档上限（默认 2 MiB / 2 MiB / 32 MiB）；`GET /api/file` 是连接级认证 + 绝对路径、无 Session 归属、上限复用附件的 `imageLimits.maxImageBytes`（通常 20 MiB）。两套模型服务不同消费场景是合理的，但"同一份内容、两种授权解释、两个数字上限"是安全审查与实现漂移的高风险面——顺带一提，文件方法**允许读工作区之外**，只有 `list`/`changes` 受工作区约束，这个不对称为何成立，见 [workspace-files.md](workspace-files.md) 的读取授权讨论。
+- **（0.1.7-rc.2 已追平）"unary-only"口径曾落后于代码**：`@Remote({ mode: 'stream' })` 把多结果流正式纳入了 Remote 描述符（`workspaceFiles.changes` 就是落地样本），当时上引 `docs/api-gateway.md` 的 Boundaries 还写着"Remote 只处理 unary 调用、流必须另立协议"；该 reference 现已改写为"unary + stream 两种投递形态，stream 的 Client→Host 方向走 `this.ctx.invocation.uplink()`"（[docs/api-gateway.md:161-161]()）
+<!-- anchor: Remote handles unary method calls with one request and one result, and stream -->。真正的分界始终是"**是否复用描述符/校验/取消语义**"（stream 模式复用，事件流与分页不复用）。
+- **同一份文件内容存在两条暴露通道，授权与上限各不相同**：`remote.workspaceFiles.read/readBytes` 是 Session 作用域（`workspaceFileScope` lookup 解析根）且按页/窗口/整文件三档上限（默认 2 MiB / 2 MiB / 32 MiB）；`GET /api/file` 是连接级认证 + 绝对路径、无 Session 归属、上限复用附件的 `imageLimits.maxImageBytes`（通常 20 MiB）。两套模型服务不同消费场景是合理的，但"同一份内容、两种授权解释、两个数字上限"是安全审查与实现漂移的高风险面——顺带一提，文件方法**允许读工作区之外**，只有 `list`/`changes` 受工作区约束，这个不对称为何成立，见 [workspace-files.md](workspace-files.md) 的读取授权讨论。

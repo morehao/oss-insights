@@ -7,14 +7,17 @@ tags: [deepseek-harness, inspector, cdp, devtools, experimental]
 
 # Inspector：跨 Host/浏览器两域的 Chrome DevTools 检视器
 
-> 子文档之一，聚焦 dsh 0.1.2-alpha 新增的 experimental `inspector` 能力面（`packages/experimental/inspector`，private 维护工具）。整体哲学见 [README](README.md)；本文与 [remote-controllers.md](remote-controllers.md) 共享「跨进程/跨域可观测」的主题。按 ai-agent ⊗ framework 类规格产出。
+> 子文档之一，聚焦 dsh 0.1.2-alpha 新增的 experimental `inspector` 能力面（`packages/experimental/inspector`，experimental 插件包；0.1.7 起已公开发布，见下方演进说明）。整体哲学见 [README](README.md)；本文与 [remote-controllers.md](remote-controllers.md) 共享「跨进程/跨域可观测」的主题。按 ai-agent ⊗ framework 类规格产出。
 
 根因与一句定位：**dsh 的 web 形态是一个「Node Host 主线程 + 浏览器 Worker/Client 多域」的分布式运行时，普通调试器只看得到其中一端**——主线程断点停住时浏览器端照跑，浏览器端出问题时 host 的 console/network 一无所知。Inspector 用 Chrome DevTools 协议（CDP）把两端的 Console/Sources/Network/Elements 统一进一个调试面，但坚持一个安全底线：**所有 CDP 状态放在一个 Worker 里，Worker 永不接触 live Cordis 对象**。
 
 ## 概览：是什么 / 痛点 / 适用场景
 
 - **是什么**：一个 experimental 的 DevTools 检视器，可检视一个运行中的 dsh Host 及其浏览器 Clients：暴露 Host 与 Client 的 Console 上下文、Host 的 Sources 与调试、捕获的 Host fetch、共享的 Cordis 树。全部 CDP 状态保持在一个 Worker 中[[packages/experimental/inspector/README.md:12-14]()]()
-<!-- anchor: Use this experimental inspector to inspect one running dsh Host and its browser Clients in … The package is private and excluded from releases. -->
+<!-- anchor: Inspect one running dsh Host and its browser Clients in Chrome … The Inspector stays off the default plugin list. Install its bu -->
+
+> **演进说明(0.1.7-rc.2)**：Inspector 已**不再是 private 维护工具**——它的 `package.json` 去掉了 `private: true`、改为 `publishConfig.access: "public"` 并随版本发布（[packages/experimental/inspector/package.json:4-7]()
+<!-- anchor: "version": "0.1.7-rc.2", … "access": "public" -->），安装方式是显式的 `dsh plugin --profile web add @deepseek-ai/dsh-experimental-inspector`，它依旧**不在默认插件列表里**。"developer-only、模型请求零改动"这一定位不变，变的是分发口径：从"随仓库自带"变成"可安装的官方插件包"。
 - **痛点**：dsh 是"跨域"运行时（Host 线程 + 浏览器域），单域调试器无法给出全局视图；且业务运行时是插件树，肉眼/日志难看清"当前挂了多少插件、什么组合"。
 - **适用场景**：维护者调试 web 形态（Host 与浏览器 Client 的协调问题、插件树组合问题）、开发新插件时观察 host 行为；它是 developer-only 工具，**模型请求零改动**。
 - **核心能力清单**：

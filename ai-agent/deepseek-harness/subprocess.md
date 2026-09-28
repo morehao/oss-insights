@@ -22,23 +22,23 @@ tags: [deepseek-harness, subprocess, process-containment, systemd-scope, windows
 | 进程坐标（可执行查找、cwd、stdio 处置、环境）、生命周期（起/停/等空） | `ctx.subprocess` | Service Definition 语义清单 |
 | 文件效果边界（read-only / workspace-write / danger-full-access）与 `confine(argv)` 包裹 | `ctx.sandbox` + `ctx.sandboxPolicy` | 见 [sandbox-capability-seams.md](sandbox-capability-seams.md)「隔离必须 fail-closed」一节 |
 
-前两行的原文依据分别是 `ctx.shell` 的 disposal 边界声明（`[packages/shell/shell/src/index.ts:58-62]()`）与 `ctx.subprocess` 的实现语义清单（`[packages/subprocess/subprocess/src/index.ts:92-94]()`）。
-<!-- anchor: *   repeat output. Lossy reads report truncation and available spill files. … *   owning composition tears down. With the subprocess seam that -->
+前两行的原文依据分别是 `ctx.shell` 的 disposal 边界声明（`[packages/shell/shell/src/index.ts:59-62]()`）与 `ctx.subprocess` 的实现语义清单（`[packages/subprocess/subprocess/src/index.ts:94-96]()`）。
+<!-- anchor: *   repeat output. Lossy reads report truncation and available spill files. … *   `ctx.subprocess` disposal, so a process survives an executor-only reload. -->
 <!-- anchor: * Implementations must honor these semantics: … *   filesystem provider. -->
 
 **根因一句话**：进程的**语义**必须留在消费方（否则 seam 会被某一类消费者的默认值污染），但进程的**坐标与生命周期**必须共享（否则"同一执行世界"假设失效、清理策略各写一套）。Service Definition 因此选择"零默认值 + 全显式 spec"：
 
-- 每一次 spawn 的每一个处置方式、上限、目录都必须显式写在 spec 上，seam 不提供任何隐藏默认值，`dsh-shell` 的 request/spec 拆分是这条规则的模板（`[packages/subprocess/subprocess/src/types.ts:69-74]()`）。
+- 每一次 spawn 的每一个处置方式、上限、目录都必须显式写在 spec 上，seam 不提供任何隐藏默认值，`dsh-shell` 的 request/spec 拆分是这条规则的模板（`[packages/subprocess/subprocess/src/types.ts:72-74]()`）。
 <!-- anchor: * A fully-specified spawn request. This seam applies no defaults: every … * not a hidden subprocess-service default — decides them (the `dsh-shell` -->
 
-**`resolveExecutable` 的语义是本子系统与 fs 族共享"执行世界"的关键**。它在 provider 自己的执行世界里解析可执行文件：绝对路径要被验证为可执行文件，裸名要通过 provider 擦除后的 `PATH` 加显式覆盖去查找，而**含分隔符的相对路径直接被拒绝**——因为解析基准未定义，provider 宁可 loud-fail 也不猜（`[packages/subprocess/subprocess/src/index.ts:120-129]()`、`[packages/subprocess/subprocess/src/index.ts:131-135]()`）。
+**`resolveExecutable` 的语义是本子系统与 fs 族共享"执行世界"的关键**。它在 provider 自己的执行世界里解析可执行文件：绝对路径要被验证为可执行文件，裸名要通过 provider 擦除后的 `PATH` 加显式覆盖去查找，而**含分隔符的相对路径直接被拒绝**——因为解析基准未定义，provider 宁可 loud-fail 也不猜（`[packages/subprocess/subprocess/src/index.ts:123-129]()`、`[packages/subprocess/subprocess/src/index.ts:131-135]()`）。
 <!-- anchor: * Resolve one configured executable in this provider's execution world. … * @param env - explicit environment entries used for lookup. -->
 <!-- anchor: abstract resolveExecutable( … env?: Readonly<Record<string, string>>, -->
 
 这与既有解读一致：subprocess 的可执行路径、cwd、进程与终端会话都与挂载的 filesystem provider 处于同一个路径与进程命名空间（`[docs/subsystems/subprocess.md:11-11]()`）；当执行世界整体切到 E2B 时，fs / subprocess / shell / terminal / lsp 会级联一起移动（见 [sandbox-capability-seams.md](sandbox-capability-seams.md)）。
 <!-- anchor: One provider's spawn working directories, executable paths, ordinary processes, -->
 
-本地 provider 的实现同样落在这条语义上：拒绝空命令、拒绝含分隔符的相对路径、先 `stat` 确认是文件再 `access(X_OK)`，全部候选失败后给出**一条稳定错误**（绝对路径失败与 PATH 未命中的文案不同），并且每个候选项之间都复查 abort（`[packages/subprocess/subprocess-local/src/index.ts:122-153]()`）。
+本地 provider 的实现同样落在这条语义上：拒绝空命令、拒绝含分隔符的相对路径、先 `stat` 确认是文件再 `access(X_OK)`，全部候选失败后给出**一条稳定错误**（绝对路径失败与 PATH 未命中的文案不同），并且每个候选项之间都复查 abort（`[packages/subprocess/subprocess-local/src/index.ts:140-169]()`）。
 <!-- anchor: async resolveExecutable( … ? `subprocess-local: command ${JSON.stringify(command)} is not an executable fil -->
 
 ### 核心能力清单
@@ -53,7 +53,7 @@ tags: [deepseek-harness, subprocess, process-containment, systemd-scope, windows
 | 终端原语 | 唯一非管道原语：分配控制终端、前台进程组检查/信号、整体停稳 | `spawnTerminal`、`SubprocessTerminalHandle` |
 | 环境擦除 | 凭据形状键 + 全部 `DSH_*` 不隐式泄漏；显式 `env` 在擦除之后 merge | `scrubbedParentEnv`、`SENSITIVE_ENV_PATTERN` |
 
-凭据擦除本身值得单看：`KEY|PASSWORD|SECRET|TOKEN` 大小写不敏感匹配 + 全部 `DSH_*` 前缀被丢弃，显式传入的条目因为 merge 在擦除之后而存活；当有代理时还会叠加子进程 Node 需要的代理变量与开关，使 MCP stdio server 或 subagent CLI 继承父进程同样的路由（`[packages/subprocess/subprocess/src/index.ts:64-78]()`）。
+凭据擦除本身值得单看：`KEY|PASSWORD|SECRET|TOKEN` 大小写不敏感匹配 + 全部 `DSH_*` 前缀被丢弃，显式传入的条目因为 merge 在擦除之后而存活；当有代理时还会叠加子进程 Node 需要的代理变量与开关，使 MCP stdio server 或 subagent CLI 继承父进程同样的路由（`[packages/subprocess/subprocess/src/index.ts:66-79]()`）。
 <!-- anchor: export function scrubbedParentEnv(): Record<string, string> { … return env -->
 
 **权衡**：擦除是**名字启发式**而非值检测——`*PASSPHRASE*` 这类不匹配的密钥会漏过去，属于已知不足（见「权衡与不足」）。选它以换取"任何 spawn 路径（含无法走 service 的 node-pty / SDK transport）共用同一份定义"，是典型的一致性优于完备性取舍。
@@ -63,11 +63,15 @@ tags: [deepseek-harness, subprocess, process-containment, systemd-scope, windows
 ```
 packages/subprocess/
 ├── subprocess/          # Service Definition（抽象，声明 ctx.subprocess）
-│   ├── src/index.ts     # SubprocessRuntime + scrubbedParentEnv
-│   └── src/types.ts     # spec / handle / outcome / terminal 词汇
+│   ├── src/index.ts     # SubprocessRuntime + scrubbedParentEnv + SubprocessExecutableNotFoundError
+│   ├── src/types.ts     # spec / handle / outcome / terminal / activity 词汇
+│   └── src/control.ts   # 继承式 fd 7 control 通道协议
 ├── subprocess-local/    # Service Provider（注册 ctx.subprocess，本地执行）
 │   ├── src/index.ts     # 平台选择、live 集合、dispose / host-exit
 │   ├── src/spawn.ts     # 共同 stdio/结果生命周期 + fallback 启动
+│   ├── src/output.ts    # 有界输出尾部 + 私有 spill 文件（从 spawn.ts 拆出）
+│   ├── src/shell-activity.ts   # 交互 shell 生命周期文件与 activity 证据
+│   ├── src/control-spawn.ts    # parent 侧 fd 7 control 管道与私有标记
 │   ├── src/managed-owner.ts
 │   ├── src/linux-scope.ts / linux-execve.ts   # systemd scope + libc execve
 │   ├── src/windows-job.ts                     # parent 侧 runner 启动与 Job owner
@@ -75,8 +79,34 @@ packages/subprocess/
 │   ├── src/runner-launch.ts / runner-protocol.ts
 │   ├── src/terminal.ts / process-inspector.ts / windows-inspector.ts
 └── win32-process/       # 共享 Win32 原语库（无 ctx key）
-    └── src/{ffi,process,abi,errors}.ts
+    └── src/{ffi,process,abi,errors,koffi,control-stdio,index}.ts
 ```
+
+### 本轮结构变化（0.1.7-rc.2）
+
+相对上一版基线（`dsh-v0.1.5-rc.2`），这组包在 0.1.7-rc.2 里发生了**文件拓扑拆分**，不只是行号漂移。
+
+**其一，`spawn.ts` 被拆出两个新文件。** 有界输出尾部与私有 spill 文件（`OutputCollector`、`prepareManagedProcessBinding`、`SpillOptions`）移到 `output.ts`（`[packages/subprocess/subprocess-local/src/output.ts:1-1]()`）；交互 shell 的 startup 文件与 idle/busy 证据（`ShellActivity`、`prepareShellActivity`）移到 `shell-activity.ts`（`[packages/subprocess/subprocess-local/src/shell-activity.ts:1-1]()`）。`spawn.ts` 自身只留 stdio 处置、终止调度与 direct/range 结算。
+<!-- anchor: /** Bounded output tails and private spill files shared by process providers. -->
+<!-- anchor: /** Private shell lifecycle files; ordinary output never authorizes terminal rec -->
+
+**其二，新增一条可选的继承式 control 通道。** Definition 侧给出 `SubprocessStdio.control?: 'pipe'`，并固定私有标记 `DSH_SUBPROCESS_CONTROL` 与保留描述符 `SUBPROCESS_CONTROL_FD = 7`（`[packages/subprocess/subprocess/src/control.ts:7-10]()`）；parent 侧从 Node 的 stdio 元组里取那根额外管道（`[packages/subprocess/subprocess-local/src/control-spawn.ts:12-18]()`）。
+<!-- anchor: export const SUBPROCESS_CONTROL_FD = 7 … export const SUBPROCESS_CONTROL_ENV = 'DSH_SUBPROCESS_CONTROL' as const -->
+<!-- anchor: export function controlPipe( … return control === 'pipe' ? streams[SUBPROCESS_CONTROL_FD] as Duplex | undefined -->
+
+**其三，`win32-process` 从 4 个源文件扩到 7 个。** Koffi 懒加载独立成 `koffi.ts`（`[packages/subprocess/win32-process/src/koffi.ts:10-10]()`），Windows CRT 描述符表编码独立成 `control-stdio.ts`（`[packages/subprocess/win32-process/src/control-stdio.ts:29-44]()`），并新增统一出口 `index.ts`。
+<!-- anchor: export const requireKoffi = createLazyRequire<Koffi>('koffi', import.meta.url) -->
+<!-- anchor: export function inheritedControlStdio(api: Pick<Win32ProcessBindings, 'getFileTy … bytes.writeBigUInt64LE(handle, handleOffset + fd * HANDLE_BYTES) -->
+
+**其四，Definition 侧新增两处执行世界与终端观察表面。** provider 执行世界自省 `terminalEnvironment()`（`[packages/subprocess/subprocess/src/index.ts:144-144]()`），以及终端活动观察 `SubprocessTerminalActivity`（`[packages/subprocess/subprocess/src/types.ts:244-248]()`）。
+<!-- anchor: abstract terminalEnvironment(signal?: AbortSignal): Promise<SubprocessTerminalEn -->
+<!-- anchor: export interface SubprocessTerminalActivity { … revision: number -->
+
+**其五，终端与查找失败各自补上可判定入口。** terminal handle 新增 `resize()` 与 `inspectActivity()`（`[packages/subprocess/subprocess/src/types.ts:274-284]()`），可执行查找失败有了独立类型 `SubprocessExecutableNotFoundError`（`[packages/subprocess/subprocess/src/index.ts:168-175]()`）。
+<!-- anchor: resize(cols: number, rows: number): Promise<void> … inspectActivity(): Promise<SubprocessTerminalActivity> -->
+<!-- anchor: export class SubprocessExecutableNotFoundError extends Error { … this.name = 'SubprocessExecutableNotFoundError' -->
+
+按当前工作树实测，这三份包的 src 规模已变为 `dsh-subprocess` 498 行（`index.ts` 177 + `types.ts` 297 + `control.ts` 24）、`dsh-subprocess-local` 4783 行、`dsh-win32-process` 1185 行（含新增的 `control-stdio.ts` 47 行与 `koffi.ts` 10 行）；本区间的真实增量为 69 文件 `+3283/−647`（`git diff dsh-v0.1.5-rc.2..dsh-v0.1.7-rc.2 -- packages/subprocess/`）。紧随其后的规模表与增量段落里的 418/4202/1070 行、52 文件 `+7142/−425` 是上一轮测量留下的快照，此处保留以对照。
 
 | 包 | 角色 | 代码规模（src，未计测试） | ctx key |
 |---|---|---|---|
@@ -128,16 +158,16 @@ graph LR
 | `isJobEmpty` | 读 `JobObjectBasicAccountingInformation.ActiveProcesses` 是否为 0 |
 | `spawnCurrentTokenJobProcess` | 单独解析 `applicationName` + 完整 UTF-16LE 环境块 + fd 4–6 载体 |
 
-落点集中在两个原语：`createKillOnCloseJob` 建 Job 并设置 kill-on-close 限制（`[packages/subprocess/win32-process/src/process.ts:333-352]()`），`spawnJobProcess` 完成"建 Job → 临时打开继承位 → suspended 创建 → 赋值 Job → resume"这段两路共用的生命周期（`[packages/subprocess/win32-process/src/process.ts:399-440]()`）。
+落点集中在两个原语：`createKillOnCloseJob` 建 Job 并设置 kill-on-close 限制（`[packages/subprocess/win32-process/src/process.ts:340-358]()`），`spawnJobProcess` 完成"建 Job → 临时打开继承位 → suspended 创建 → 赋值 Job → resume"这段两路共用的生命周期（`[packages/subprocess/win32-process/src/process.ts:415-519]()`）。
 <!-- anchor: function createKillOnCloseJob(api: Win32ProcessBindings): NativePtr { … return job -->
-<!-- anchor: function spawnJobProcess( … api.closeHandle(job) -->
+<!-- anchor: function spawnJobProcess( … return { pid: info.dwProcessId, process: info.hProcess, job } -->
 
-其中"创建成功但句柄为空"以及赋值 / resume 失败的处理分支在 `:447-487`（`[packages/subprocess/win32-process/src/process.ts:447-487]()`）；结算侧读 Job 记账的 `ActiveProcesses`（`[packages/subprocess/win32-process/src/process.ts:576-588]()`）。
-<!-- anchor: if (created === 0) { … closeBestEffort(api, info.hThread) -->
+其中"创建成功但句柄为空"以及赋值 / resume 失败的处理分支在 `:496-516`（`[packages/subprocess/win32-process/src/process.ts:496-516]()`）；结算侧读 Job 记账的 `ActiveProcesses`（`[packages/subprocess/win32-process/src/process.ts:609-620]()`）。
+<!-- anchor: if (info.hProcess === null || info.hThread === null) { … throwWin32(api, 'ResumeThread', win32Code, `pid ${info.dwProcessId}`) -->
 <!-- anchor: export function isJobEmpty(api: Win32ProcessBindings, job: NativePtr): boolean { … return information.readUInt32LE(abi.JOBOBJECT_BASIC_ACCOUNTING_ACTIVE_PROCESSES_ -->
 
-普通路径的入口 `spawnCurrentTokenJobProcess` 额外要求单独解析的 `applicationName`、完整 UTF-16LE 环境块与 fd 4–6 载体（`[packages/subprocess/win32-process/src/process.ts:521-540]()`）。
-<!-- anchor: export function spawnCurrentTokenJobProcess( … processInfo, -->
+普通路径的入口 `spawnCurrentTokenJobProcess` 额外要求单独解析的 `applicationName`、完整 UTF-16LE 环境块与 fd 4–6 载体（`[packages/subprocess/win32-process/src/process.ts:554-569]()`）。
+<!-- anchor: export function spawnCurrentTokenJobProcess( … options.cwd, -->
 
 ## 托管范围：原生 owner 为什么不可替代
 
@@ -154,10 +184,10 @@ graph LR
 <details>
 <summary>平台选择与一次警告的实现落点</summary>
 
-模式选择在 `selectContainmentMode`：Linux 首次走昂贵的深探（runner 入口 + libc 绑定 + user manager + literal-argv scope 支持），成功即缓存；之后每次符合条件的调用只做一次轻量的 manager 可达性复查；Windows 普通命令每次复查 runner 入口、绑定与 current-token Job 支持（`[packages/subprocess/subprocess-local/src/index.ts:189-208]()`）。
+模式选择在 `selectContainmentMode`：Linux 首次走昂贵的深探（runner 入口 + libc 绑定 + user manager + literal-argv scope 支持），成功即缓存；之后每次符合条件的调用只做一次轻量的 manager 可达性复查；Windows 普通命令每次复查 runner 入口、绑定与 current-token Job 支持（`[packages/subprocess/subprocess-local/src/index.ts:213-230]()`）。
 <!-- anchor: private selectContainmentMode( … this.warnFallback(platform, kind, fallbackReason) -->
 
-不可用时走 `warnFallback`，把"为什么更弱"按平台分别说明，并明确后果是"逃离进程组或 direct-parent 树的后代不保证被终止、也不保证延迟 `waitForExit()`"（`[packages/subprocess/subprocess-local/src/index.ts:210-227]()`）。
+不可用时走 `warnFallback`，把"为什么更弱"按平台分别说明，并明确后果是"逃离进程组或 direct-parent 树的后代不保证被终止、也不保证延迟 `waitForExit()`"（`[packages/subprocess/subprocess-local/src/index.ts:234-249]()`）。
 <!-- anchor: private warnFallback( … `subprocess-local is using weaker process-tree containment because ${reason}; de -->
 
 Linux 的两级探测是"缓存昂贵项、复检易变项"的折中：`probeLinuxBootstrap` 确认本次 runner 入口与 libc `execve`/`fcntl` 绑定真的可用，`probeLinuxNative` 再叠加 scope 支持（`[packages/subprocess/subprocess-local/src/linux-scope.ts:96-105]()`、`[packages/subprocess/subprocess-local/src/linux-scope.ts:147-155]()`）。只缓存第一次成功的深探、之后每次轻量复查 manager，是因为 user manager 的可达性可以在两次 spawn 之间变化——缓存整个结论会漏掉这种变化。
@@ -170,54 +200,76 @@ Linux 的两级探测是"缓存昂贵项、复检易变项"的折中：`probeLin
 
 ## Linux：一次性 systemd scope 与 one-shot bootstrap
 
-Linux 路径的核心设计是"**bootstrap 会原地变成 target，而不是常驻 supervisor**"。parent 先建一个 0700 私有目录，写入一份完整 0600 的 `launch-request.json`，承载最终 target cwd 与完整环境；私有环境变量 `DSH_SUBPROCESS_RUNNER` 只负责定位这份 request；`systemd-run --user --scope --quiet --collect --expand-environment=no` 先把自身注册进 scope，再由 one-shot bootstrap 消费 request、`chdir` 到 target cwd、恢复完整环境、按 target 自己的 PATH 规则解析裸可执行文件，最后用 libc `execve()` 原地替换（`[packages/subprocess/subprocess-local/src/runner-protocol.ts:96-116]()`、`[packages/subprocess/subprocess-local/src/spawn-runner.ts:175-200]()`）。
+Linux 路径的核心设计是"**bootstrap 会原地变成 target，而不是常驻 supervisor**"。parent 先建一个 0700 私有目录，写入一份完整 0600 的 `launch-request.json`，承载最终 target cwd 与完整环境；私有环境变量 `DSH_SUBPROCESS_RUNNER` 只负责定位这份 request；`systemd-run --user --scope --quiet --collect --expand-environment=no` 先把自身注册进 scope，再由 one-shot bootstrap 消费 request、`chdir` 到 target cwd、恢复完整环境、按 target 自己的 PATH 规则解析裸可执行文件，最后用 libc `execve()` 原地替换（`[packages/subprocess/subprocess-local/src/runner-protocol.ts:99-118]()`、`[packages/subprocess/subprocess-local/src/spawn-runner.ts:179-204]()`）。
 <!-- anchor: * Create a private 0700 directory and one complete 0600 launch request. … throw error -->
 <!-- anchor: function runLinux( … host.exitCode = 127 -->
 
-`--expand-environment=no` 不是随手加的选项：它保证 argv 里的内容不被 systemd 二次展开，从而**保留 literal argv**——这正是"target 收到什么就是调用方写了什么"的前提。scope 的 argv 结构因此是三段式：scope 选项 → runner invocation → 私有 `--` 分隔符 → target argv（`[packages/subprocess/subprocess-local/src/linux-scope.ts:344-357]()`）。
+`--expand-environment=no` 不是随手加的选项：它保证 argv 里的内容不被 systemd 二次展开，从而**保留 literal argv**——这正是"target 收到什么就是调用方写了什么"的前提。scope 的 argv 结构因此是三段式：scope 选项 → runner invocation → 私有 `--` 分隔符 → target argv（`[packages/subprocess/subprocess-local/src/linux-scope.ts:440-451]()`）。
 <!-- anchor: function scopeArgs(unitBase: string, invocation: RunnerInvocation, argv: readonl … ...argv, -->
 
-裸名解析必须复用 target 的 PATH 语义（含相对 PATH 项以 target cwd 为基准），EACCES 要记住但继续尝试后续目录，全部失败后抛出**与 Node 同形状**的 `ENOENT`（见错误保真一节）；`ENOEXEC` 时退回 `/bin/sh <file> <args...>`，与 Node 的 spawn 行为对齐（`[packages/subprocess/subprocess-local/src/spawn-runner.ts:146-173]()`）。
+裸名解析必须复用 target 的 PATH 语义（含相对 PATH 项以 target cwd 为基准），EACCES 要记住但继续尝试后续目录，全部失败后抛出**与 Node 同形状**的 `ENOENT`（见错误保真一节）；`ENOEXEC` 时退回 `/bin/sh <file> <args...>`，与 Node 的 spawn 行为对齐（`[packages/subprocess/subprocess-local/src/spawn-runner.ts:150-176]()`）。
 <!-- anchor: function execLinuxTarget( … throw permissionFailure ?? linuxPathNotFoundError(program) -->
 
-stdio 的保住方式是**不复制**：bootstrap 在 execve 之前清除 fd 0–2 上的 `FD_CLOEXEC`，于是 target 直接继承 scope 进程的标准描述符，用户字节从不经过任何中间协议（`[packages/subprocess/subprocess-local/src/linux-execve.ts:56-71]()`）。
+stdio 的保住方式是**不复制**：bootstrap 在 execve 之前清除 fd 0–2（以及调用方显式请求 `stdio.control: 'pipe'` 时额外保留的 fd 7 控制通道）上的 `FD_CLOEXEC`，于是 target 直接继承 scope 进程的标准描述符，用户字节从不经过任何中间协议（`[packages/subprocess/subprocess-local/src/linux-execve.ts:64-78]()`）。
 <!-- anchor: const flags = nativeFcntl(fd, F_GETFD, 0) … return cachedExecve -->
 
-**scope 何时算建立、何时算为空**，是 Linux 侧最细的语义。request 被消费、或 manager 已报告 loaded unit，任一即可建立 ownership；在这两项事实出现前，只要 direct launcher 还在运行，unit absence 就是**未决**而不是"已空"。`waitForExit()` 轮询 `LoadState` 与 `ActiveState`：loaded 的 `inactive`/`failed`、已建立的 unit 变 `not-found`/`inactive` 或被 collect 卸载，都能证明范围为空；`active`/`activating`/`reloading`/`deactivating` 仍是非终态；**未知或 malformed 的组合会让 `waitForExit()` reject，而不是宣称停稳**（`[packages/subprocess/subprocess-local/src/linux-scope.ts:317-337]()`）。
+**scope 何时算建立、何时算为空**，是 Linux 侧最细的语义。request 被消费、或 manager 已报告 loaded unit，任一即可建立 ownership；在这两项事实出现前，只要 direct launcher 还在运行，unit absence 就是**未决**而不是"已空"。`waitForExit()` 轮询 `LoadState` 与 `ActiveState`：loaded 的 `inactive`/`failed`、已建立的 unit 变 `not-found`/`inactive` 或被 collect 卸载，都能证明范围为空；`active`/`activating`/`reloading`/`deactivating` 仍是非终态；**未知或 malformed 的组合会让 `waitForExit()` reject，而不是宣称停稳**（`[packages/subprocess/subprocess-local/src/linux-scope.ts:413-432]()`）。
 <!-- anchor: async waitForExit(): Promise<void> { … await this.observation -->
 
-终止则分两级：`SIGTERM` 经 `systemctl --user kill --kill-whom=all` 送到 scope；`terminate()` 会**唤醒正在休眠的 observer** 立即复查，且只有 `SIGKILL` 才把失败记为 `killFailure`（普通 SIGTERM 打在不存在的 unit 上是正常的竞态）；若 scope 尚未建立，还会对 direct launcher 单独补发（`[packages/subprocess/subprocess-local/src/linux-scope.ts:180-202]()`）。
+终止则分两级：`SIGTERM` 经 `systemctl --user kill --kill-whom=all` 送到 scope；`terminate()` 会**唤醒正在休眠的 observer** 立即复查，且只有 `SIGKILL` 才把失败记为 `killFailure`（普通 SIGTERM 打在不存在的 unit 上是正常的竞态）；若 scope 尚未建立，还会对 direct launcher 单独补发（`[packages/subprocess/subprocess-local/src/linux-scope.ts:211-237]()`）。
 <!-- anchor: signal(signal: 'SIGTERM' | 'SIGKILL'): void { … if (!MISSING_UNIT.test(output)) { -->
 
-PTY 路径复用同一份 request 与同一个 bootstrap，但**不增加常驻 runner**：`node-pty` 的 PID、进程组、session leader、控制终端、前台 `inputWaiting`、`/dev/tty`、readiness 与 direct outcome 全部保留原义，而 scope membership 额外覆盖 `setsid` 与 reparent 后代（`[packages/subprocess/subprocess-local/src/linux-scope.ts:460-502]()`）。
-<!-- anchor: export function launchLinuxScope( … direct: directOutcome(child, files), -->
+PTY 路径复用同一份 request 与同一个 bootstrap，但**不增加常驻 runner**：`node-pty` 的 PID、进程组、session leader、控制终端、前台 `inputWaiting`、`/dev/tty`、readiness 与 direct outcome 全部保留原义，而 scope membership 额外覆盖 `setsid` 与 reparent 后代（`[packages/subprocess/subprocess-local/src/linux-scope.ts:527-553]()`）。
+<!-- anchor: export function prepareLinuxTerminalScope( … cleanup: () => { cleanupLinuxLaunchFiles(files) }, -->
+
+### 本轮结构变化（0.1.7-rc.2）：可选 fd 7 与 PTY scope 拆分
+
+**其一，bootstrap 多保活一个可选控制描述符。** launch request 新增 `control?: 'pipe'` 字段并受严格校验（`[packages/subprocess/subprocess-local/src/runner-protocol.ts:142-147]()`）；`runnerStdio` 在非 IPC 分支把 stdio 元组补齐到 fd 7 并声明 `'overlapped'`（`[packages/subprocess/subprocess-local/src/runner-launch.ts:129-134]()`），bootstrap 于是把 fd 7 与 0–2 一起清 `FD_CLOEXEC`。
+<!-- anchor: if (!isRecord(value) || !hasExactKeys(value, ['cwd', 'env'], ['control']) … return { cwd: value.cwd, env: value.env, -->
+<!-- anchor: if (!ipc) { … return targetStdio -->
+
+**其二，PTY 的 scope 准备从普通路径独立出来。** 普通命令仍是 `launchLinuxScope`（`[packages/subprocess/subprocess-local/src/linux-scope.ts:562-608]()`），PTY 走 `prepareLinuxTerminalScope`（`[packages/subprocess/subprocess-local/src/linux-scope.ts:527-553]()`），两者共用同一份 `createLinuxLaunchFiles` + `scopeArgs`。
+<!-- anchor: export function launchLinuxScope( … control: controlPipe(child, spec.stdio.control), -->
+<!-- anchor: export function prepareLinuxTerminalScope( … cleanup: () => { cleanupLinuxLaunchFiles(files) }, -->
+
+**其三，交互 shell 的 idle/busy 证据搬进了 `shell-activity.ts`**（`[packages/subprocess/subprocess-local/src/shell-activity.ts:10-10]()`），terminal handle 相应新增 `inspectActivity()` 与 `resize()`。
+<!-- anchor: export class ShellActivity { -->
 
 ## Windows：私有 runner 独占 Job 句柄
 
 Windows 的难点不是"能不能建 Job"，而是**谁拥有它**。设计笔记里逐条否决了"parent 拥有 / 复制 handle / named Job / `OpenJobObject` / process-handle handoff / completion port"这套方案：那会制造多个 lifecycle owner，却不能改善 direct-result 约定。最终形态是：**私有 runner 是 target process handle 与 unnamed Job handle 的唯一 owner**，parent 只通过一条 IPC channel 指挥，用户字节走 fd 4–6 的普通流，绝不经过 IPC。
 
-parent 侧启动 runner 时才确定 stdio 拓扑：runner 自己的 fd 0–2 被隔离（`ignore`），fd 3 留给 Node IPC，fd 4–6 承载 target stdin/stdout/stderr；stdin 为 `ignore` 时 fd 4 直接继承平台 null-device 描述符（`[packages/subprocess/subprocess-local/src/runner-launch.ts:109-137]()`、`[packages/subprocess/subprocess-local/src/windows-job.ts:124-145]()`）。
+parent 侧启动 runner 时才确定 stdio 拓扑：runner 自己的 fd 0–2 被隔离（`ignore`），fd 3 留给 Node IPC，fd 4–6 承载 target stdin/stdout/stderr；stdin 为 `ignore` 时 fd 4 直接继承平台 null-device 描述符（`[packages/subprocess/subprocess-local/src/runner-launch.ts:112-143]()`、`[packages/subprocess/subprocess-local/src/windows-job.ts:124-145]()`）。
 <!-- anchor: * Build direct Linux target stdio, or isolated Windows runner stdio with IPC … spec.stdio.stderr === 'inherit' ? 2 : 'pipe', -->
 <!-- anchor: export function launchWindowsJob( … } finally { -->
 
-**"先 spawn 事件、后发 start"** 是刻意的时序：parent 等到 Node 的 runner `spawn` 事件才发送恰好一条 start request，于是"runner 根本没起来"与"runner 起来了但 target 起不来"能被区分开来——前者是 direct launch failure（原样保留，同时证明 Job range 从未存在，empty-range wait 成功），后者是不确定状态，会使 range settlement reject（`[packages/subprocess/subprocess-local/src/windows-job.ts:185-223]()`）。
+**"先 spawn 事件、后发 start"** 是刻意的时序：parent 等到 Node 的 runner `spawn` 事件才发送恰好一条 start request，于是"runner 根本没起来"与"runner 起来了但 target 起不来"能被区分开来——前者是 direct launch failure（原样保留，同时证明 Job range 从未存在，empty-range wait 成功），后者是不确定状态，会使 range settlement reject（`[packages/subprocess/subprocess-local/src/windows-job.ts:208-220]()`）。
 <!-- anchor: child.once('spawn', () => { … failInfrastructure(error) -->
 
-parent 侧还维护一个 **direct-result 锁存**：收到经过严格校验、只含数字 `exitCode` 的 `target-exit` 就立即永久锁存；此后即便 stdout/stderr 的 close 或有界 drain barrier 尚未完成，`.done` 也只需再等这个 stdio barrier，随后返回已锁存的结果。后续的 Job query、range settlement failure、IPC loss 或 runner 异常退出**只能使 `waitForExit()` reject，不能替换 direct result**（`[packages/subprocess/subprocess-local/src/windows-job.ts:148-184]()`）。
+parent 侧还维护一个 **direct-result 锁存**：收到经过严格校验、只含数字 `exitCode` 的 `target-exit` 就立即永久锁存；此后即便 stdout/stderr 的 close 或有界 drain barrier 尚未完成，`.done` 也只需再等这个 stdio barrier，随后返回已锁存的结果。后续的 Job query、range settlement failure、IPC loss 或 runner 异常退出**只能使 `waitForExit()` reject，不能替换 direct result**（`[packages/subprocess/subprocess-local/src/windows-job.ts:150-204]()`）。
 <!-- anchor: const direct = Promise.withResolvers<SubprocessOutcome>() … direct.reject(owner.mapStartFailure(deserializeRunnerError(result.error), result -->
 
-runner 侧的状态机（`WindowsJobRunner`）负责：校验 start、把 fd 4–6 映射为 OS handle 后立即关闭自己的载体 fd（绝不改写或销毁 Node 标准流）、`resolveWindowsExecutable` 解析 application name、以 suspended 创建 target、装进 Job 后 resume、以 10ms 轮询"direct 进程退出码"与"Job active process count"，并且**只有 direct result 已经通过 IPC send callback 交付、且 Job 报告零 active process 之后才成功退出**（`[packages/subprocess/subprocess-local/src/spawn-runner.ts:276-330]()`）。
+runner 侧的状态机（`WindowsJobRunner`）负责：校验 start、把 fd 4–6 映射为 OS handle 后立即关闭自己的载体 fd（绝不改写或销毁 Node 标准流）、`resolveWindowsExecutable` 解析 application name、以 suspended 创建 target、装进 Job 后 resume、以 10ms 轮询"direct 进程退出码"与"Job active process count"，并且**只有 direct result 已经通过 IPC send callback 交付、且 Job 报告零 active process 之后才成功退出**（`[packages/subprocess/subprocess-local/src/spawn-runner.ts:280-332]()`）。
 <!-- anchor: private async start(request: WindowsStartRequest): Promise<void> { … await this.runnerFailure(error) -->
 
-异常路径同样显式：disconnect 或 result-send 失败会让 runner 停止协议工作、终止并关闭自己唯一的 Job handle、以非零状态退出；最后一个 Job handle 关闭触发 kill-on-close 终止剩余成员，但**不会把 disconnected 路径改写成"成功的完全停稳证明"**（`[packages/subprocess/subprocess-local/src/spawn-runner.ts:409-423]()`）。
+异常路径同样显式：disconnect 或 result-send 失败会让 runner 停止协议工作、终止并关闭自己唯一的 Job handle、以非零状态退出；最后一个 Job handle 关闭触发 kill-on-close 终止剩余成员，但**不会把 disconnected 路径改写成"成功的完全停稳证明"**（`[packages/subprocess/subprocess-local/src/spawn-runner.ts:413-427]()`）。
 <!-- anchor: private releaseOwnedJob(): void { … this.processHandle = undefined -->
 
-Windows 搜索顺序也是被刻意复刻的细节：`resolveWindowsExecutable` 按 libuv/Node 的 `PATH` 搜索语义（默认 cwd 根、引号处理、`;` 分段、`NODEFAULTCURRENTDIRECTORYINEXEPATH`）解析出 `applicationName`，同时**把调用方原始的 argv[0] 原样保留**在命令行里（`[packages/subprocess/subprocess-local/src/runner-launch.ts:242-272]()`）。区分"解析用的路径"与"命令行首项"是为了让错误归属与 Node 一致。
+Windows 搜索顺序也是被刻意复刻的细节：`resolveWindowsExecutable` 按 libuv/Node 的 `PATH` 搜索语义（默认 cwd 根、引号处理、`;` 分段、`NODEFAULTCURRENTDIRECTORYINEXEPATH`）解析出 `applicationName`，同时**把调用方原始的 argv[0] 原样保留**在命令行里（`[packages/subprocess/subprocess-local/src/runner-launch.ts:252-282]()`）。区分"解析用的路径"与"命令行首项"是为了让错误归属与 Node 一致。
 <!-- anchor: export function resolveWindowsExecutable( … return undefined -->
 
-窗口可见性也被纳入 provider 职责：所有非 terminal spawn 与两处同步 `taskkill` 都设 `windowsHide: true`，`spawnSubprocess` 的 fallback 在 Windows 上同样如此——理由是无控制台的 GUI/服务宿主里，Windows 会为子进程新建可见窗口并抢占焦点，而调用方无法可靠判断宿主有没有控制台（`[packages/subprocess/subprocess-local/src/spawn.ts:640-660]()`、`[packages/subprocess/subprocess-local/src/windows-inspector.ts:148-152]()`）。
+窗口可见性也被纳入 provider 职责：所有非 terminal spawn 与两处同步 `taskkill` 都设 `windowsHide: true`，`spawnSubprocess` 的 fallback 在 Windows 上同样如此——理由是无控制台的 GUI/服务宿主里，Windows 会为子进程新建可见窗口并抢占焦点，而调用方无法可靠判断宿主有没有控制台（`[packages/subprocess/subprocess-local/src/spawn.ts:449-471]()`、`[packages/subprocess/subprocess-local/src/windows-inspector.ts:153-155]()`）。
 <!-- anchor: * Spawn one detached PGID/taskkill fallback and bind the common lifecycle. … detached: platform !== 'win32', -->
 <!-- anchor: spawnSync('taskkill', ['/PID', String(pid), '/T', ...(force ? ['/F'] : [])], { … windowsHide: true, -->
+
+### 本轮结构变化（0.1.7-rc.2）：runner fd 7 与 CRT 描述符表
+
+**其一，runner 的 fd 拓扑多了可选第 7 位。** `runnerStdio` 在 IPC 分支上于 fd 4–6 之后追加 `'overlapped'`（`[packages/subprocess/subprocess-local/src/runner-launch.ts:145-145]()`）；`spawnJobProcess` 把该控制句柄的 CRT 描述符表写进 `STARTUPINFO` 的 `cbReserved2`/`lpReserved2`（`[packages/subprocess/win32-process/src/process.ts:443-462]()`）。
+<!-- anchor: if (spec.stdio.control === 'pipe') runner.push('overlapped') -->
+<!-- anchor: const controlBytes = stdio.control === undefined … lpReserved2: controlDescriptorBlock.pointer, -->
+
+**其二，CRT 描述符表编码独立成 `win32-process/control-stdio.ts`。** `inheritedControlStdio` 负责把 fd 0–2 与 fd 7 的句柄类型写进 CRT 表，并拒绝"控制描述符不是 pipe"的组合（`[packages/subprocess/win32-process/src/control-stdio.ts:29-44]()`）。
+<!-- anchor: export function inheritedControlStdio(api: Pick<Win32ProcessBindings, 'getFileTy … bytes.writeBigUInt64LE(handle, handleOffset + fd * HANDLE_BYTES) -->
 
 ## 被 confine 的一次启动：跨模块时序
 
@@ -248,11 +300,11 @@ sequenceDiagram
     Note over R: direct 与 range 独立结算
 ```
 
-图外补叙（图内为写短而省略的精确细节）：scope 的完整 argv 是 `--user --scope --quiet --collect --expand-environment=no --unit=… -- <runner> -- <target argv>`，三段式结构正是"保留 literal argv"的载体（`[packages/subprocess/subprocess-local/src/linux-scope.ts:344-357]()`）。
+图外补叙（图内为写短而省略的精确细节）：scope 的完整 argv 是 `--user --scope --quiet --collect --expand-environment=no --unit=… -- <runner> -- <target argv>`，三段式结构正是"保留 literal argv"的载体（`[packages/subprocess/subprocess-local/src/linux-scope.ts:440-451]()`）。
 <!-- anchor: function scopeArgs(unitBase: string, invocation: RunnerInvocation, argv: readonl … ...argv, -->
 
-bootstrap 要先消费并删除 `launch-request.json` 才能 `chdir` 到 target cwd 并恢复完整环境（`[packages/subprocess/subprocess-local/src/runner-protocol.ts:136-145]()`）；`terminate` 实际执行的是 `systemctl --user kill --kill-whom=all --signal=<sig>`（`[packages/subprocess/subprocess-local/src/linux-scope.ts:180-202]()`）。
-<!-- anchor: export function consumeLinuxLaunchRequest(requestPath: string): LinuxLaunchReque … return { cwd: value.cwd, env: value.env } -->
+bootstrap 要先消费并删除 `launch-request.json` 才能 `chdir` 到 target cwd 并恢复完整环境（`[packages/subprocess/subprocess-local/src/runner-protocol.ts:138-147]()`）；`terminate` 实际执行的是 `systemctl --user kill --kill-whom=all --signal=<sig>`（`[packages/subprocess/subprocess-local/src/linux-scope.ts:211-237]()`）。
+<!-- anchor: export function consumeLinuxLaunchRequest(requestPath: string): LinuxLaunchReque … return { cwd: value.cwd, env: value.env, -->
 <!-- anchor: signal(signal: 'SIGTERM' | 'SIGKILL'): void { … if (!MISSING_UNIT.test(output)) { -->
 
 Windows 普通命令（runner 独占 Job 句柄，句柄所有权贯穿始终）：
@@ -282,17 +334,17 @@ sequenceDiagram
     Note over P: 提交后失败只 reject range
 ```
 
-图外补叙：runner 的 fd 拓扑是 0–2 隔离、3 为 IPC、4–6 为 target stdin/stdout/stderr，`stdin: 'ignore'` 时 fd 4 继承 null-device 描述符（`[packages/subprocess/subprocess-local/src/runner-launch.ts:109-137]()`）。
+图外补叙：runner 的 fd 拓扑是 0–2 隔离、3 为 IPC、4–6 为 target stdin/stdout/stderr，`stdin: 'ignore'` 时 fd 4 继承 null-device 描述符（`[packages/subprocess/subprocess-local/src/runner-launch.ts:112-143]()`）。
 <!-- anchor: * Build direct Linux target stdio, or isolated Windows runner stdio with IPC … spec.stdio.stderr === 'inherit' ? 2 : 'pipe', -->
 
-`spawn` 事件之后才发送 start request，是为了把"runner 没起来"与"runner 起来但 target 起不来"区分开（`[packages/subprocess/subprocess-local/src/windows-job.ts:185-223]()`）；target 以 `CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT` 创建、赋值 Job 后才 `ResumeThread`（`[packages/subprocess/win32-process/src/process.ts:521-540]()`）。
+`spawn` 事件之后才发送 start request，是为了把"runner 没起来"与"runner 起来但 target 起不来"区分开（`[packages/subprocess/subprocess-local/src/windows-job.ts:208-220]()`）；target 以 `CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT` 创建、赋值 Job 后才 `ResumeThread`（`[packages/subprocess/win32-process/src/process.ts:554-569]()`）。
 <!-- anchor: child.once('spawn', () => { … failInfrastructure(error) -->
-<!-- anchor: export function spawnCurrentTokenJobProcess( … processInfo, -->
+<!-- anchor: export function spawnCurrentTokenJobProcess( … options.cwd, -->
 
-两条时序里最值得注意的统一设计是**句柄与结算的所有权分离**：目标身份（pid/handle）始终 provider-private，公共 handle 上没有 `pid`；`terminate()` 只负责"对所选范围开始 provider 文档化的过程"，`waitForExit()` 只负责"观察同一范围变空"，而 `done` 只报 direct 退出事实（`[packages/subprocess/subprocess/src/types.ts:167-192]()`）。把这三件事拆开，消费方才能搭自己的 teardown ladder（ACP 后端"先 stdin EOF"的阶梯就是仓库内模板），而不必假设"进程退出 == 全部工作结束"。
+两条时序里最值得注意的统一设计是**句柄与结算的所有权分离**：目标身份（pid/handle）始终 provider-private，公共 handle 上没有 `pid`；`terminate()` 只负责"对所选范围开始 provider 文档化的过程"，`waitForExit()` 只负责"观察同一范围变空"，而 `done` 只报 direct 退出事实（`[packages/subprocess/subprocess/src/types.ts:169-195]()`）。把这三件事拆开，消费方才能搭自己的 teardown ladder（ACP 后端"先 stdin EOF"的阶梯就是仓库内模板），而不必假设"进程退出 == 全部工作结束"。
 <!-- anchor: export interface SubprocessHandle { … waitForExit(signal?: AbortSignal): Promise<boolean> -->
 
-统一的 `BoundProcessOwner` 接口就是这条分离的类型化表达：`signal` / `waitForExit` / `terminateForHostExit` / 可选 `cleanup`；平台差异被收敛在 `ManagedProcessLaunch` 的 `{stdin, stdout, stderr, direct, owner}` 五元组之后（`[packages/subprocess/subprocess-local/src/managed-owner.ts:6-16]()`）。
+统一的 `BoundProcessOwner` 接口就是这条分离的类型化表达：`signal` / `waitForExit` / `terminateForHostExit` / 可选 `cleanup`；平台差异被收敛在 `ManagedProcessLaunch` 的 `{stdin, stdout, stderr, direct, owner}` 五元组之后（`[packages/subprocess/subprocess-local/src/managed-owner.ts:7-20]()`）。
 <!-- anchor: export interface BoundProcessOwner { … cleanup?(): void -->
 
 ## 生命周期与结算：取消、出错、清理为何是一等状态
@@ -301,26 +353,26 @@ sequenceDiagram
 
 `bindManagedProcess` 是共同结算点，关键状态只有几个，但每个都对应一类曾经出错的场景：
 
-- `rangeExitObservation` 记忆化：`observeRangeExit()` 第一次调用启动 owner 等待，成功后置 `rangeExitObserved` 并**取消后续信号升级**（第一个确认的"不存在"是永久的 no-more-signals 边界，防止陈旧身份被再次使用）；失败时**只在 direct 尚未结算且无法安排 cleanup 时才允许重试**——因为一旦 direct 结算允许清理私有证据，移除证据不能把之后的等待变成假成功（`[packages/subprocess/subprocess-local/src/spawn.ts:522-543]()`）。
+- `rangeExitObservation` 记忆化：`observeRangeExit()` 第一次调用启动 owner 等待，成功后置 `rangeExitObserved` 并**取消后续信号升级**（第一个确认的"不存在"是永久的 no-more-signals 边界，防止陈旧身份被再次使用）；失败时**只在 direct 尚未结算且无法安排 cleanup 时才允许重试**——因为一旦 direct 结算允许清理私有证据，移除证据不能把之后的等待变成假成功（`[packages/subprocess/subprocess-local/src/spawn.ts:330-349]()`）。
 <!-- anchor: * Start or reuse the handle's managed-range exit observer. A failed read … return rangeExitObservation -->
 
-- `terminationStarted` + `graceTimer`：`terminateWithReason` 幂等，立刻 `SIGTERM` 并挂一个 `graceMs` 后 `SIGKILL` 的定时器；同时**先启动 range observation 并吞掉它的 rejection**，以免只调用 `terminate()` 的调用方制造 unhandled rejection，而 `waitForExit()` 仍能看到同一个失败（`[packages/subprocess/subprocess-local/src/spawn.ts:545-565]()`）。
+- `terminationStarted` + `graceTimer`：`terminateWithReason` 幂等，立刻 `SIGTERM` 并挂一个 `graceMs` 后 `SIGKILL` 的定时器；同时**先启动 range observation 并吞掉它的 rejection**，以免只调用 `terminate()` 的调用方制造 unhandled rejection，而 `waitForExit()` 仍能看到同一个失败（`[packages/subprocess/subprocess-local/src/spawn.ts:352-370]()`）。
 <!-- anchor: const kill = (sig: 'SIGTERM' | 'SIGKILL', cancellationReason?: unknown): void => … const terminate = (): void => { -->
 
-- **graceTimer 在 direct 结算时故意不清除**：注释写明"强制终止仍必须到达 range 幸存者"；`done` 只清 `pipeDrainTimer`。drain 边界同样区分所有权——只有 harness 自建的 collect 管道会被强制关闭，`pipe` 模式的流属于调用方，随子进程一起关闭（`[packages/subprocess/subprocess-local/src/spawn.ts:582-615]()`、`[packages/subprocess/subprocess-local/src/spawn.ts:503-508]()`）。
+- **graceTimer 在 direct 结算时故意不清除**：注释写明"强制终止仍必须到达 range 幸存者"；`done` 只清 `pipeDrainTimer`。drain 边界同样区分所有权——只有 harness 自建的 collect 管道会被强制关闭，`pipe` 模式的流属于调用方，随子进程一起关闭（`[packages/subprocess/subprocess-local/src/spawn.ts:389-420]()`、`[packages/subprocess/subprocess-local/src/spawn.ts:310-313]()`）。
 <!-- anchor: const done = new Promise<SubprocessOutcome>((resolve, reject) => { … if (pipeDrainTimer !== undefined) clearTimeout(pipeDrainTimer) -->
 <!-- anchor: const stopCollectors = (): void => { … stdoutCollector?.seal() -->
 
-- `waitForExit()` 只有在 `rangeExitObserved` 为真时才立即返回 `true`，否则共享同一个 observation；owner 无法再观察时它 reject，而不是返回 `false` 让人误读为"还没退出"（`[packages/subprocess/subprocess-local/src/spawn.ts:617-620]()`）。
+- `waitForExit()` 只有在 `rangeExitObserved` 为真时才立即返回 `true`，否则共享同一个 observation；owner 无法再观察时它 reject，而不是返回 `false` 让人误读为"还没退出"（`[packages/subprocess/subprocess-local/src/spawn.ts:424-425]()`）。
 <!-- anchor: const waitForExit = async (signal?: AbortSignal): Promise<boolean> => { … if (rangeExitObserved) return true -->
 
-服务级 dispose 也遵守同一纪律：对每个 live handle **同时**启动 `done`（吞错）与 `waitForExit()`，两者都结束才把 handle 移出 live 集合；注释解释了为什么不能只等 direct 结果——"不可读的 owner 不能藏在一个永不结算的结果后面"；若有失败，先做一次同步 host-exit 强制终止，再按 1 个 / 多个分别抛出原始错误或 `AggregateError`（`[packages/subprocess/subprocess-local/src/index.ts:94-120]()`）。
+服务级 dispose 也遵守同一纪律：对每个 live handle **同时**启动 `done`（吞错）与 `waitForExit()`，两者都结束才把 handle 移出 live 集合；注释解释了为什么不能只等 direct 结果——"不可读的 owner 不能藏在一个永不结算的结果后面"；若有失败，先做一次同步 host-exit 强制终止，再按 1 个 / 多个分别抛出原始错误或 `AggregateError`（`[packages/subprocess/subprocess-local/src/index.ts:107-136]()`）。
 <!-- anchor: private async disposeManagedProcesses(): Promise<void> { … if (failures.length === 1) throw failures[0] -->
 
-spawn 成功后的所有权释放也**不以 direct 结算为界**：`handle.done` resolve 或 reject 都只触发 `release`，而 `release` 等的是 `waitForExit()`——一个设了 TERM 陷阱、活得比 leader 久的 helper 必须继续被拥有，以便 teardown 还能升级信号（`[packages/subprocess/subprocess-local/src/index.ts:164-187]()`）。
+spawn 成功后的所有权释放也**不以 direct 结算为界**：`handle.done` resolve 或 reject 都只触发 `release`，而 `release` 等的是 `waitForExit()`——一个设了 TERM 陷阱、活得比 leader 久的 helper 必须继续被拥有，以便 teardown 还能升级信号（`[packages/subprocess/subprocess-local/src/index.ts:182-209]()`）。
 <!-- anchor: spawn(spec: SubprocessSpawnSpec): SubprocessHandle { … void handle.done.then(release, release).catch(() => {}) -->
 
-host exit 是唯一的同步例外：`ctx.effect` 注册的 `process.prependListener('exit')` 在 JS 可见的退出阶段调用 `terminateForHostExit()`，**不创建 Promise 或 timer**；单个 target 失败被吞掉以继续处理其余 target，且不改变宿主退出码——它也不声称停稳（`[packages/subprocess/subprocess-local/src/index.ts:67-75]()`）。
+host exit 是唯一的同步例外：`ctx.effect` 注册的 `process.prependListener('exit')` 在 JS 可见的退出阶段调用 `terminateForHostExit()`，**不创建 Promise 或 timer**；单个 target 失败被吞掉以继续处理其余 target，且不改变宿主退出码——它也不声称停稳（`[packages/subprocess/subprocess-local/src/index.ts:77-84]()`）。
 <!-- anchor: ctx.effect(() => { … }, 'local subprocess teardown') -->
 
 把上述状态画出来，可以看到"失败"与"停稳"是**两条不同的终态**，而不是同一条路上的两个分支：
@@ -353,11 +405,11 @@ stateDiagram-v2
 
 跨进程边界的处理因此分成两种截然不同的策略：
 
-**同进程（fallback 路径）逐字保留。** `spawnSubprocess` 直接把 Node `child_process` 的 `error` 事件作为 `done` 的 rejection reason，中间不做序列化、不包一层：`directChildResult` 的 `error` 分支 `reject(error)` 用的是同一个对象，`error.stack` 因此是**字面量**的原始栈（`[packages/subprocess/subprocess-local/src/spawn.ts:380-396]()`、`[packages/subprocess/subprocess-local/src/index.ts:122-153]()`）。
+**同进程（fallback 路径）逐字保留。** `spawnSubprocess` 直接把 Node `child_process` 的 `error` 事件作为 `done` 的 rejection reason，中间不做序列化、不包一层：`directChildResult` 的 `error` 分支 `reject(error)` 用的是同一个对象，`error.stack` 因此是**字面量**的原始栈（`[packages/subprocess/subprocess-local/src/spawn.ts:183-197]()`、`[packages/subprocess/subprocess-local/src/index.ts:140-169]()`）。
 <!-- anchor: function directChildResult(child: ChildProcess): Promise<SubprocessOutcome> { … resolve({ exitCode, signal }) -->
 <!-- anchor: async resolveExecutable( … ? `subprocess-local: command ${JSON.stringify(command)} is not an executable fil -->
 
-**跨进程（native runner）有界序列化 + 严格校验。** Linux bootstrap 与 Windows runner 都在子进程里，错误必须过 protocol，于是定义了一个**闭集** `SerializedRunnerError`：只允许 `name`、`message` 与可选 `code`、`syscall`、`path`；解码时用 `hasExactKeys` 拒绝缺失、多余、类型错误或未知字段（`[packages/subprocess/subprocess-local/src/runner-protocol.ts:22-29]()`、`[packages/subprocess/subprocess-local/src/runner-protocol.ts:220-245]()`）。
+**跨进程（native runner）有界序列化 + 严格校验。** Linux bootstrap 与 Windows runner 都在子进程里，错误必须过 protocol，于是定义了一个**闭集** `SerializedRunnerError`：只允许 `name`、`message` 与可选 `code`、`syscall`、`path`；解码时用 `hasExactKeys` 拒绝缺失、多余、类型错误或未知字段（`[packages/subprocess/subprocess-local/src/runner-protocol.ts:22-29]()`、`[packages/subprocess/subprocess-local/src/runner-protocol.ts:224-247]()`）。
 <!-- anchor: export interface SerializedRunnerError { … syscall?: string -->
 <!-- anchor: export function serializeRunnerError(error: unknown): SerializedRunnerError { … ...serialized.path === undefined ? {} : { path: serialized.path }, -->
 
@@ -381,11 +433,11 @@ stateDiagram-v2
 | `lsp-stdio` | `['fs','lsp','subprocess']` | `resolveExecutable` 解析 language server、`spawn` 拿裸管道做 JSON-RPC 帧 | 协议解码、连接状态机；它同时注入 `fs` 与 `subprocess`，正是"共享执行世界"的例证 |
 | ACP subagent 后端 | 通过 shell/subprocess 家族 | piped ndjson + 继承 stderr | stdin-EOF-first 的 teardown ladder |
 
-`bash-local` 的边界写在自己的 executor 头注释里：有界输出、spill、范围升级与停稳归 subprocess，时限与原因分类归自己（`[packages/shell/bash-local/src/index.ts:96-104]()`）。
+`bash-local` 的边界写在自己的 executor 头注释里：有界输出、spill、范围升级与停稳归 subprocess，时限与原因分类归自己（`[packages/shell/bash-local/src/index.ts:91-97]()`）。
 <!-- anchor: * Local bash executor over `ctx.subprocess`. Bounded output, spill files, … export class LocalBashExecutor extends ShellExecutor { -->
 
-`terminal-bash` 则演示了沙箱与 subprocess 的组合顺序：先 `sandbox.confine(argv, policy)` 得到被包裹的 argv（`[packages/terminal/terminal-bash/src/index.ts:100-111]()`），再把它交给 `ctx.subprocess.spawnTerminal`（`[packages/terminal/terminal-bash/src/index.ts:190-200]()`）。
-<!-- anchor: function spawnArgv(ctx: Context, config: ResolvedConfig, policy: SandboxExecutio … // TODO(pty-initialize-race-home): Fold this outer abort race into -->
+`terminal-bash` 则演示了沙箱与 subprocess 的组合顺序：先 `sandbox.confine(argv, policy)` 得到被包裹的 argv（`[packages/terminal/terminal-bash/src/index.ts:100-111]()`），再把它交给 `ctx.subprocess.spawnTerminal`（`[packages/terminal/terminal-bash/src/index.ts:201-210]()`）。
+<!-- anchor: async function spawnArgv(ctx: Context, config: ResolvedConfig, … // TODO(pty-initialize-race-home): Fold this outer abort race into -->
 <!-- anchor: async spawn(spec: TerminalBackendSpawnSpec): Promise<LocalPtySession> { … cwd: spec.cwd ?? policy.workspaceRoot, -->
 
 `lsp-stdio` 同时注入 `fs` 与 `subprocess`，并用 `resolveExecutable` 解析 server 可执行文件后再 `spawn`（`[packages/lsp/lsp-stdio/src/index.ts:44-48]()`、`[packages/lsp/lsp-stdio/src/index.ts:146-158]()`）。
@@ -403,8 +455,8 @@ stateDiagram-v2
 
 两者在 `terminal-bash` 里的组合顺序是这条分层的直接体现：先 resolve 策略、再 confine argv、最后才 spawnTerminal。也就是说，**沙箱决定"包成什么命令"，subprocess 决定"这个命令怎么活着、怎么被观察、怎么被收干净"**；同一个 subprocess provider 可以服务被 Landlock 包裹的 argv，也可以服务裸 argv（`danger-full-access` 直接返回原 argv）。
 
-**shell 与 subprocess 的分工**再补一句：`ctx.shell` 明确说自己的 dispose 边界就是 `ctx.subprocess` 的 disposal——所以后台进程能活过 executor 的 reload，但活不过整个 composition 的拆除（`[packages/shell/shell/src/index.ts:58-62]()`）。这是"生命周期归 seam、语义归消费方"在一个可观测行为上的落地。
-<!-- anchor: *   repeat output. Lossy reads report truncation and available spill files. … *   owning composition tears down. With the subprocess seam that -->
+**shell 与 subprocess 的分工**再补一句：`ctx.shell` 明确说自己的 dispose 边界就是 `ctx.subprocess` 的 disposal——所以后台进程能活过 executor 的 reload，但活不过整个 composition 的拆除（`[packages/shell/shell/src/index.ts:59-62]()`）。这是"生命周期归 seam、语义归消费方"在一个可观测行为上的落地。
+<!-- anchor: *   repeat output. Lossy reads report truncation and available spill files. … *   `ctx.subprocess` disposal, so a process survives an executor-only reload. -->
 
 ## 权衡与不足
 
@@ -436,4 +488,4 @@ stateDiagram-v2
 
 ---
 
-> 引用核验：本篇所有 `文件:行号` 引用均已由 `scripts/verify-references.mjs` 用首末行双锚点重定位验证通过；Mermaid 图已由 `scripts/check-mermaid.mjs` 真解析通过。
+> 引用核验（基线 `dsh-v0.1.7-rc.2` @ `477b4f4205`）：本篇所有 `文件:行号` 引用均已由 `scripts/verify-references.mjs` 用首末行双锚点重定位验证通过，共 84 条，`OK=84 WEAK=0 MISMATCH=0 UNVERIFIED=0 TRAVERSAL=0`；Mermaid 图已由 `scripts/check-mermaid.mjs` 真解析通过。

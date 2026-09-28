@@ -73,7 +73,7 @@ tags: [deepseek-harness, network-proxy, undici, dispatcher, no-proxy, egress]
 
 `installProxyFromEnvironment` 把解析、报错、安装合成一个操作，因为**没有调用方需要它们分开**——解析了不安装等于什么都没路由[packages/util/http-proxy/src/install.ts:296-301]()
 <!-- anchor: export async function installProxyFromEnvironment( … for (const diagnostic of diagnostics) report(diagnostic.message) -->
-唯一的调用点在 launcher，且在第一个插件挂载之前[apps/cli/src/profile-boot.ts:283-289]()
+唯一的调用点在 launcher，且在第一个插件挂载之前[apps/cli/src/profile-boot.ts:245-251]()
 <!-- anchor: // Before the first plugin mounts and before anything can issue a request: Node' … (message) => { process.stderr.write(`${NAME}: ${message}\n`) }, -->
 注意它读的是 **launcher 的环境快照**而不是 `process.env`——这正是"写在 `$DSH_HOME/.env` 里的代理也能生效"的原因，也是 `NODE_USE_ENV_PROXY` 无论怎样都做不到的那一点。
 
@@ -116,8 +116,10 @@ sequenceDiagram
   <!-- anchor: export async function requestVia( … // proxy-exempt: the dispatcher is the installed policy's own, handed over by `p -->
   而直连腿自己 `new Agent(...)` 做地址 pinning，这属于"每请求状态、进程级 dispatcher 装不下"，因此带 `proxy-exempt:` 注释合法豁免[packages/web/web-fetch-http/src/network.ts:199-206]()
   <!-- anchor: const { Agent, fetch } = await import('undici') … const response = await fetch(url, { method: 'GET', redirect: 'manual', headers, -->
-- E2B SDK 自建 dispatcher 且只认自己接到的 `proxy` 参数，所以它拿 `route.proxy`，判定还对**真正要调的 URL** 做[packages/e2b/e2b/src/index.ts:159-165]()
-  <!-- anchor: const route = proxyRouteFor(new URL(e2bApiUrl())) … ...route.proxied ? { proxy: route.proxy } : {}, -->
+- **（已退役）E2B SDK 自建 dispatcher**：它只认自己接到的 `proxy` 参数，所以调用方把 `route.proxy` 传进去，判定还对**真正要调的 URL** 做。这个"第三方 SDK 自带 dispatcher"的案例连同整个 E2B 执行提供方一起消失，但它留下的教训仍然成立：**一旦引入自带 dispatcher 的 SDK，这份调用点清单就必须跟着更新**，否则会出现"全局装了一份、SDK 自己又建了一份"的双份策略。
+  > **演进说明(0.1.7-rc.2)**：`packages/e2b/*` 在本窗口内被整体退役（commit `c49db8bc8c` "refactor(e2b): retire remote execution providers"），原引用 `packages/e2b/e2b/src/index.ts:159-165` 已不存在。退役理由与出站代理无关——是要给 PTC 的 Node 约束留一条独立于 stdin/stdout 的双向控制通道，而固定版本的 E2B SDK 只暴露标准进程流（[.agents/notes/implemented/simplification/2026-09-11-remove-e2b-providers.md:17-19]()
+  <!-- anchor: The repository excludes the E2B sandbox owner, filesystem provider and subproces … The [portable execution-world decision](../architecture/2026-07-28-portable-exec -->）。远程执行世界的位置由 POSIX SSH 提供方家族接手（[packages/ssh/README.md:12-12]()
+  <!-- anchor: This family runs files, ordinary processes, terminals and sandbox enforcement on -->）。
 
 补一句口径修正：**inbound webhook 不在这条链路上**。`packages/webhook` 是接收 `IncomingMessage` 的服务端规则运行时，自己不发 HTTP 请求，因此没有"webhook 走不走代理"的问题；真正需要被覆盖的出站方是模型调用、搜索、`web_fetch`、HTTP MCP 与 E2B。遥测导出器曾被纳入同一批改造，随后被 `revert(session-telemetry-otel): leave telemetry on its own transport` **刻意排除**——它是唯一"丢了也不损失任何功能"的出站通道（见「权衡与不足」）。
 
@@ -190,9 +192,9 @@ graph TB
 
 ### 子进程：把用户原值还回去，再补上解析值
 
-每个 spawner 共用的基座是 `scrubbedParentEnv()`：父环境去掉凭据形状的名字与所有 `DSH_*`，再叠加 `proxyEnvironmentForChild()`[packages/subprocess/subprocess/src/index.ts:64-75]()
+每个 spawner 共用的基座是 `scrubbedParentEnv()`：父环境去掉凭据形状的名字与所有 `DSH_*`，再叠加 `proxyEnvironmentForChild()`[packages/subprocess/subprocess/src/index.ts:66-77]()
 <!-- anchor: export function scrubbedParentEnv(): Record<string, string> { … else env[name] = value -->
-bash 工具与 shell 会话走的是同一个 `ctx.subprocess`（本地实现里 `childEnv()` 就建在它之上），因此自动继承同一份环境，无需各自处理[packages/subprocess/subprocess-local/src/spawn.ts:46-48]()
+bash 工具与 shell 会话走的是同一个 `ctx.subprocess`（本地实现里 `childEnv()` 就建在它之上），因此自动继承同一份环境，无需各自处理[packages/subprocess/subprocess-local/src/spawn.ts:44-46]()
 <!-- anchor: export function childEnv(extra?: Readonly<NodeJS.ProcessEnv>): NodeJS.ProcessEnv { … if (process.platform !== 'win32') return { ...env, ...extra } -->
 这条叠加的规则是本包最讲究的一处：
 
@@ -217,8 +219,11 @@ bash 工具与 shell 会话走的是同一个 `ctx.subprocess`（本地实现里
 
 worker thread 有独立的 `globalThis`，也就有独立的全局 dispatcher——主线程装的那份**根本到不了它**[packages/util/http-proxy/src/install.ts:166-169]()
 <!-- anchor: * A worker thread has its own `globalThis` and so its own dispatcher; installing … * credentials. A worker that needs the policy has to be handed one explicitly an -->
-本仓库目前**没有任何 worker 装过它**，而且这是刻意的：两个 worker（workflow engine 与 code runtime）执行的都是**模型编写的脚本**，而代理 URL 可能带 `user:password`。于是 workflow 的 spawn 环境只给 Windows 需要的 `TMP`/`TEMP`（未构建时再加 `TSX_TSCONFIG_PATH`），其余一律不给[packages/workflow/workflow-worker-thread/src/host.ts:48-59]()
-<!-- anchor: export function workerSpawnEnv( … return env -->
+本仓库目前**没有任何 worker 装过它**，而且这是刻意的：剩下那个执行**模型编写的脚本**的 worker 是 PTC 的 code runtime，而代理 URL 可能带 `user:password`——让 worker 继承主线程环境等于把操作者凭据交给模型自编代码。0.1.7 窗口内 workflow 也**不再使用 worker thread**：编排改为在同一个已沙箱化的 PTC Node 进程里求值，于是"两个 worker 各要一份净环境"的问题收敛成一份。
+
+> **演进说明(0.1.7-rc.2)**：`packages/workflow/workflow-worker-thread`（连同其 `workerSpawnEnv()` 环境精简逻辑）已被删除，`dsh-workflow-ptc` 复用共享的 Node `PtcRuntime` 执行编排——理由是 worker 的 `terminate()` 既不能施加 Session 的 OS 文件策略，也无法复用 PTC 已有的托管进程清理；原有的 VM 与 workflow helper、父调用方与子代理绑定关系都保持不变，只有执行底座换了（[.agents/notes/implemented/architecture/2026-09-13-workflow-ptc-sandbox-reuse.md:13-13]()
+<!-- anchor: `dsh-workflow-ptc` implements `WorkflowEngine` through the shared Node `PtcRuntime`. Each run keeps t -->）。脚本的同步超时切片仍由 VM 自己持有，`timeoutMs: null` 则显式关掉 PTC 的计时器，让长链路编排由调用方的 abort 信号控制（[packages/workflow/workflow-ptc/src/host.ts:127-127]()
+<!-- anchor: private readonly runtime: PtcRuntime, -->）。
 这就是本关注面的**逃逸防护**：模型自编代码要么自己配网，要么连不出去，绝不会从环境里读到操作者的代理凭据。`clearedProxyEnv()` 则服务于另一类需求——重放录制会话的 harness 必须能连到自己的 fixture 服务器，而不是开发机或 CI 导出的代理[packages/util/http-proxy/src/install.ts:306-314]()
 <!-- anchor: * The environment overlay that removes every proxy name from a spawned child. … return Object.fromEntries(PROXY_ENV_NAMES.map(name => [name, undefined])) -->
 
@@ -244,7 +249,7 @@ worker thread 有独立的 `globalThis`，也就有独立的全局 dispatcher—
 
 ### 从哪读：分层 `.env` 里的代理只在 Harness home 那一层被接受
 
-配置来源是 `inherited 环境 → 调用目录 .env → Harness home .env` 的分层快照，其中代理名有一个**单点豁免**：项目自己的 `.env`（随 `git clone` 而来）仍然拒绝设置 `HTTP_PROXY` 等名字，只有 `$DSH_HOME/.env` 这一层接受，因为那是用户自己的文件，而 `DSH_HOME` 本身是 bootstrap-only，没有 `.env` 能把这个豁免挪到仓库控制的目录上[packages/boot/app-boot/src/index.ts:120-126]()
+配置来源是 `inherited 环境 → 调用目录 .env → Harness home .env` 的分层快照，其中代理名有一个**单点豁免**：项目自己的 `.env`（随 `git clone` 而来）仍然拒绝设置 `HTTP_PROXY` 等名字，只有 `$DSH_HOME/.env` 这一层接受，因为那是用户自己的文件，而 `DSH_HOME` 本身是 bootstrap-only，没有 `.env` 能把这个豁免挪到仓库控制的目录上[packages/boot/app-boot/src/index.ts:159-165]()
 <!-- anchor: * The bootstrap names the Harness-home `.env` alone may set. A proxy chooses the … const HOME_LAYER_PROXY_NAMES = new Set(['HTTP_PROXY', 'HTTPS_PROXY', -->
 拒绝时的报错还会给出双出口提示：可以 `export`，也可以写进 home 的 `.env`。
 

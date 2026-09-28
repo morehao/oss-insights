@@ -5,6 +5,8 @@ description: dsh 的 experimental webworker 能力面（0.1.2-alpha 新增，pri
 tags: [deepseek-harness, webworker, vfs, browser, experimental]
 ---
 
+> **本轮增量复核补充（0.1.5-rc.2 → 0.1.7-rc.2 @ 477b4f4205 / 2026-09-24）**：本文本轮未做内容改写，其引用在本次全库复跑中全部通过校验；上一版解读基线为 `dsh-v0.1.5-rc.2`。
+
 # WebWorker：在浏览器 Worker 里跑整棵 harness 插件树
 
 > 子文档之一，聚焦 dsh 0.1.2-alpha 新增的 experimental `webworker` 能力面（`packages/experimental/webworker-runtime` + `webworker-packer`，均 private 维护工具）。整体哲学见 [README](README.md)；本文与 [deployment.md](deployment.md)（profile 组合）互为表里。按 ai-agent ⊗ framework 类规格产出。
@@ -95,7 +97,7 @@ sequenceDiagram
 Worker 里没有编译器，这是它的立身之本。模块加载器（`module-system/module-loader.ts`）填充 Cordis 每个入口 import 的 `loader.internal` seam，并支撑 `node:module` 的 `createRequire` proxy（typert-loader、client-modules、插件清单都经它解析包元数据）[[packages/experimental/webworker-runtime/src/module-system/module-loader.ts:2-11]()]()
 <!-- anchor:  * CommonJS module loader over the worker VFS. It fills the `loader.internal` …  * @module @deepseek-ai/dsh-experimental-webworker-runtime/src/module-system/module-loader -->
 
-解析是**收窄的 Node `require` 算法**：`exports` walk 用固定条件序（`['browser','require','import','default']`——刻意不放 `node`）、扩展名探测、按解析出的绝对路径做单一 cache。模块体按镜像原样包装：lowering 是 packer 的活，运行时不碰任何 JS 解析。代价与风险被明确推到打包期：packer 的 reachability sweep 从 workspace 各 export 面 + worker assembly 种子出发，把每个可达模块 lower 到 wrapper 契约；自己代码里不可解析的请求直接让 pack 失败，第三方包容忍到 require 时报错[[packages/experimental/webworker-packer/README.md:30-30]()]()
+解析是**收窄的 Node `require` 算法**：`exports` walk 用固定条件序（`['browser','require','import','default']`——刻意不放 `node`）、扩展名探测、按解析出的绝对路径做单一 cache。模块体按镜像原样包装：lowering 是 packer 的活，运行时不碰任何 JS 解析。代价与风险被明确推到打包期：packer 的 reachability sweep 从 workspace 各 export 面 + worker assembly 种子出发，把每个可达模块 lower 到 wrapper 契约；自己代码里不可解析的请求直接让 pack 失败，第三方包容忍到 require 时报错[[packages/experimental/webworker-packer/README.md:34-34]()]()
 <!-- anchor: 3. **Reachability sweep** — the runtime loader's own resolution -->
 
 ## 深挖二：`child_process` 不是 stub，是嵌套 Worker 的实现
@@ -121,7 +123,7 @@ Worker 里没有编译器，这是它的立身之本。模块加载器（`module
 <!-- anchor: * Stats as Node returns them under `{ bigint: true }`. … * unable to tell two revisions apart. -->）——**bigint 在这里不是"更大的数字"，而是版本令牌的载体；掉一位精度就等于丢掉一次写冲突检测。**
 
 句柄这条路上原本没有这个出口：`FileHandle.stat()` 不接受 options、只回 plain stats，于是 `{ bigint: true }` 在句柄 API 上无处可去。现在句柄的 bigint 分支经 `fileBigIntStats()` 直接读 `identityOfFile(node)`、并以 `fileLinkCount(node)` 充当 `nlink`（[packages/experimental/webworker-runtime/src/storage/memory.ts:444-452]()
-<!-- anchor: /** @returns BigInt stats for an open file, including its device and inode identity. */ … this.fileLinkCount(node), -->），Node 兼容层则把 `options.bigint === true` 分派到描述符的 `statBigInt()`（[packages/experimental/webworker-runtime/src/node/builtin_modules/implemented/fs.ts:448-456]()
+<!-- anchor: /** @returns BigInt stats for an open file, including its device and inode identity. */ … this.fileLinkCount(node), -->），Node 兼容层则把 `options.bigint === true` 分派到描述符的 `statBigInt()`（[packages/experimental/webworker-runtime/src/node/builtin_modules/implemented/fs.ts:467-475]()
 <!-- anchor: chmod: async (mode: number | string) => { … : descriptor('fstat').file.stat(), -->）。走身份而不是走路径的收益是双重的：同一个文件在 `handle.stat({ bigint: true })` 与 `statSync(path, { bigint: true })` 下给出同一组 `dev:ino`；最后一个名字被 unlink 之后，句柄依然能报告身份——这恰恰是 `FileHandle` 存在的理由。
 
 chmod 同样改身份，而且要广播到所有硬链接名。新增的 `chmodFile(node, mode)` 把 `mode & 0o777` 写回 `FileNode`，并向该身份下的每一个路径名发布 `chmod` 事件（[packages/experimental/webworker-runtime/src/storage/memory.ts:429-435]()
@@ -147,7 +149,7 @@ webworker 是「部署即组成插件树」（[deployment.md](deployment.md)）�
 ## 不足 / 风险
 
 - **纯维护工具定位**：两包都 `private: true`，不进发行版；接口随 pre-release 演进。
-- **打包 = 构建时间依赖**：packer 假设 `lib/` 产物是当前的——它从不编译，stale build 就打包 stale bytes（README 明令"先跑仓库构建"）[[packages/experimental/webworker-packer/README.md:54-54]()]()
+- **打包 = 构建时间依赖**：packer 假设 `lib/` 产物是当前的——它从不编译，stale build 就打包 stale bytes（README 明令"先跑仓库构建"）[[packages/experimental/webworker-packer/README.md:60-60]()]()
 <!-- anchor: - **The packer assumes built `lib/` artifacts are current**: it never compiles, so a stale workspace build packs stale bytes. Run the repository build first. -->。
 - **平台边界复杂**：嵌套 Worker 的进程模型、`execSync`/`fork` 拒绝、浏览器 CSP 可能拦动态求值，限制了部分 Node 语义。
 - **reachability 误判有成本**：第三方包中未被 sweep 到的 `createRequire` 调用会到 require 时才 loud fail，诊断需要打包期上下文。

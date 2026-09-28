@@ -5,6 +5,8 @@ description: DeepSeek Harness（dsh）凭据能力面解读——ctx.credentials
 tags: [deepseek-harness, credentials, authorization, oauth, device-code, credential-record, capability-seam]
 ---
 
+> **本轮增量复核补充（0.1.5-rc.2 → 0.1.7-rc.2 @ 477b4f4205 / 2026-09-24）**：本关注面在本次增量窗口内没有需要改写的论断，引用随新基线重锚后全部通过校验；上一版解读基线为 `dsh-v0.1.5-rc.2`。
+
 # 凭据系统：可交互授权与持久化记录（`ctx.credentials` / `ctx.authorization`）
 
 > 子文档之一，聚焦 dsh 的凭据能力面。覆盖 `packages/credentials/credentials`（能力定义与双键空间）、`packages/credentials/credentials-local`（`$DSH_HOME/.credentials.yaml` 本地实现）、`packages/credentials/authorization`（人机交互授权平面），以及 pi-ai/DeepSeek 适配器侧的登录接线。整体哲学见 [README](README.md)；本文与 [llm.md](llm.md)（provider 路由用哪个凭据）、[deployment.md](deployment.md)（`DSH_HOME` 布局）、[architecture.md](architecture.md)（Capability Seam 三件套）互相咬合。
@@ -49,21 +51,21 @@ opaque payload 是一个关键权衡：把"grant 里装什么"完全下放给 ow
 
 ## Authorization：把"授权一次凭据"做成可注册、可交互、可回放的流程
 
-`ctx.authorization` 是一个 `AuthorizationService`，维护"**一个 key → 一个 flow**"的注册表（[packages/credentials/authorization/src/index.ts:177-184]()）：
+`ctx.authorization` 是一个 `AuthorizationService`，维护"**一个 key → 一个 flow**"的注册表（[packages/credentials/authorization/src/index.ts:186-191]()）：
 <!-- anchor:  * `ctx.authorization`: a registry of credential-obtaining flows, one attempt at …   static inject = ['credentials'] -->
 
 ### flow 形状：`run()` 是唯一的义务
 
-一个 `AuthorizationFlow` 声明它写给哪个 `key`、用什么 `methods`（OAuth / API-Key，按偏好排序）、以及唯一必须实现的 `run(session)`（[packages/credentials/authorization/src/index.ts:119-137]()）：
+一个 `AuthorizationFlow` 声明它写给哪个 `key`、用什么 `methods`（OAuth / API-Key，按偏好排序）、以及唯一必须实现的 `run(session)`（[packages/credentials/authorization/src/index.ts:125-142]()）：
 <!-- anchor: export interface AuthorizationFlow { …   run(session: AuthorizationSession): Promise<void> -->
 
-- **`registerFlow(flow)`** 用 `ctx.effect()` 包裹：注册是**可逆副作用**——卸载时撤销，且若 flow 中途被撤，其正在跑的 attempt 也被 abort（"runner 属于正在消失的插件，继续让它提问会活过那个能回答它的 fiber"）（[packages/credentials/authorization/src/index.ts:202-218]()）。
+- **`registerFlow(flow)`** 用 `ctx.effect()` 包裹：注册是**可逆副作用**——卸载时撤销，且若 flow 中途被撤，其正在跑的 attempt 也被 abort（"runner 属于正在消失的插件，继续让它提问会活过那个能回答它的 fiber"）（[packages/credentials/authorization/src/index.ts:209-225]()）。
 <!-- anchor:   registerFlow(flow: AuthorizationFlow): () => void { …   registerFlow(flow: AuthorizationFlow): () => void { -->
 - **每个 key 只许一个 flow**：两个插件抢同一 key，各写各格式的记录，后跑的那个会让先的读到解析不了的 payload——`DUPLICATE_FLOW` 拒绝（同上 `:204-207`）。
 
 ### interaction 由请求方供给，而非注册时绑定
 
-这是授权设计里最反直觉、也最关键的一点：**surface 半身（`AuthorizationInteraction`）是随请求传入的，不是随 flow 注册的**（[packages/credentials/authorization/src/index.ts:145-158]()）：
+这是授权设计里最反直觉、也最关键的一点：**surface 半身（`AuthorizationInteraction`）是随请求传入的，不是随 flow 注册的**（[packages/credentials/authorization/src/index.ts:151-164]()）：
 <!-- anchor: export interface AuthorizationInteraction { …   prompt(prompt: AuthorizationPrompt): Promise<string> -->
 
 ```ts
@@ -79,7 +81,7 @@ interface AuthorizationInteraction {
 **为什么 interaction 要随请求给而不是随 flow 存**：启动授权的那个调用方，才是能跟人类对话的那个——prompt 必须精确落到"发出请求的那个页面"，headless 调用方则传一个永远拒签的 interaction。若把 surface 绑在 flow 上，头less 和 Web 会互相踩踏。`AuthorizationNotice`/`AuthorizationPrompt` 被设计成 **wire-safe（不含 secret）**，浏览器侧类型链可直接消费而不用加载服务包（[packages/credentials/authorization/src/types.ts:1-6]()）。
 <!-- anchor:  * Wire-safe authorization types, free of cordis/service imports so browser type …  * @module @deepseek-ai/dsh-authorization/types -->
 
-`begin()` 一次只允许一个在途 attempt（`running` Map 按 key 记 `InFlight`，`InFlight` 只持一个 `AbortController`），保证同一 key 不会并发跑两个授权去写入同一记录（[packages/credentials/authorization/src/index.ts:275-277]()，`:173-176`）。
+`begin()` 一次只允许一个在途 attempt（`running` Map 按 key 记 `InFlight`，`InFlight` 只持一个 `AbortController`），保证同一 key 不会并发跑两个授权去写入同一记录（[packages/credentials/authorization/src/index.ts:283-285]()，`:173-176`）。
 <!-- anchor:   async begin(request: AuthorizationRequest): Promise<AuthorizationOutcome> { …   async begin(request: AuthorizationRequest): Promise<AuthorizationOutcome> { -->
 <!-- anchor: interface InFlight { …   readonly controller: AbortController -->
 
@@ -159,7 +161,7 @@ sequenceDiagram
     end
 ```
 
-无官方 changelog，此图依据 [packages/credentials/authorization/src/index.ts:202-277]() 与 [packages/credentials/credentials-local/src/index.ts:188-226]() 的实现归纳。
+无官方 changelog，此图依据 [packages/credentials/authorization/src/index.ts:209-285]() 与 [packages/credentials/credentials-local/src/index.ts:188-226]() 的实现归纳。
 <!-- anchor:   registerFlow(flow: AuthorizationFlow): () => void { …     const flow = this.flows.get(key) -->
 <!-- anchor: export function parseCredentialsDocument(text: string, filename: string): CredentialsDocument { …   return { refs: parseRefs(fields['refs'], filename), records: parseRecords(fields['records'], filename) } -->
 

@@ -7,11 +7,16 @@ tags: [deepseek-harness, session-format, migration, schema-evolution, jsonl, eve
 
 # 会话格式版本与迁移：已发布世代的不可变链式升级
 
-> 子文档之一，聚焦 dsh 会话日志的**格式版本权威链与相邻迁移管线**。覆盖 `packages/core/session`（唯一 writer 版本常量）、`packages/session/session-format`（stage/stream 抽象）、`session-format-catalog`（构建期装配）、`session-format-v0-to-v1` / `-v1-to-v2` / `-v2-to-v3`（三代相邻边）。整体哲学见 [README](README.md)。
+> 子文档之一，聚焦 dsh 会话日志的**格式版本权威链与相邻迁移管线**。覆盖 `packages/core/session`（唯一 writer 版本常量）、`packages/session/session-format`（stage/stream 抽象）、`session-format-catalog`（构建期装配）、`session-format-v0-to-v1` / `-v1-to-v2` / `-v2-to-v3` / `-v3-to-v4`（四代相邻边）。整体哲学见 [README](README.md)。
 >
 > **边界（与相邻子文档的分工）**：[data-model.md](data-model.md) 讲持久化的**地面布局**（JSONL 帧与压缩、storage 双布局、投影缓存），[session.md](session.md) 讲**事件溯源语义**（不可变日志、`deriveMessages`、fork/resume）。本文只讲「**格式版本与迁移**」：日志的 `version` 字段由谁定义、旧版本字节如何被读成当前世代、以及为什么这套机制必须是「不可变世代 + 相邻链」而不是一次性重写。
 >
 > **本版增量背景**：本次增量基线是 `dsh-v0.1.2-rc.1`（彼时 `SESSION_FORMAT_VERSION = 0`，KB 的 [data-model.md](data-model.md) 记录的"不迁移、只拒绝"即那一阶段），到 `HEAD`（`dsh-v0.1.5-rc.2`，`SESSION_FORMAT_VERSION = 3`）共 1490 个提交。格式版本这一根线在此窗口内从 0 走到 3，并长出了整套迁移管线——本文即这条线的 SSOT。
+>
+> **本版增量更新（0.1.5-rc.2 → 0.1.7-rc.2）**：writer 常量再走一格到 **4**（`SESSION_FORMAT_VERSION = 4`，[packages/core/session/src/types.ts:89-89]()
+<!-- anchor: export const SESSION_FORMAT_VERSION = 4 -->），catalog 随之长成五个 codec、四条相邻边（[packages/session/session-format-catalog/src/generated.ts:16-31]()
+<!-- anchor: export const sessionFormatCatalogOptions: SessionFormatCatalogOptions = { … sessionFormatV3ToV4, -->）；同时**权威链第一次出现刻意的分歧**：finalization 记录已是 `latestFinalizedVersion: 4`（[docs/session-format-status.md:31-33]()
+<!-- anchor: ```yaml session-format-finalization … latestFinalizedVersion: 4 -->），而 release 记录仍是 `latestReleasedVersion: 3`（`evidenceTag: dsh-v0.1.5-alpha.1`）——即 v4 **已定稿、未发布**，正好落进本文「常量 > 记录 = 开发目标」那一支。
 
 根因一句话：**当会话日志随 alpha 发布，磁盘上的字节就成了用户资产；此时"改格式"不再是一次可以随手重写的前端重构，而必须变成"已发布世代不可变 + 相邻版本转换链"的长期承诺。**
 
@@ -57,10 +62,10 @@ dsh 刻意把"当前格式是什么"这件事拆成**两个互不覆盖的事实
 
 ### 代码常量：唯一手工维护的 writer 版本
 
-`SESSION_FORMAT_VERSION` 是代码里**唯一**手工维护的当前 writer 数字，并自带一段把规则写死的注释：版本是单一单调整数；bump 由 writer 决定；只有结构变化够格；普通事件新增不 bump。[packages/core/session/src/types.ts:73-88]()
-<!-- anchor: * The version is a single monotonic integer with no major/minor split. Whether … export const SESSION_FORMAT_VERSION = 3 -->
+`SESSION_FORMAT_VERSION` 是代码里**唯一**手工维护的当前 writer 数字，并自带一段把规则写死的注释：版本是单一单调整数；bump 由 writer 决定；只有结构变化够格；普通事件新增不 bump。[packages/core/session/src/types.ts:74-89]()
+<!-- anchor: * The version is a single monotonic integer with no major/minor split. Whether … export const SESSION_FORMAT_VERSION = 4 -->
 
-这个常量同时也是 `SessionHeader.version` 的类型来源：历史物理 header 必须先被翻译，才能进入 `SessionHeader` 接口。[packages/core/session/src/types.ts:67-71]()
+这个常量同时也是 `SessionHeader.version` 的类型来源：历史物理 header 必须先被翻译，才能进入 `SessionHeader` 接口。[packages/core/session/src/types.ts:68-72]()
 <!-- anchor: * Current logical Session format version, stamped into every newly written … * this final generation before constructing a Session. -->
 
 失败模式被刻意做窄：写侧只写当前版本，`encodeCurrentHeader` 在编码前就断言 header 版本等于当前版本，否则直接报错。[packages/session/session-format/src/catalog.ts:114-116]()
@@ -70,20 +75,20 @@ dsh 刻意把"当前格式是什么"这件事拆成**两个互不覆盖的事实
 
 ### 生成器：把常量翻译成 gap-free 的边集合
 
-`gen-session-format-catalog` 不实现任何版本，只做两件事：从源码正则读出版本常量，[scripts/gen-session-format-catalog.ts:51-54]()
+`gen-session-format-catalog` 不实现任何版本，只做两件事：从源码正则读出版本常量，[scripts/gen-session-format-catalog.ts:70-73]()
 <!-- anchor: const source = readFileSync(resolve(scanRoot, 'packages/core/session/src/types.t … return safeVersion(Number(match[1]), 'SESSION_FORMAT_VERSION') -->
 
-以及校验**从 0 到该版本每一步恰好一条相邻边**——缺边、重边、多边、目录/包名/相邻 codec 不接续、catalog 未通过 peer+dev 共享 `dsh-session`，全部报错。[scripts/gen-session-format-catalog.ts:107-115]()
+以及校验**从 0 到该版本每一步恰好一条相邻边**——缺边、重边、多边、目录/包名/相邻 codec 不接续、catalog 未通过 peer+dev 共享 `dsh-session`，全部报错。[scripts/gen-session-format-catalog.ts:126-134]()
 <!-- anchor: for (let version = 0; version < currentVersion; version += 1) { … throw new Error(`gen-session-format-catalog: migration inventory does not end ex -->
 
-Cookbook 把这条约束表述为"生成器要求从 0 到 writer 版本每一步恰好一个相邻包，且名字、codec 导出、依赖都匹配；它拒绝缺口，修声明而不是手改 `generated.ts`"——而且 catalog 是**构建期静态**的，插件挂载不得决定历史可读性。[docs/cookbook/adding-a-session-format-version.md:43-43]()
+Cookbook 把这条约束表述为"生成器要求从 0 到 writer 版本每一步恰好一个相邻包，且名字、codec 导出、依赖都匹配；它拒绝缺口，修声明而不是手改 `generated.ts`"——而且 catalog 是**构建期静态**的，插件挂载不得决定历史可读性。[docs/cookbook/adding-a-session-format-version.md:48-48]()
 <!-- anchor: The [generator](../../scripts/gen-session-format-catalog.ts) requires exactly on -->
 
 **Why**：如果相邻边可以按需注册（例如由挂载的插件贡献），那么"能否读一份历史日志"就变成部署配置的函数——同一份日志在不同 profile 下可读性不同。把边集合冻结在构建产物里，换来的是**历史可读性可复现**。
 
 ### release record：声明"已发布到哪"
 
-发布记录是一段 YAML：`latestReleasedVersion: 3`、`evidenceTag: dsh-v0.1.5-alpha.1`。[docs/session-format-status.md:28-30]()
+发布记录是一段 YAML：`latestReleasedVersion: 3`、`evidenceTag: dsh-v0.1.5-alpha.1`。[docs/session-format-status.md:44-46]()
 <!-- anchor: ```yaml session-format-release … evidenceTag: dsh-v0.1.5-alpha.1 -->
 
 注意 evidenceTag 的语义被刻意放宽：它指向**一个**已发布产物，其标签对应的 writer 具有该值，而不必是首次携带该格式的发布；双语副本按同一记录校验，不作为独立决策维护。[docs/session-format-status.md:19-19]()
@@ -92,12 +97,12 @@ Cookbook 把这条约束表述为"生成器要求从 0 到 writer 版本每一�
 状态由"常量 vs 记录"推导：相等即已发布；常量更大即开发目标；并且明确写上——**alpha / beta / RC 也是发布**，GitHub 的 prerelease 标记不能让持久化用户数据变成一次性数据。[docs/session-format-status.md:23-23]()
 <!-- anchor: An alpha, beta, or release-candidate product publication establishes released Se -->
 
-记录的更新时点同样被写死：结构性 writer 变更时同时更新常量与相邻 catalog，但**发布前不动记录**；发布后确认发布与其标签 writer，再连同两条 evidence 链接一起推进。[docs/session-format-status.md:38-40]()
+记录的更新时点同样被写死：结构性 writer 变更时同时更新常量与相邻 catalog，但**发布前不动记录**；发布后确认发布与其标签 writer，再连同两条 evidence 链接一起推进。[docs/session-format-status.md:54-56]()
 <!-- anchor: When a structural writer change is implemented, update the code constant and adj … The [documentation-standard test](../scripts/doc-standard.spec.ts) checks record -->
 
 ```mermaid
 graph LR
-    W["代码常量 v3"] --> G["生成器"]
+    W["代码常量 v4"] --> G["生成器"]
     G --> C["generated catalog"]
     R["发布记录 v3"] --> D{"常量=记录?"}
     W --> D
@@ -112,7 +117,7 @@ graph LR
 
 ## 世代演进：三代相邻边各改了什么
 
-三代的"为什么改"对应三种不同的结构压力：**语义规范化的债**、**事件基数过大**、**一个模型可见事实有两个家**。
+四代的"为什么改"对应四种不同的结构压力：**语义规范化的债**、**事件基数过大**、**一个模型可见事实有两个家**，以及**一个事实被塞进不属于它的角色与包装**（v4 把工具结果从 user 消息的 wrapper 里解出来）。
 
 ```mermaid
 stateDiagram-v2
@@ -120,8 +125,9 @@ stateDiagram-v2
     v0 --> v1: 有界归一化
     v1 --> v2: 内嵌 assistant 流
     v2 --> v3: system 提升为节点 0
-    v3 --> v3: 当前 writer 追加
-    v3 --> [*]: 旧世代保留只读
+    v3 --> v4: tool-role 结果 + 来源/扩展命名空间化
+    v4 --> v4: 当前 writer 追加
+    v4 --> [*]: 旧世代保留只读
 ```
 
 本次窗口内的关键提交（`dsh-v0.1.2-rc.1..HEAD`，`git log` 核实）：
@@ -138,14 +144,14 @@ stateDiagram-v2
 
 ### v0 → v1：身份边 + 有界 legacy 归一化
 
-v0→v1 的头部迁移只是把 `version: 0` 改成 `1`，[packages/session/session-format-v0-to-v1/src/migration.ts:25-31]()
+v0→v1 的头部迁移只是把 `version: 0` 改成 `1`，[packages/session/session-format-v0-to-v1/src/migration.ts:27-33]()
 <!-- anchor: export const sessionFormatV0ToV1 = defineSessionFormatMigration({ … return { ...header, version: 1 } -->
 
 但 body 不是纯身份转换——它承担**有界的历史归一化**：退役的 `steering/message`、`compact/*` 事件名被改写，`turn/start.trigger` 被移除，legacy compaction 组会补齐一个确定性 `compactionId`，`request/header.header.messagePrefix` 这个重复字段被删掉。事件名改写本身是机械的：
-`compact/start|summary|end` → `compaction/start|summary|end`。[packages/session/session-format-v0-to-v1/src/migration.ts:103-111]()
+`compact/start|summary|end` → `compaction/start|summary|end`。[packages/session/session-format-v0-to-v1/src/migration.ts:105-113]()
 <!-- anchor: function normalizeLegacyCompactionType(event: SessionFormatEvent): SessionFormat … return { ...event, type: 'compaction/end' } -->
 
-`steering/message` 的改写更谨慎：它先校验 v0 记录只含 `['turn','message']` 这两个键，再包装成当前形态——即归一化只覆盖"有限且已发布接受"的 legacy 形状，其余一律拒绝。[packages/session/session-format-v0-to-v1/src/migration.ts:238-243]()
+`steering/message` 的改写更谨慎：它先校验 v0 记录只含 `['turn','message']` 这两个键，再包装成当前形态——即归一化只覆盖"有限且已发布接受"的 legacy 形状，其余一律拒绝。[packages/session/session-format-v0-to-v1/src/migration.ts:240-245]()
 <!-- anchor: function normalizeLegacySteering(event: SessionFormatEvent, sessionId: string): … assertReleasedV0Keys(data, ['turn', 'message'], [], `steering/message ${event.se -->
 
 **Why**：v0 是唯一一个"字段形态与当前不同但语义可确定补全"的世代，因此归一化被放在这条边上一次性结清；之后每一代只做结构性变换，不再回头补语义。这也是"相邻链"的另一重价值：每条边只回答"我这一步改了什么"，历史语义补全不会被稀释进后续边。
@@ -184,8 +190,8 @@ graph TB
     CAT --> CORE
 ```
 
-依赖方向与版本方向一致：每条新边依赖前一条边包以**复用**其 source codec（生成器强制 `declaration.sourceCodec === previous.targetCodec` 且依赖存在），catalog 再依赖全部边包，并通过 peer+dev 与 `dsh-session` 共享当前词汇与当前校验规则。[packages/session/session-format-catalog/src/generated.ts:14-18]()
-<!-- anchor: export const sessionFormatCatalog = createSessionFormatCatalog({ … migrations: [sessionFormatV0ToV1, sessionFormatV1ToV2, sessionFormatV2ToV3], -->
+依赖方向与版本方向一致：每条新边依赖前一条边包以**复用**其 source codec（生成器强制 `declaration.sourceCodec === previous.targetCodec` 且依赖存在），catalog 再依赖全部边包，并通过 peer+dev 与 `dsh-session` 共享当前词汇与当前校验规则。[packages/session/session-format-catalog/src/generated.ts:16-30]()
+<!-- anchor: export const sessionFormatCatalogOptions: SessionFormatCatalogOptions = { … sessionFormatV3ToV4, -->
 
 ### v2 → v3：system prompt 从 header 提升为 surface node 0
 
@@ -209,6 +215,21 @@ v3 的解法是让系统提示成为**普通 surface 事件** `system/message`�
 
 **Why**：提示词搬上 surface 之后，"提示词变更"与"配置/工具变更"在日志里终于可区分（前者是节点 0 的替换 + `series` header，后者是 `change` 的 header），并且所有"模型看到了什么"的读者都只需 fold surface 一处。**代价**是一张真正棘手的迁移边：一个合法的 v2 源可能不存在"保序"的转换，此时拒绝优于移动历史或放松所有权。[.agents/notes/implemented/architecture/2026-09-02-system-prompt-as-surface-node.md:61-61]()
 <!-- anchor: The [V2-to-V3 specification](../../../../packages/session/session-format-v2-to-v -->
+
+### v3 → v4：工具结果升为独立角色 + 来源/扩展命名空间化
+
+v3 里 `tool/result` 事件把工具结果塞在一条 **user 角色**消息的 `tool-result` wrapper 内容块里（`role: 'user'` 加 `content[0].toolCallId` / `content` / `isError`），而来源是一层通用包装：格式演进积累下来的插件名直接写进 `source.plugin`。v4 把这两处一起拆开——**工具结果升成独立的 `tool` 角色消息**（`role: 'tool'`、顶层 `toolCallId`、直接 `content`、可选 `isError`，wrapper 整体消失），来源则从 `plugin: <字符串>` 换成带**受控取值**的 `kind` 判别：`compact` → `compact-checkpoint`、`tools-code-mode` / `tools-ptc` → `ptc-mode`、`dsh-compaction-basic` → `compact-basic`，system-prompt 插件按所属角色分派成 `system-prompt` 或 `runtime-context`。header 里唯一的变化就是 `version: 3` 变成 `4`（[packages/session/session-format-v3-to-v4/README.md:67-76]()
+<!-- anchor: ## V3-to-V4 specification … | Logical V3 header | `version: 3` becomes `4` | Released V3 header validation runs first; all other -->），落地函数是 `liftToolResult()`：它要求非空 message id 与 `source: { kind: 'tool', callId }`，wrapper 里只有 `toolCallId` / `content` / `isError` 三个字段被认领，其余字段降级成 `plugin:result:<原字段名>`（[packages/session/session-format-v3-to-v4/src/tool-role.ts:36-65]()
+<!-- anchor: export function liftToolResult(event: SessionFormatEvent): SessionFormatEvent { … ...(isError === undefined ? {} : { isError }), -->）。
+
+未知内容标签在这一代被统一**命名空间化**为 `plugin:<original-type>`，未知且可忽略的事件类型同样加前缀保留而不是就地丢弃；来源改名只作用于表里列出的精确取值，其余 `plugin` 来源一律拒绝（[packages/session/session-format-v3-to-v4/README.md:108-128]()
+<!-- anchor: ### Message-source conversion … | `@deepseek-ai/dsh-system-prompt`, on another role | `runtime-context` | -->）。
+
+**为什么这一代特别"重"**：v4 是第一条**要求历史正文恢复时显式提供子目录证据**的边——`sessionFormatV3ToV4.createStage()` 没有 child facts 就直接拒绝，空数组是"显式声明没有子会话"的唯一合法写法，因为 fork / 子代理的父子关系必须与父日志一致，不能靠猜（[packages/session/session-format-v3-to-v4/README.md:139-145]()
+<!-- anchor: ### Parent catalog prerequisites … | One descriptor with version 1 | Require string provider and label; derive `mode: 'continuable'`. | -->）。物理层没有新 framing：`releasedV4SessionFormatCodec` 复用已发布的 v2 framing 加 v4 原生准入，所以这一代边改的是**语义**而不是字节布局。
+
+**权威链第一次分歧**：v4 已定稿但未发布——finalization 记录写 `latestFinalizedVersion: 4`，release 记录仍是 `latestReleasedVersion: 3`（`evidenceTag: dsh-v0.1.5-alpha.1`）。仓库对这段窗口的处置是显式的：**首次 v4 发布之前**，任何把更新的 v3-writer master 合进来的集成都必须通过一次 v3 词汇校验，确保 v3 事件名集合被冻结（[docs/session-format-status.md:31-39]()
+<!-- anchor: ```yaml session-format-finalization … Before the first V4 publication, every integration of a newer V3-writing master must pass the -->）。换句话说，"writer 已是 4、已发布仍是 3"这段时间里，迁移链要同时读得懂 v3 与 v4，而 v3 的解释权不许再动。
 
 ---
 
@@ -244,10 +265,10 @@ body 迁移不是"数组进、数组出"的函数，而是一个**每个 artifac
 核心证据就是开头那次 OOM，以及由此暴露的接口耦合：旧接口里 `SessionFormatCodec` 解码/编码**完整数组**，每条 `SessionFormatMigration` 接受/返回**完整 artifact**，编译出的链只能把一个物化 artifact 交给下一条边；于是"更快的解码器"救不了下游的行数组、事件数组、逐边快照与目标行数组。[.agents/notes/implemented/architecture/2026-08-31-released-session-format-migrations.md:20-24]()
 <!-- anchor: ### The interfaces prevented local fixes from composing … The migrations are stateful even though the API presented them as one-shot funct -->
 
-第二个关键是 **compact run**：v1 的 packed assistant chunks 展开后约 914 万条逻辑事件，而 v1→v2 最终只会折叠成 72,784 条当前事件。如果链上每步都先展开再折叠，峰值内存由"源事件数"而非"目标事件数"决定。所以 codec 可以发出一个 codec 自有的 `SessionFormatEventRun`，stage 若没有直接处理器才调用 `run.expand()`；v0→v1 与 v1→v2 都实现了 `transformRun`，让 packed chunk 无需先变成几百万条普通事件就能抵达折叠边。[.agents/notes/implemented/architecture/2026-08-31-released-session-format-migrations.md:83-86]()
+第二个关键是 **compact run**：v1 的 packed assistant chunks 展开后约 914 万条逻辑事件，而 v1→v2 最终只会折叠成 72,784 条当前事件。如果链上每步都先展开再折叠，峰值内存由"源事件数"而非"目标事件数"决定。所以 codec 可以发出一个 codec 自有的 `SessionFormatEventRun`，stage 若没有直接处理器才调用 `run.expand()`；v0→v1 与 v1→v2 都实现了 `transformRun`，让 packed chunk 无需先变成几百万条普通事件就能抵达折叠边。[.agents/notes/implemented/architecture/2026-08-31-released-session-format-migrations.md:86-88]()
 <!-- anchor: ### Physical codecs and packed runs … Each released codec creates a row decoder with explicit `strict` or `recoverable -->
 
-上游还逐条否掉了替代方案：只优化 zstd 解码（下游数组仍在）、返回数组的 stage（换个名字保留旧分配）、每条 stage 自带输出队列（仍保留中间值）、给 stage 构造函数注入 emit 回调（迫使反向构造或半连接生命周期）、全局共享有状态 codec（跨并发 restore 混合 pending attempt）、持久化每个中间版本（造出没有运行期消费者的持久状态）、让挂载插件注册迁移（历史可读性变成部署依赖）。[.agents/notes/implemented/architecture/2026-08-31-released-session-format-migrations.md:197-204]()
+上游还逐条否掉了替代方案：只优化 zstd 解码（下游数组仍在）、返回数组的 stage（换个名字保留旧分配）、每条 stage 自带输出队列（仍保留中间值）、给 stage 构造函数注入 emit 回调（迫使反向构造或半连接生命周期）、全局共享有状态 codec（跨并发 restore 混合 pending attempt）、持久化每个中间版本（造出没有运行期消费者的持久状态）、让挂载插件注册迁移（历史可读性变成部署依赖）。[.agents/notes/implemented/architecture/2026-08-31-released-session-format-migrations.md:244-251]()
 <!-- anchor: - **Optimize only Zstandard Decode** — restores physical Decode speed but leaves … - **Let mounted plugins register migrations** — makes historical readability dep -->
 
 ### 装配层：catalog 做物理分发与"当前快路径"
@@ -309,15 +330,15 @@ sequenceDiagram
 
 ### 写开（write open）在返回可写句柄前完成独占发布
 
-写开在拿到进程内 claim 与跨进程 `SessionWriteLease` 之后重新解析世代；若仍是历史，则复用匹配的 preparation 并 `await publish()`，**只有发布完成才返回可写句柄**。发布流程本身在 `publishPreparedMigration` 里：先写同目录独占临时文件，[packages/session/session-persistence-jsonl/src/generation.ts:879-905]()
+写开在拿到进程内 claim 与跨进程 `SessionWriteLease` 之后重新解析世代；若仍是历史，则复用匹配的 preparation 并 `await publish()`，**只有发布完成才返回可写句柄**。发布流程本身在 `publishPreparedMigration` 里：先写同目录独占临时文件，[packages/session/session-persistence-jsonl/src/generation.ts:884-911]()
 <!-- anchor: async function publishPreparedMigration( … const published = await publishCurrentExclusive(staged.path, currentPath, intern -->
 
 再依次做 staged 身份校验、源 identity 复核、无覆盖发布。源在迁移期间发生变化会抛 `JsonlGenerationSourceChangedError` 并删除临时文件，**不重跑解码与迁移**——暴露给读者的逻辑历史不会被静默替换。
 
-发布前写句柄的状态机在 `publishStoredMigration`：`publish()` 成功后把 `PreparedStoredLog` 提升为 `CurrentStoredLog`。[packages/session/session-persistence-jsonl/src/index.ts:643-663]()
+发布前写句柄的状态机在 `publishStoredMigration`：`publish()` 成功后把 `PreparedStoredLog` 提升为 `CurrentStoredLog`。[packages/session/session-persistence-jsonl/src/index.ts:692-712]()
 <!-- anchor: private async publishStoredMigration(id: SessionId, stored: PreparedStoredLog): … this.memoizeStoredLog(id, published) -->
 
-世代选择统一为"**数值最高的规范世代**"：目录内扫描规范文件名，按版本降序取第一个作为 source，当前目标路径始终由 `sessionFormatCatalog.currentVersion` 决定。[packages/session/session-persistence-jsonl/src/index.ts:1395-1402]()
+世代选择统一为"**数值最高的规范世代**"：目录内扫描规范文件名，按版本降序取第一个作为 source，当前目标路径始终由 `sessionFormatCatalog.currentVersion` 决定。[packages/session/session-persistence-jsonl/src/index.ts:1473-1480]()
 <!-- anchor: const latest = generations.sort((left, right) => right.version - left.version)[0 … generationLogFilename(sessionFormatCatalog.currentVersion, this.compression), -->
 
 **关键取舍**：比当前更新的一代即使存在，也不会回退到旧的可读世代；保留的低世代只供运维检视，**不承诺 downgrade 兼容或自动 fallback**。文档层面同样明确：后端用 `SessionFormatUnsupportedError` 拒绝其无法忠实解释的日志，这与"损坏"区分开，因为什么都没有坏。[docs/subsystems/persistence.md:189-189]()
@@ -337,7 +358,7 @@ graph TB
 
 ### 取消语义：共享 preparation，最后一个 waiter 才能中止
 
-并发历史打开按 `SessionId + 源路径 + revision` 做 single-flight。每个调用方的 `AbortSignal` 只与共享 Promise 竞速，**不向共享工作转发**；只有当最后一个 waiter 离开且 preparation 尚未 settle 时，才由后端持有的 controller 中止共享工作。[packages/session/session-persistence-jsonl/src/index.ts:578-593]()
+并发历史打开按 `SessionId + 源路径 + revision` 做 single-flight。每个调用方的 `AbortSignal` 只与共享 Promise 竞速，**不向共享工作转发**；只有当最后一个 waiter 离开且 preparation 尚未 settle 时，才由后端持有的 controller 中止共享工作。[packages/session/session-persistence-jsonl/src/index.ts:603-618]()
 <!-- anchor: private async waitForPreparation( … preparation.controller.abort() -->
 
 而一旦 `publish()` 开始，encode、Worker 校验与发布就**不再接收调用方取消**，跑到结算；写开在发布前后各检查一次自己的 signal。语义是"**已发布的世代永不回滚**"。
@@ -348,10 +369,10 @@ graph TB
 
 ### 不可变世代带来的代码量与维护税
 
-这套机制的真实成本是**每加一次结构变更就要新开一个包**，并且每条已发布边永久冻结：cookbook 明确"已发布的 codec 与迁移语义保持冻结，不得修改已发布边来实现新结构特性；只有尚未发布的 N→N+1 边可以在发布前纳入协同变更"。[docs/cookbook/adding-a-session-format-version.md:26-26]()
-<!-- anchor: Released codecs and migration semantics remain frozen. Do not amend a released e -->
+这套机制的真实成本是**每加一次结构变更就要新开一个包**，并且每条已发布边永久冻结：cookbook 明确"已发布的 codec 与迁移语义保持冻结，不得修改已发布边来实现新结构特性；只有尚未发布的 N→N+1 边可以在发布前纳入协同变更"。[docs/cookbook/adding-a-session-format-version.md:29-29]()
+<!-- anchor: Released codecs and accepted target-format meanings remain stable. The N→N+1 converter may recei -->
 
-配套的 stage 写法也提高了门槛：不能用"数组进数组出"的迁移器，必须自己管理 per-artifact 状态、显式实现 `transformEvent`/`transformRun`/`finish`、把 inherited cut 当**逻辑事件数**而非物理行数、并且只有在 EOF 前已知时才暴露 `headerInheritedEventCount`。[docs/cookbook/adding-a-session-format-version.md:48-52]()
+配套的 stage 写法也提高了门槛：不能用"数组进数组出"的迁移器，必须自己管理 per-artifact 状态、显式实现 `transformEvent`/`transformRun`/`finish`、把 inherited cut 当**逻辑事件数**而非物理行数、并且只有在 EOF 前已知时才暴露 `headerInheritedEventCount`。[docs/cookbook/adding-a-session-format-version.md:53-57]()
 <!-- anchor: Use the [Stage interfaces](../../packages/session/session-format/src/types.ts), … Treat the inherited cut as a logical event count, not a physical row count. Expo -->
 
 **判断**：这是"历史可读性可复现"的必然代价，属于有意的复杂度转移——把成本从"用户升级时丢失/损坏会话"移到"维护者每次结构变更多写一个包"。对以不可变事件日志为唯一事实源的项目，这个方向是自洽的；但对只想快速迭代的小项目，它就是过度设计。

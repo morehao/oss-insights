@@ -36,7 +36,7 @@ dsh 支柱二「session 日志是唯一事实源」在建 harness 早期只对�
 
 ### seam 形状：Service Definition / 本地 Provider / 多组 Consumer
 
-遵循 `Capability Seam 三件套`：`AttachmentStore` 是可交换的 Definition（[packages/attachment/attachment/src/index.ts:51-166]()
+遵循 `Capability Seam 三件套`：`AttachmentStore` 是可交换的 Definition（[packages/attachment/attachment/src/index.ts:52-167]()
 <!-- anchor: /** Immutable binary attachment service. Implementations validate bytes before p … abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<Store -->），`attachment-local` 是当下唯一的 Provider（本地内容寻址，根在 `DSH_HOME/attachments/v1`），Consumer 是 ACP adapter、MCP client、pi-ai/DeepSeek adapter、Session Controller（浏览器上传）、子代理 prompt 等。
 
 关键词汇 `ImageAttachmentRef` 是持有引用而非持有字节的载体：它只带 `attachmentId`（`sha256:` 前缀）、`mediaType`、`bytes`、`width`/`height`、可选 `name`，**显式承诺"永远不是文件系统路径，也不是带权限的 URL"**（[packages/attachment/attachment/src/types.ts:11-21]()
@@ -45,7 +45,7 @@ dsh 支柱二「session 日志是唯一事实源」在建 harness 早期只对�
 
 ### 全量先验后写的 `saveImages`：半途失败不产生任何脏引用
 
-图片是"一条消息里的有序集合"，而非"一张张独立文件"。为此 `AttachmentStore.saveImages` 把整套归纳为**两步原子语义**（[packages/attachment/attachment/src/index.ts:97-102]()
+图片是"一条消息里的有序集合"，而非"一张张独立文件"。为此 `AttachmentStore.saveImages` 把整套归纳为**两步原子语义**（[packages/attachment/attachment/src/index.ts:98-103]()
 <!-- anchor: async saveImages(inputs: readonly SaveImageAttachment[]): Promise<readonly Image … for (const input of inputs) refs.push(await this.saveImage(input)) -->）：
 
 1. **全量先验**：先在校验阶段就对批里的每一张跑完 `validateImage`（解码 raster、核对声明 mediaType 与字节一致、检查数量/总字节/像素/类型四类上限），**任何一张失败则整批一个字节都不写**。
@@ -96,8 +96,8 @@ graph LR
 文件名本身是不可信输入（浏览器可以送一条完整的 Windows 本地路径），所以在落盘前先清洗成安全叶子名：手工剥掉 `/` 与 `\` 两种分隔符（POSIX 上 `path.basename` 不认 `\`，会把 Windows 客户端的整条本地路径泄进引用与 session 日志）、替换 Windows 非法字符、剔除保留设备名、按 UTF-8 截到 255 字节（[packages/attachment/attachment-local/src/file-store.ts:45-55]()
 <!-- anchor: export function fileLeafName(value: string | undefined): string { … return clean === '' || clean === '.' || clean === '..' ? 'file' : clean -->）。"显示名不是路径"这条约束在两条路径上都成立，只是文件路径上没有 `mediaType` 可供审计，所以把清洗结果**同时**当作存储叶子名，让"引用里的名字"与"磁盘上的名字"恒等、无法漂移。
 
-流式入口是这条路径与图片路径的第二处分野：浏览器可以直接交来 `Blob` 或一次性的 `ReadableStream<Uint8Array>`，因此 service 提供 `saveFileStream`（有界分块、背压、可取消，不把整份文件收进内存）与 `readFileStream`（有界分块读回，最后一 chunk 后复验 digest + 长度）（[packages/attachment/attachment/src/index.ts:202-206]()
-<!-- anchor: saveFileStream(input: SaveFileStreamAttachment): Promise<FileAttachmentRef> { … 'ATTACHMENT_FILES_UNSUPPORTED', -->、[packages/attachment/attachment/src/index.ts:218-226]()
+流式入口是这条路径与图片路径的第二处分野：浏览器可以直接交来 `Blob` 或一次性的 `ReadableStream<Uint8Array>`，因此 service 提供 `saveFileStream`（有界分块、背压、可取消，不把整份文件收进内存）与 `readFileStream`（有界分块读回，最后一 chunk 后复验 digest + 长度）（[packages/attachment/attachment/src/index.ts:203-207]()
+<!-- anchor: saveFileStream(input: SaveFileStreamAttachment): Promise<FileAttachmentRef> { … 'ATTACHMENT_FILES_UNSUPPORTED', -->、[packages/attachment/attachment/src/index.ts:219-227]()
 <!-- anchor: async *readFileStream( … 'ATTACHMENT_FILES_UNSUPPORTED', -->、[packages/attachment/attachment-local/src/file-store.ts:113-137]()
 <!-- anchor: export async function saveFileStreamVerbatim( … return ref -->、[packages/attachment/attachment-local/src/file-store.ts:147-179]()
 <!-- anchor: export async function* readFileStreamVerbatim( … throw new AttachmentError('Stored file attachment failed integrity verification. -->）。**为什么不先 base64 再存**：base64 会让页面线程必须聚合整份文件、内存与传输量各膨胀约 33%，而流式载体把内存占用变成"有界分块大小"的函数——上限因此属于磁盘与传输策略，而不是请求安全边界。
@@ -168,9 +168,9 @@ sequenceDiagram
 - **写侧**：上图中 `saveImages`/`saveImage` 把「承诺何时算数」固定为"写成功才返回 ref"；字节在 durable 之前绝不发布引用，避免"引用了没落盘的对象"。
 - **读侧**：`readImage` 返回前会**重读校验**——逐项核对 `mediaType`/`bytes`/`width`/`height` 与 ref 一致（[packages/attachment/attachment-local/src/store.ts:447-453]()
 <!-- anchor: if (digest(data) !== sha256) throw new AttachmentError('Stored attachment failed … if (metadata.mediaType !== ref.mediaType || data.byteLength !== ref.bytes -->），`digest` 证明这是 admission 解码过的同一批字节。这使"参考以内容寻址"从写侧扩展到读侧，防篡改、防串对象。文件侧同源：`readFileStream` 在流结束后复验 digest 与字节数（见上文通用文件小节）。
-- **进模型**：pi-ai adapter 在请求组装时见到 `image` 块才通过 `attachments.readImageRequest` 解析字节（[packages/llm/llm-pi-ai/src/context.ts:112-112]()
-<!-- anchor:     ref => attachments.readImageRequest(ref, policy, signal), -->）；若模型不支持图片，则在组装前用 `contentHasImage` 探到并整体拒绝（[packages/llm/llm/src/content.ts:126-128]()
-<!-- anchor: export function contentHasImage(content: readonly ContentBlock[]): boolean { … || (block.type === 'tool-result' && contentHasImage(block.content))) -->）。
+- **进模型**：pi-ai adapter 在请求组装时见到 `image` 块才通过 `attachments.readImageRequest` 解析字节（[packages/llm/llm-pi-ai/src/context.ts:110-126]()
+<!-- anchor: async function prepareRequestImages( … return versions -->）；若模型不支持图片，则在组装前用 `contentHasImage` 探到并整体拒绝（[packages/llm/llm/src/content.ts:126-128]()
+<!-- anchor: export function contentHasImage(content: readonly ContentBlock[]): boolean { … return content.some(block => block.type === 'image') -->）。
 
 ### 通用文件：上传 → 暂存凭证 → 提交准入 → handle 投影
 
@@ -199,8 +199,8 @@ sequenceDiagram
     Note over A,L: 组装时 projectFilesToText
 ```
 
-- **传输侧**：`ctx.fileUpload` 收到 `Blob` 或 `ReadableStream` 时组装原始路由请求（`application/octet-stream`），由专用 Worker 发送并回报已消费字节；精确字节与 fixture 输入退化为生成的 Remote 调用（[packages/client/file-upload/src/client/runtime.ts:193-218]()
-<!-- anchor: async upload( … const bytes = data instanceof Uint8Array ? data : new Uint8Array(await data.arra -->）。Worker 与页面线程的分工是刻意的：**页面线程不读通用文件字节**——`Blob` 走 Worker 内的 XMLHttpRequest 以便拿到含总量的进度，`ReadableStream` 转移所有权后增量喂给 Fetch（进度只有已消费字节、没有总量）（[packages/client/file-upload/src/client/runtime.ts:78-103]()
+- **传输侧**：`ctx.fileUpload` 收到 `Blob` 或 `ReadableStream` 时组装原始路由请求（`application/octet-stream`），由专用 Worker 发送并回报已消费字节；精确字节与 fixture 输入退化为生成的 Remote 调用（[packages/client/file-upload/src/client/runtime.ts:191-216]()
+<!-- anchor: async upload( … data: bytesToBase64(data), -->）。Worker 与页面线程的分工是刻意的：**页面线程不读通用文件字节**——`Blob` 走 Worker 内的 XMLHttpRequest 以便拿到含总量的进度，`ReadableStream` 转移所有权后增量喂给 Fetch（进度只有已消费字节、没有总量）（[packages/client/file-upload/src/client/runtime.ts:79-104]()
 <!-- anchor: export function fileUploadWorker( … xhr.send(request.body) -->）。
 - **Host 侧**：`handleFileUploadHttp` 只做三项校验（POST、`application/octet-stream`、非空 `sessionId` 查询参数），随后按流式模式把请求体分块交给 `uploadStream`（[packages/client/file-upload/src/http-route.ts:22-44]()
 <!-- anchor: export async function handleFileUploadHttp(service: FileUploads, request: Reques … ...(name === undefined ? {} : { name }), -->）；`uploadStream` 再把分块转交 `ctx.attachments.saveFileStream`，因此**字节从不经过 `ctx.fileUploads` 的内存**（[packages/client/file-upload/src/index.ts:119-129]()
@@ -208,29 +208,29 @@ sequenceDiagram
 - **凭证与绑定**：暂存表以接收方 `Session` 对象为 key（[packages/client/file-upload/src/index.ts:60-60]()
 <!-- anchor: private readonly stagedFiles = new WeakMap<Session, Map<FileUploadReceiptId, Sta -->），`bindPrompt` 返回一个可回滚绑定——投递失败（dispose）时把每个凭证恢复到上一个 owner，`commit()` 后才保持绑定、并在 queue 或历史观察到该 `rpcId` 时退休（[packages/client/file-upload/src/index.ts:152-168]()
 <!-- anchor: bindPrompt( … else upload.requestId = previous -->）。
-- **提交与准入**：Session Controller 先解析凭证（未知或异 Session 的凭证直接按 `FILE_NOT_STAGED` 拒绝），再把**完整有序的 part 列表**交给 service（[packages/api/session-controller/src/commands.ts:349-365]()
-<!-- anchor: const admission = resolvePromptFileReceipts( … binding.commit() -->）；`admitPromptContent` 只持久化图片 part，file part 的 ref 原样通过（[packages/attachment/attachment/src/index.ts:113-126]()
+- **提交与准入**：Session Controller 先解析凭证（未知或异 Session 的凭证直接按 `FILE_NOT_STAGED` 拒绝），再把**完整有序的 part 列表**交给 service（[packages/api/session-controller/src/commands.ts:350-366]()
+<!-- anchor: const admission = resolvePromptFileReceipts( … binding.commit() -->）；`admitPromptContent` 只持久化图片 part，file part 的 ref 原样通过（[packages/attachment/attachment/src/index.ts:114-127]()
 <!-- anchor: async admitPromptContent( … return { type: 'image', attachment: refs[next++] as ImageAttachmentRef } -->）。
-- **投影**：模型侧永远看不到文件字节——每个 `file` 块在请求组装时被换成一行确定性 handle 文本，且**所有路由无条件生效**（[packages/llm/llm/src/index.ts:1043-1051]()
+- **投影**：模型侧永远看不到文件字节——每个 `file` 块在请求组装时被换成一行确定性 handle 文本，且**所有路由无条件生效**（[packages/llm/llm/src/index.ts:1065-1073]()
 <!-- anchor: // Files are never dispatched natively: every route receives handle text. … projectedMessages = projectImagesForTextModel(projectedMessages) -->）。
 
 ## 关键设计决策
 
 ### 为什么通用文件不设类型白名单与大小上限，而图片必须归一化 + 限流
 
-两类附件的"模型消费方式"不同，安全边界因此也不同。图片字节要真的进入 provider 请求（或经 Files API 上传），于是必须有一组 provider 共识的 closed mediaType、确定性归一化产物与路由级像素/字节预算；文件的字节**从不进入 provider 请求**，模型只拿到一行 handle 文本、真正的读取发生在文件工具调用里。这意味着文件的风险面是"磁盘与传输"而不是"请求安全"——设白名单/上限的收益（省磁盘、早失败）抵不过成本（拒绝合法工作、把存储策略伪装成安全边界），所以 `saveFile`/`saveFileStream` 的契约明确写着"any byte content and length is accepted"（[packages/attachment/attachment/src/index.ts:187-191]()
-<!-- anchor: saveFile(input: SaveFileAttachment): Promise<FileAttachmentRef> { … 'ATTACHMENT_FILES_UNSUPPORTED', -->、[packages/attachment/attachment/src/index.ts:202-206]()
+两类附件的"模型消费方式"不同，安全边界因此也不同。图片字节要真的进入 provider 请求（或经 Files API 上传），于是必须有一组 provider 共识的 closed mediaType、确定性归一化产物与路由级像素/字节预算；文件的字节**从不进入 provider 请求**，模型只拿到一行 handle 文本、真正的读取发生在文件工具调用里。这意味着文件的风险面是"磁盘与传输"而不是"请求安全"——设白名单/上限的收益（省磁盘、早失败）抵不过成本（拒绝合法工作、把存储策略伪装成安全边界），所以 `saveFile`/`saveFileStream` 的契约明确写着"any byte content and length is accepted"（[packages/attachment/attachment/src/index.ts:188-192]()
+<!-- anchor: saveFile(input: SaveFileAttachment): Promise<FileAttachmentRef> { … 'ATTACHMENT_FILES_UNSUPPORTED', -->、[packages/attachment/attachment/src/index.ts:203-207]()
 <!-- anchor: saveFileStream(input: SaveFileStreamAttachment): Promise<FileAttachmentRef> { … 'ATTACHMENT_FILES_UNSUPPORTED', -->）。代价被诚实写在 README 的 Known Limitations 里：整个 `DSH_HOME` 因此无界增长（[packages/attachment/attachment/README.md:119-119]()
 <!-- anchor: - **Raster image limits apply to images only** — PNG, JPEG, WebP, and GIF are ac -->）。
 
 ### 为什么 prompt admission 上收到附件 service
 
-在此之前，"哪些 part 可以进 prompt、图片何时算数、文件凭证何时解析"这套规则散在 Host 侧（Session Controller 与命令平面）；同一件事被两个 package 各写一遍，就会漂移。0.1.3-alpha.1 把 `admitPromptContent` 放到 `AttachmentStore` 上（[packages/attachment/attachment/src/index.ts:113-126]()
+在此之前，"哪些 part 可以进 prompt、图片何时算数、文件凭证何时解析"这套规则散在 Host 侧（Session Controller 与命令平面）；同一件事被两个 package 各写一遍，就会漂移。0.1.3-alpha.1 把 `admitPromptContent` 放到 `AttachmentStore` 上（[packages/attachment/attachment/src/index.ts:114-127]()
 <!-- anchor: async admitPromptContent( … return { type: 'image', attachment: refs[next++] as ImageAttachmentRef } -->），输入是 `AttachmentAdmissionPart`——文本、wire 图片、或**已解析成 ref** 的文件三者同列；输出是 `AdmittedPromptContentPart`，其中每个附件都是 durable ref（[packages/attachment/attachment/src/types.ts:100-118]()
 <!-- anchor: export type PromptContentPart = … | { readonly type: 'file'; readonly attachment: FileAttachmentRef } -->）。Host 因此只剩两件事：把凭证解析成 ref、把有序列表交给 service。
 
-准入被放在 service 上还有一条更强的理由：`PromptContentPart` 的注释写明"accepting Host promotes image parts ... **before any message is created**, so a wire caller can never cite an attachment it did not upload"——**准入先于消息创建**。若准入发生在消息已入队之后，"引用了不存在或不属于本会话的附件"就会变成日志里一条无法回滚的事件，而不是一次可拒绝的请求。同一动机下 `admitEncodedFile` 与 `isAttachmentError` 也上收到 service（[packages/attachment/attachment/src/index.ts:136-137]()
-<!-- anchor: admitEncodedFile(input: EncodedFileAttachment): Promise<FileAttachmentRef> { … return admitFileInput(this, input) -->、[packages/attachment/attachment/src/index.ts:145-146]()
+准入被放在 service 上还有一条更强的理由：`PromptContentPart` 的注释写明"accepting Host promotes image parts ... **before any message is created**, so a wire caller can never cite an attachment it did not upload"——**准入先于消息创建**。若准入发生在消息已入队之后，"引用了不存在或不属于本会话的附件"就会变成日志里一条无法回滚的事件，而不是一次可拒绝的请求。同一动机下 `admitEncodedFile` 与 `isAttachmentError` 也上收到 service（[packages/attachment/attachment/src/index.ts:137-138]()
+<!-- anchor: admitEncodedFile(input: EncodedFileAttachment): Promise<FileAttachmentRef> { … return admitFileInput(this, input) -->、[packages/attachment/attachment/src/index.ts:146-147]()
 <!-- anchor: isAttachmentError(error: unknown): error is AttachmentError { … return matchesAttachmentError(error) -->）：适配器（ACP/MCP/file-upload）只依赖 `ctx.attachments` 的稳定词汇，不必 import 实现模块——`admission.ts`/`error.ts` 仍在，但降级为 service 的内部实现。
 
 ### 为什么把文件传输独立成双端 `file-upload` 包
@@ -268,14 +268,21 @@ rc 期只收四种栅格格式（PNG/JPEG/WebP/GIF）。取舍是：`mediaType` 
 - **ACP adapter**：把协议内的 `image` 块严格解码（只收规范 base64、mime 限定在四格栅）成 `SaveImageAttachment`，统一喂给 `saveImages`；`isImageAdmissionError` 把这套附件错误词汇 map 成 ACP 的 `invalid` 请求失败（[packages/acp/acp/src/content.ts:5-55]()）。另外还能在初始化前用 `supportsAcpImagePrompts` **诚实宣告**「本路由当前是否真的收图」——必须附件服务存在、模型声明 `image` 输入模态、且媒体类型有交集才为 true，任一项不足即为 false（[packages/acp/acp/src/content.ts:89-99]()）。
 <!-- anchor: import { isImageAdmissionError } from '@deepseek-ai/dsh-attachment' … const data = Buffer.from(block.data, 'base64') -->
 <!-- anchor: export async function supportsAcpImagePrompts( … const info = await llm.resolveModelInfo(provider, model) -->
-- **MCP client**：把工具结果里的图片结果投影成 durable 引用，同样复用 `isImageAdmissionError` 做错误分类（[packages/mcp/mcp-client/src/tools.ts:472-492]()
+- **MCP client**：把工具结果里的图片结果投影成 durable 引用，同样复用 `isImageAdmissionError` 做错误分类（[packages/mcp/mcp-client/src/tools.ts:415-435]()
 <!-- anchor: let attachments: AttachmentStore … return projectContent(content, toolName, block => ({ -->）。**通用文件不在此列**：MCP 结果里的非图片富内容仍被投影成文本占位，`read_file` 与文件块只从 Host prompt 的一侧进来。
 - **LLM adapter**：pi-ai 在"批含图时才 lazily resolve 附件服务"，并且**模型不支持图则整体拒绝**——`contentHasImage` 探到一个图就抛 `UNSUPPORTED_CONTENT`，绝不把图静默降级成文本（[packages/llm/llm-pi-ai/src/adapter.ts:358-364]()
 <!-- anchor: const containsImage = options.messages.some(message => contentHasImage(message.c … throw new LlmError('pi-ai image input requires the durable attachment service',  -->）；文件块则走"无条件投影成 handle 文本"，没有 provider 能原生收它。
 
-> **演进说明（rc.8）**：DeepSeek 官方 adapter 也加入多模态——非纯文本，而是"按模型声明 `inputModalities`（含 `image`）+ 必须存在附件服务"两个条件都满足时才走图像路径；请求含图时经 `serializeRequestWithImages` 把 durable ref 解析为有序 data-URL 段，且同样有 `maxRequestImageBytes` 载荷上限（[packages/llm/llm-deepseek/src/serialize.ts:403-407]()、[packages/llm/llm-deepseek/src/adapter.ts:573-623]()
-<!-- anchor: export async function serializeRequestWithImages( … ): Promise<WireRequest> { -->
-<!-- anchor: let representation: 'file' | 'base64' = 'file' … representation = 'base64' -->）。deepseek 与 pi-ai 共享同一 `offloadRequestImages`（把最老图像换成确定文本兜底 413），图像能力位校验由此前的"DeepSeek 恒 text-only、pi-ai 收图"演进为两家都收。
+> **演进说明（rc.8）**：DeepSeek 官方 adapter 也加入多模态——非纯文本，而是"按模型声明 `inputModalities`（含 `image`）+ 必须存在附件服务"两个条件都满足时才走图像路径；请求含图时把 durable ref 解析为有序图像段并同样设有请求载荷上限；deepseek 与 pi-ai 共享同一 offload 收敛点，图像能力位校验由此前的"DeepSeek 恒 text-only、pi-ai 收图"演进为两家都收（[packages/llm/llm-deepseek/src/images.ts:38-60]()、[packages/llm/llm-deepseek/src/serialize.ts:70-76]()）。
+> <!-- anchor: export async function prepareImages( … return { messages, versions } -->
+> <!-- anchor: const fileId = fileIds?.get(block.attachment.attachmentId) … : { type: 'image', source: { type: 'file', file_id: fileId } }, -->
+>
+> **演进说明（0.1.7-rc.2）**：上面点名的 `serializeRequestWithImages` 与 `representation: 'file' | 'base64'` 两个符号已下线——能力位判定仍要求"`inputModalities` 含 `image` 且附件服务存在"，但已收敛进 `prepareImages`（并额外限制图像只能出现在 user/tool 消息里）；Files 首选、内联兜底改由 `prepareFileIds`/`RequestFiles` 与 `serialize` 的 fileIds 分支承担（[packages/llm/llm-deepseek/src/images.ts:99-110]()、[packages/llm/llm-deepseek/src/adapter.ts:88-105]()）。
+> <!-- anchor: export async function prepareFileIds( … return ids -->
+> <!-- anchor: let inline = false … }, fileIds) -->
+> 载荷上限也从单一 `maxRequestImageBytes` 拆成 Files 路径的 `maxRequestFilesBytes` 与内联路径的 `maxInlineRequestImageBytes`，两者各有自己的 offload 量化（[packages/llm/llm-deepseek/src/images.ts:13-19]()）；两家共享的 offload 收敛点现为 `requiredImageOffload` + `projectOffloadedImages`（[packages/llm/llm/src/content.ts:318-331]()）。
+> <!-- anchor: function bounds(connection: Connection, representation: 'raw' | 'base64') { … countQuantum: connection.imageOffloadCountQuantum, -->
+> <!-- anchor: export function requiredImageOffload( … return offloadedImagePrefixCount(lengths, budget) -->
 
 这几处接线共同点：**能力位（能不能收图）与存储（ref 而非字节）两个维度都被显式校验**，失败走 `invalid`/`UNSUPPORTED_CONTENT` 而非装作成功——与 [subagent.md](subagent.md) 的「能力位校验先于委派」一脉相承。通用文件的接线沿用同一姿态，但校验对象从"能力位"换成了"凭证归属"。
 
@@ -283,18 +290,22 @@ rc 期只收四种栅格格式（PNG/JPEG/WebP/GIF）。取舍是：`mediaType` 
 
 图片有三条外部通道（ACP / MCP / 浏览器），通用文件目前只有一条半：Host prompt，以及挂在同一准入入口下的子代理。
 
-- **Host prompt**：Session Controller 解析凭证 → `admitPromptContent` → `bindPrompt`（[packages/api/session-controller/src/commands.ts:349-365]()
-<!-- anchor: const admission = resolvePromptFileReceipts( … binding.commit() -->）。子代理侧没有独立上传通道，但复用同一准入入口（[packages/subagent/subagent/src/index.ts:448-448]()
+- **Host prompt**：Session Controller 解析凭证 → `admitPromptContent` → `bindPrompt`（[packages/api/session-controller/src/commands.ts:350-366]()
+<!-- anchor: const admission = resolvePromptFileReceipts( … binding.commit() -->）。子代理侧没有独立上传通道，但复用同一准入入口（[packages/subagent/subagent/src/index.ts:451-451]()
 <!-- anchor: content = await attachments.admitPromptContent(request.content) -->），并由 `assertOrdinaryAgent` 在 Host 侧挡掉子会话上传。
 - **ACP**：仍只有 `image` 词汇——协议侧的通用文件契约尚未落地，这是本版留下的一处不对称。
-- **LLM 请求组装**：核心词汇新增 `FileBlock`（与 `ImageBlock` 并列的 `ContentBlockMap` 成员，[packages/llm/llm/src/types.ts:84-87]()
-<!-- anchor: export interface FileBlock { … attachment: FileAttachmentRef -->），请求组装阶段对**每条路由**无条件把 file 块换成 handle 文本（[packages/llm/llm/src/index.ts:1043-1051]()
-<!-- anchor: // Files are never dispatched natively: every route receives handle text. … projectedMessages = projectImagesForTextModel(projectedMessages) -->）。handle 由 `fileHandleText` 生成：文件名、字节数、digest 前缀、只读保存路径，外加一句"委派文件任务时把该路径写进子任务提示"（[packages/llm/llm/src/content.ts:154-160]()
-<!-- anchor: export function fileHandleText(ref: FileAttachmentRef, readonlyPath: string | un … return `[${identity}: verbatim read-only copy saved at ${quoted(readonlyPath)}.  -->）。路径不是从 ref 直接推出的：`fileHostPath` 给出宿主绝对路径，再由当前执行世界映射成模型可用路径（[packages/llm/llm/src/index.ts:990-1003]()
-<!-- anchor: private fileReadPath(ref: FileAttachmentRef): string | undefined { … return fs?.processPathFromHostPath(hostPath) -->）；映射不到时 handle 退化为"明确报告无法读取该文件"，而不是让模型假装读过——这是"宁可承认读不到"的一致性设计（[packages/llm/llm/src/content.ts:154-160]()
-<!-- anchor: export function fileHandleText(ref: FileAttachmentRef, readonlyPath: string | un … return `[${identity}: verbatim read-only copy saved at ${quoted(readonlyPath)}.  -->）。嵌套在 `tool-result` 里的 file 块同样被替换（[packages/llm/llm/src/content.ts:138-143]()
-<!-- anchor: export function contentHasFile(content: readonly ContentBlock[]): boolean { … return false -->），`projectFilesToText` 是这条规则唯一的收敛点（[packages/llm/llm/src/content.ts:196-203]()
-<!-- anchor: export function projectFilesToText( … return content === message.content ? message : { ...message, content } -->）。
+- **LLM 请求组装**：核心词汇新增 `FileBlock`（与 `ImageBlock` 并列的 `ContentBlockMap` 成员，[packages/llm/llm/src/types.ts:98-101]()
+<!-- anchor: export interface FileBlock { … attachment: FileAttachmentRef -->），请求组装阶段对**每条路由**无条件把 file 块换成 handle 文本（[packages/llm/llm/src/index.ts:1065-1073]()
+<!-- anchor: // Files are never dispatched natively: every route receives handle text. … projectedMessages = projectImagesForTextModel(projectedMessages) -->）。handle 由 `fileHandleText` 生成：文件名、字节数、digest 前缀、只读保存路径，外加一句"委派文件任务时把该路径写进子任务提示"（[packages/llm/llm/src/content.ts:151-157]()
+<!-- anchor: export function fileHandleText(ref: FileAttachmentRef, readonlyPath: string | un … return `[${identity}: verbatim read-only copy saved at ${quoted(readonlyPath)}.  -->）。路径不是从 ref 直接推出的：`fileHostPath` 给出宿主绝对路径，再由当前执行世界映射成模型可用路径（[packages/llm/llm/src/index.ts:1012-1025]()
+<!-- anchor: private fileReadPath(ref: FileAttachmentRef): string | undefined { … return fs?.processPathFromHostPath(hostPath) -->）；映射不到时 handle 退化为"明确报告无法读取该文件"，而不是让模型假装读过——这是"宁可承认读不到"的一致性设计（[packages/llm/llm/src/content.ts:151-157]()
+<!-- anchor: export function fileHandleText(ref: FileAttachmentRef, readonlyPath: string | un … return `[${identity}: verbatim read-only copy saved at ${quoted(readonlyPath)}.  -->）。嵌套在 `tool-result` 里的 file 块同样被替换（[packages/llm/llm/src/content.ts:136-140]()
+<!-- anchor: export function contentHasFile(content: readonly ContentBlock[]): boolean { … return false -->），`projectFilesToText` 是这条规则唯一的收敛点（[packages/llm/llm/src/content.ts:203-206]()
+<!-- anchor: if (!messages.some(message => contentHasFile(message.content))) return messages … return content === message.content ? message : { ...message, content } -->）。
+
+> **演进说明（0.1.7-rc.2）**：`tool-result` 块类型已下线，工具结果改由 `role: 'tool'` 消息承载（[packages/llm/llm/src/message.ts:173-179]()），`projectFilesToText` 因此按 message 逐条替换其 content（[packages/llm/llm/src/content.ts:203-206]()）。
+> <!-- anchor: export interface ToolResultMessage extends MessageBase { … readonly isError?: boolean -->
+> <!-- anchor: if (!messages.some(message => contentHasFile(message.content))) return messages … return content === message.content ? message : { ...message, content } -->
 
 ### 附件限制被 API 侧复用：`/api/file` 的字节上限来自 `imageLimits`
 
@@ -309,7 +320,7 @@ rc 期只收四种栅格格式（PNG/JPEG/WebP/GIF）。取舍是：`mediaType` 
 rc.2 把附件层从"校验后原样存字节、请求时内联 base64"升级为一条**统一的图片管线**，在 [llm.md](llm.md)「决策四」的 provider 侧之上，补充了存储与投影侧的三处实质变化：
 
 > **① canonical admission：落库前归一化，而非逐字节透传。**
-> `attachment-local` 新增 `normalizeImage`（[packages/attachment/attachment-local/src/normalization.ts:103-108]()）：上传图先做 `canPassThroughNormalization` 判定（[packages/attachment/attachment-local/src/normalization.ts:35-47]()），只有"干净源"（固定 8-bit sRGB、无元数据、无动画、单帧）才字节级透传对象库。
+> `attachment-local` 新增 `normalizeImage`（[packages/attachment/attachment-local/src/normalization.ts:109-114]()）：上传图先做 `canPassThroughNormalization` 判定（[packages/attachment/attachment-local/src/normalization.ts:36-48]()），只有"干净源"（固定 8-bit sRGB、无元数据、无动画、单帧）才字节级透传对象库。
 > <!-- anchor: export async function normalizeImage( … if (canPassThroughNormalization(detected, data.byteLength, policy)) { -->
 > <!-- anchor: export function canPassThroughNormalization( … && Math.max(detected.width, detected.height) <= policy.maxDimension -->
 > 其余全部重编码 + 降采样到归一化策略声明的总像素预算与长边上限（[packages/attachment/attachment-local/src/index.ts:50-52]()）。
@@ -317,18 +328,22 @@ rc.2 把附件层从"校验后原样存字节、请求时内联 base64"升级为
 > 这把"admission"从"验格式"推进到"产确定性 provider 无关版本"——长会话里每张 admission 过的图都以同一确定性形态参与后续每一个请求，避免规则漂移。
 
 > **② `readImageRequest` 投影：附件可派生为外部对象存储可寻址的确定性变体。**
-> `AttachmentStore` 新增抽象 `readImageRequest(ref, policy, signal)`（[packages/attachment/attachment/src/index.ts:248-258]()）：按模型路由的像素/字节预算（`ImageRequestPolicy.maxPixels/maxBytes`）派生 `RequestImageAttachment`（含 `variantId`/depth/space/hasAlpha），未实现的 provider 抛 `ATTACHMENT_PROJECTION_UNSUPPORTED`。本地实现 `readImage` 走磁盘缓存 + variant 身份（生成为主 + `requestInflight` 去重），variant 身份包含变换版本常量（[packages/attachment/attachment-local/src/request-image.ts:25-25]()）。
+> `AttachmentStore` 新增抽象 `readImageRequest(ref, target, signal)`（[packages/attachment/attachment/src/index.ts:249-259]()）：目标宽/高与字节目标由路由侧求解成 `ImageRequestTarget`，存储层据此派生 `RequestImageAttachment`（含 `variantId`/depth/space/hasAlpha），未实现的 provider 抛 `ATTACHMENT_PROJECTION_UNSUPPORTED`。本地实现 `readImageRequest` 走磁盘缓存 + variant 身份（生成为主 + `requestInflight` 去重），variant 身份包含变换版本常量（[packages/attachment/attachment-local/src/index.ts:248-286]()）。
 > <!-- anchor: readImageRequest( … 'ATTACHMENT_PROJECTION_UNSUPPORTED', -->
-> <!-- anchor: export const REQUEST_IMAGE_TRANSFORM_VERSION = 'request-image-v5' -->
+> <!-- anchor: override async readImageRequest( … return operation.wait(signal) -->
 >
 > **演进说明（0.1.5-rc.2）**：该常量由 rc.2 期的 `'request-image-v4'` 前移至 `'request-image-v5'`（编码器改为按 alpha 选择共享质量梯）。因此 rc.2 期落盘的 v4 变体不会被复用，会按新的 `variantId` 重新生成——这正是把变换版本纳入 variant 身份的目的：编码器一改，缓存自动失效，而不是悄悄返回旧口径的字节。
+>
+> **演进说明（0.1.7-rc.2）**：常量再前移至 `'request-image-v6'`，同时投影契约从 `ImageRequestPolicy`（像素/字节预算）收敛为 `ImageRequestTarget`（目标宽/高 + 字节目标）——DeepSeek 路由改为按 V4.1 token 网格投影（14px patch、3:1 降采样、1024 token 上限，另加 4096px 单边上限），求解器留在 `llm-deepseek`，存储层只接收目标尺寸（[packages/attachment/attachment-local/src/request-image.ts:26-26]()、[packages/llm/llm-deepseek/src/request-pricing.ts:53-64]()）。
+> <!-- anchor: export const REQUEST_IMAGE_TRANSFORM_VERSION = 'request-image-v6' -->
+> <!-- anchor: export function resolveRequestImageTarget( … return { ...capped, maxBytes: resolveRequestImageMaxBytes(model) } -->
 
 > **③ DeepSeek Files 接线：file-id 首选、base64 兜底。**
-> 投影出的 `RequestImageAttachment` 在 DeepSeek 适配器侧默认走 Files API 上传复用（`representation: 'file'`）而非内联 base64；新增完整 `/files` 客户端与带过期/并发去重的上传索引（[packages/llm/llm-deepseek/src/files-api.ts:128-128]()、[packages/llm/llm-deepseek/src/file-store.ts:142-175]()）。由归一化保证"上传给对象存储的字节 = 模型路由读到的字节"，再由 file-id 复用省去重复传输。详见 [llm.md](llm.md)「决策四」。
+> 投影出的 `RequestImageAttachment` 在 DeepSeek 适配器侧默认走 Files API 上传复用（`serialize` 见到 fileIds 即发 `source: { type: 'file', file_id }`）而非内联 base64；新增完整 `/files` 客户端与带过期/并发去重的上传索引（[packages/llm/llm-deepseek/src/files-api.ts:131-131]()、[packages/llm/llm-deepseek/src/file-store.ts:152-185]()）。由归一化保证"上传给对象存储的字节 = 模型路由读到的字节"，再由 file-id 复用省去重复传输。详见 [llm.md](llm.md)「决策四」。
 > <!-- anchor: export class DeepSeekFilesClient { -->
 > <!-- anchor: ensureUploaded( … return waitForUpload(shared, signal) -->
 
-> **④ WebP alpha 兼容**：sharp 可能从全不透明 WebP 输出省略 alpha 平面，校验时把"声明有 alpha 但输出为 WebP 无 alpha"判为兼容（`encodedAlphaIsCompatible`，[packages/attachment/attachment-local/src/image.ts:35-41]()），避免一张全不透明 WebP 在归一化/投影时被误判 alpha 不匹配而失败。
+> **④ WebP alpha 兼容**：sharp 可能从全不透明 WebP 输出省略 alpha 平面，校验时把"声明有 alpha 但输出为 WebP 无 alpha"判为兼容（`encodedAlphaIsCompatible`，[packages/attachment/attachment-local/src/image.ts:36-42]()），避免一张全不透明 WebP 在归一化/投影时被误判 alpha 不匹配而失败。
 > <!-- anchor: export function encodedAlphaIsCompatible( …     || (sourceHasAlpha && !output.hasAlpha && output.mediaType === 'image/webp') -->
 
 这条管线的整体权衡：**用"确定性归一化 + 对象投影"换"与任意外部对象存储 / provider Files API 的松耦合"**——附件层不再假设消费方只吃内联 base64，而是承认"模型路由按字节预算吃不同变体"，把变体派生收敛进存储侧（生成为主 + 缓存复用）。代价是增加了一次归一化重编码的开销与 Variant 缓存管理，换取图像在长会话、跨 provider、跨存储后端的可重复可交换。
@@ -372,6 +387,8 @@ rc.2 把附件层从"校验后原样存字节、请求时内联 base64"升级为
 0.1.3-alpha.1 的泛化把这条论证又推进了一步，而且方向值得注意：**通用文件不是被"塞进"附件 seam，而是被"接在"同一个发布机制上**。它证明了这个 seam 真正的可交换单元不是"图片处理器"，而是"内容寻址的不可变对象 + 可序列化引用 + 发布前准入"。图片在这套骨架上加的是"归一化 + provider 投影"，文件加的是"verbatim + 宿主路径投影"——两种 Consumer 需求都能落进同一骨架，说明当初把 `ctx.attachments` 抽成能力面而不是"图片上传组件"是对的。代价也同一处：既然两类对象共享存储根与保留策略，**GC 就必须同时理解图片与文件**，这也是它继续被推迟的原因之一。
 
 ## 引用演进记录
+
+> **0.1.7-rc.2 增量**：依 `verify-references` 逐条重定位，本轮 13 处失配/未解析引用全部清零。行号漂移类 9 处：`attachment/src/index.ts` 的 verbatim 文件方法整体下移（`saveFile` `187-191 → 188-192`、`saveFileStream` `202-206 → 203-207`、`readFileStream` `218-226 → 219-227`）、`llm/src/content.ts` 的 `contentHasFile` `138-143 → 136-140`（`contentHasImage` 区间不变，锚点重取为 `.some()` 实现）、`client/file-upload/src/client/runtime.ts` 的内联兜底改为 `bytesToBase64`（`193-218 → 191-216`）、`mcp-client/src/tools.ts` 因图片准入路径上移（`472-492 → 415-435`）。机制重写类 4 处：`llm-pi-ai/src/context.ts` 的图像解析移入 `prepareRequestImages`（`112 → 110-126`）；`llm-deepseek/src/serialize.ts` 的 `serializeRequestWithImages` 与 `adapter.ts` 的 `representation: 'file' | 'base64'` 已下线，改由 `images.ts` 的 `prepareImages`/`prepareFileIds` + `adapter.ts` 的 inline 回退承担（`403-407 → 70-76`、`573-623 → 88-105`）；`attachment-local/src/request-image.ts` 的变换版本 `v5 → v6`、投影契约 `ImageRequestPolicy → ImageRequestTarget`（`25 → 26` 常量 + `attachment-local/src/index.ts` 的 `readImageRequest` `248-286`）。其中 3 处按增量维护约定新增「演进说明（0.1.7-rc.2）」（DeepSeek 符号下线、v6 + 目标尺寸契约、`tool-result` 块类型下线）。最终校验：`OK=83 WEAK=0 MISMATCH=0 UNVERIFIED=0 TRAVERSAL=0`。
 
 > **0.1.5-rc.2 增量**：依 `verify-references --diff` 预检清单逐条重定位。上版遗留的 15 处失配/未解析引用已全部修正：`attachment/README.md` 因整篇重写，原锚点（`12`/`114`）全部失效，改为按新 README 的 Summary、Implementation、Known Limitations 三段重取锚点（`12`/`71`/`75`/`119`/`120`）；`attachment/src/index.ts` 的 Definition 区间 `39-111 → 51-166`、`saveImages` `85-90 → 97-102`、`readImageRequest` `131-141 → 248-258`、`readImage` `111 → 166`；`attachment-local/src/store.ts` 因新增流式发布路径整体下移（`saveImageFile` `264-272 → 414-420`、`staging open` `212-223 → 323-334`、读回校验 `297-303 → 447-453`）；`attachment-local/src/index.ts` 默认值 `28-50 → 34-56`、zod 默认值 `146-149 → 150-158`；`llm/src/content.ts` `contentHasImage` `124-126 → 126-128`；`mcp-client/src/tools.ts` `462-484 → 472-492`（漂移仅因 `syncTools` 新增重复游标防护）；`llm-pi-ai/src/adapter.ts` 的图像能力位校验 `307-320 → 358-364`（并补上原本缺失的指纹注释）。新增引用 30 余处，全部落在本版泛化相关代码上（`file-store.ts`、`file-upload` 包、`admitPromptContent`、`FileBlock` 投影、`/api/file` 限制复用）。
 

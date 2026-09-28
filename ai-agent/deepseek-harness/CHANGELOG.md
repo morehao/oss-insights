@@ -2,6 +2,70 @@
 
 > 本解读对 DeepSeek Harness（`dsh`）的跨版本变更汇总；按版本倒序。项目无官方 changelog，故基于上游 git 代码变动（tag 间 diff / release commit / commit message 聚合）生成。各版本条目的"相比上一版"描述即对应某次增量解读落盘时更新的内容。
 
+## [0.1.7-rc.2]（2026-09-24 落盘）
+
+> 依据上游 `dsh-v0.1.5-rc.2 → dsh-v0.1.7-rc.2` git diff（3650 commits、8945 个文件、约 +1349K/−158K）比对生成；中间跨 `0.1.6-alpha.1`（09-15）、`0.1.6-alpha.2`（09-17）、`0.1.7-alpha.1`（09-22）、`0.1.7-alpha.2`（09-22）、`0.1.7-rc.1`（09-23）五版，另有 **0.1.5-rc.3（09-22）** 作为 0.1.5 线上的回移发布。
+>
+> **本轮范围**：第一遍完整重写 [desktop-app.md](desktop-app.md) 与 [deployment.md](deployment.md) 的桌面章节、新增 [desktop-zero-dependency.md](desktop-zero-dependency.md)；第二遍对全库做程序化重锚定（只改行号、不改论断，受跨度守卫与锚点唯一性守卫约束），**545 条引用被修正**，全库 `verify-references.mjs` 通过数由 811 升到 1356；第三遍把剩下的 340 条失配引用（182 MISMATCH / 158 UNVERIFIED）逐条读码改写，**全库 29 份子文档、1870 条引用全部通过**（`OK=1870 WEAK=0 MISMATCH=0 UNVERIFIED=0`）。详见 [README.md](README.md) 末节。
+
+相比 **0.1.5-rc.2** 的主要变更（桌面端三条旧结论被反转 + 一轮外壳补全）：
+
+**桌面传输面：无端口自研管道 → 回环 HTTP + 协议代理（反转）**
+- 删除 fd3/fd4/fd5 分帧字节管道与 13 字节帧头（magic `0x44534833`），`desktop-host/config/desktop.cordis.patch.yml` 一并删除；Host 改为监听回环端口（默认 `19387`，与 Web 的 `3080` 独立）并回报带鉴权信息的 URL，壳侧用 `dsh-app://` 承担静态资产、把 API 流量代理过去。`DESKTOP_HOST_PROTOCOL_VERSION` 由 3 升到 4，控制面只留无 body 的 Node IPC 消息。决策笔记明言这笔交换 "gives up the portless guarantee"。see [desktop-app.md](desktop-app.md)、[deployment.md](deployment.md)。
+- 代理侧新增三条显式规则：请求头重写、按 `WITHHELD_RESPONSE_HEADERS` 丢弃连接级响应头、插件包路径强制 `no-store`；`open-in-app` 与自动目录选择因此**回到桌面**（旧版因"桌面不提供 `webServer`"而禁用）。see [desktop-app.md](desktop-app.md)。
+
+**桌面运行时：随包上游 Node → Electron 自己当 Node（反转）**
+- `runtimeResources()` 返回值由 `{ node, pnpm, seed }` 变为 `{ node, nodeBin, pnpm, dsh }`，`node` 指向 Electron 可执行文件自身；启动 Host 依赖 `ELECTRON_RUN_AS_NODE=1` + `electronFuses: { runAsNode: true }`，并用 `--expose-internals` 补上 Electron 缺的内部 ESM loader 符号。see [desktop-zero-dependency.md](desktop-zero-dependency.md)。
+- Node/pnpm/Python 版本改由 **primary-runtime 载荷**承担（Node 24.21.0 / Python 3.12.14，覆盖 `win-x64`/`mac-arm64`/`mac-x64`/`linux-x64`/`linux-arm64`），原生能力继续由预编译 Node-API addon 提供——用户机器仍不需要装 Node、pnpm 或 Python。
+
+**桌面安装模型：seed 事务化安装 → 构建期物化 + 完整性清单（反转）**
+- `apps/desktop/src/seed-store.ts`、`scripts/prepare-seed.ts`、`scripts/macos-seed-store.ts` 全部删除，"16 个未压缩分片 + 离线 pnpm store"这一层随之消失；改为构建期物化 `app.asar/dsh` 生产依赖树并写 `desktop-runtime.json` 逐文件清单，启动只做校验。
+- profile staging/journal/rollback 激活事务下线（就地维护可写 profile），`profile-core-cleanup` 逻辑删除；`macOS 重签名 seed 内每个 Mach-O` 的重签名机制一并删除。
+
+**桌面外壳补全（新增能力）**
+- **托盘与退出语义**：`tray.ts` 常驻托盘、关窗默认转隐藏（Windows 首隐藏有一次持久化确认）、退出前向 Host 发 `quit-inspection`（2 秒上限，超时按"有活跃任务"保守处理）、`quit-confirmation.ts` 平台化按钮顺序。see [desktop-app.md](desktop-app.md)。
+- **欢迎窗与账号**：`welcome-api.ts`/`welcome-window.ts` 承载"未登录且无 API key"的冷启动路径（只加载包内 HTML、禁导航与开窗）；Platform 文档用独立 WebContentsView，分区键按 `sha256(origin+userId)` 派生（未登录退化为内存分区）。
+- **双更新通道**：普通更新（用户授权，下载单飞、必须等到 `update-downloaded`）+ **强制更新**（服务端策略，`DesktopMandatoryUpdatePolicy` 带 interval/backoff+jitter，取不到策略时保留上次拦截决策）；更新通道由 semver 推导改为固定 `nightly`，非预发布构建另传 `latest.yml` 别名。
+- **Windows 目录式安装器**：`installer-directories.nsh` 的 `dshStageApplication`/`dshPromoteDirectories` 用「staging 目录 + 同卷两次 rename」替换逐文件覆盖（一次 staging 约 617 MB / 11735 个文件），失败回滚；`.mjs` 只做 `replaceOnce` 精确注入。
+- **签名流水线工程化**：Windows 签名硬件调用从 379 次降到 17 次（产物签名缓存）、macOS 公证支持并发提交与 dotenv 凭据配置、`signIgnore` 跳过已预签名的 unpacked 子树避免二次签名。
+
+**入口与打包路径迁移（破坏性调整）**
+- electron-builder 配置由 `apps/desktop/electron-builder.config.mjs` 迁到 `apps/desktop/scripts/electron-builder-config.mjs`；`desktop-host` 包的 `files` 收窄为仅 `lib/index.js`（私有包，不再导出 overlay）。
+- 会话格式、工具管道、沙箱、客户端等其他子系统的窗口内变更，已在本轮第三遍中逐条复核并更新（见下节），不再有「停留在旧基线」的子文档。
+**全库增量复核：从「行号漂移」推进到「事实变更」（本轮新增）**
+
+第二遍的程序化重锚定之后，剩下的 340 条失配引用（182 MISMATCH / 158 UNVERIFIED）全部逐条读码改写，29 份子文档归零：`verify-references.mjs` 现报 `OK=1870 WEAK=0 MISMATCH=0 UNVERIFIED=0 TRAVERSAL=0`。改写过程中确认了十处「机制级」变化，除上文桌面四条反转之外还有：
+
+- **执行世界换血**：`packages/e2b/{e2b,fs-e2b,subprocess-e2b}` 退役，远端执行改由 `packages/ssh/{ssh,fs-ssh,subprocess-ssh,sandbox-ssh}` 承担；`ctx.sandbox.confine` 变为异步并接受可选 `signal`。see [subprocess.md](subprocess.md)、[sandbox-capability-seams.md](sandbox-capability-seams.md)。
+（[.agents/notes/implemented/simplification/2026-09-11-remove-e2b-providers.md:17-17]()、[packages/sandbox/sandbox/src/index.ts:177-177]()）
+<!-- anchor: The repository excludes the E2B sandbox owner, filesystem provider and subproces --> <!-- anchor: abstract confine(argv: readonly string[], policy: SandboxPolicy, signal?: AbortS -->
+- **会话格式走到 v4（已定稿、未发布）**：writer 常量升到 4、catalog 组装改名 `sessionFormatCatalogOptions`；工具结果从 user 消息里解出来升成独立的 `tool` 角色消息，来源改受控 `kind`、未知标签命名空间化为 `plugin:<type>`；finalization 记录 4 而 release 记录仍是 3。see [session-format-migration.md](session-format-migration.md)、[session.md](session.md)。
+（[packages/core/session/src/types.ts:89-89]()、[packages/session/session-format-catalog/src/generated.ts:16-30]()、[packages/session/session-format-v3-to-v4/src/tool-role.ts:36-65]()）
+<!-- anchor: export const SESSION_FORMAT_VERSION = 4 --> <!-- anchor: export const sessionFormatCatalogOptions: SessionFormatCatalogOptions = { … sessionFormatV3ToV4, --> <!-- anchor: export function liftToolResult(event: SessionFormatEvent): SessionFormatEvent { … ...(isError === undefined ? {} : { isError }), -->
+- **subprocess 多了一条 fd 7 控制通道**：新增 Definition 常量 `SUBPROCESS_CONTROL_FD = 7`，parent 侧由 `control-spawn.ts` 用一条 Socket 承载控制面；`subprocess-local` 同时拆出 `output.ts` 与 `shell-activity.ts`。see [subprocess.md](subprocess.md)。
+（[packages/subprocess/subprocess/src/control.ts:7-7]()）
+<!-- anchor: export const SUBPROCESS_CONTROL_FD = 7 -->
+- **LLM 收敛到 Messages 协议**：`llm-deepseek` 变成纯协议库（凭据拆成两个插件），工具结果升为 `tool` 角色消息、新增 developer 角色与 tool-addition / tool-removal 块；`reasoning_content` 回放下线，改原生 thinking + signature。see [llm.md](llm.md)。
+（[packages/llm/llm/src/message.ts:138-147]()）
+<!-- anchor: /** Shared immutable fields of every conversation message. */ … readonly source: MessageSource -->
+- **工作区文件**：`readAll` / `readRelated` 并入 `readBytes(path, { range?, baseFile? })`，二进制结果改走 Connection multipart（原生 `Uint8Array`）；`changes` 变成真 `fs.watch`（本地 Chokidar）并新增 `watch-unsupported`——「外部改文件不产生帧」的旧结论被反转。see [workspace-files.md](workspace-files.md)。
+（[packages/api/workspace-files/README.md:50-50]()、[packages/api/workspace-files/README.md:58-58]()）
+<!-- anchor: Pass the required options object as `{}` for a complete file under `maxFileBytes --> <!-- anchor: `changes` is a `stream` Remote accepting only a target path. The Host derives th -->
+- **preset 与热更新**：`packages/preset/agent-presets` 拆成 `agent-preset` + `agent-preset-registry`，`agent.cordis.yml` 下线、改成 bundle patch 里插一条 `@deepseek-ai/dsh-agent-preset` 声明；`watchUserPatches` 与 `Profile.patchReload` 删除，热重放搬进 base 树的 `hmr` 行。see [architecture.md](architecture.md)。
+（[packages/bundle/web-app/presets/minimal.patch.yml:1-8]()、[packages/boot/hmr/src/index.ts:229-235]()）
+<!-- anchor: # Agent preset minimal: one `@deepseek-ai/dsh-agent-preset` declaration inserted … id: minimal --> <!-- anchor: const patches = readProfilePatches('dsh', profile) … for (const filename of patchFiles) await this.watchConfig(filename, () => refres -->
+- **MCP 桥接面扩大**：resources 由兄弟包 `mcp-resources` 承担（prompt 模板与 resource subscriptions 仍不支持）；上一版自建的「重复游标即失败」判环守卫整体删除，改由 SDK 拥有分页。see [skill-mcp.md](skill-mcp.md)。
+（[packages/mcp/mcp-client/README.md:209-209]()、[packages/mcp/mcp-client/README.md:80-80]()）
+<!-- anchor: - **Resources are read on demand** — shipped profiles provide the [shared resour --> <!-- anchor: - The SDK owns discovery pagination and its page limit. A discovery failure pres -->
+- **agent-loop / session 两处机制搬家**：inbox 投影注册从 `ReactLoopInbox` 构造函数上移到插件装配；「崩溃闭合」抽成通用的 `openTurnClosers(events, cause)` 并新增 `forked` 因由。see [agent-loop-runtime.md](agent-loop-runtime.md)、[session.md](session.md)。
+（[packages/core/agent-loop/src/index.ts:362-365]()、[packages/core/session/src/repair.ts:63-162]()）
+<!-- anchor: // Register only after every config validation above has passed, so a … ctx.sessionProjections.register(inboxProjectionDefinition) --> <!-- anchor: export function openTurnClosers(events: readonly SessionEvent[], cause: OpenTurn … closers.push({ type: 'turn/end', seq: SessionSeq(seq++), time, data: { turn: ope -->
+- **分发形态与家族地图**：`PUBLIC_EXPERIMENTAL_PACKAGE_DIRECTORIES` 白名单删除，改为「默认公开 + 一份当前为空的私有例外名单」，agent-team 的生成式 Remote API 下线；`packages/` 现 54 家族 / 312 包，`packages/code-runtime` → `packages/ptc-runtime`，`packages/fs/tool-present` → `packages/deliverables/tool-present`。see [agent-teams.md](agent-teams.md)、[architecture.md](architecture.md)。
+（[scripts/experimental-package-policy.ts:10-15]()、[packages/ptc-runtime/README.md:6-6]()、[packages/deliverables/tool-present/src/index.ts:40-42]()）
+<!-- anchor: export function isPublicExperimentalPackageDirectory( … && !privateDirectories.includes(directory) --> <!-- anchor: # ptc-runtime/ — PTC execution capability family --> <!-- anchor: description: 'Declare existing files as final deliverables for the user. ' … + 'prefer your final response when that suffices. The user opens the current fil -->
+- **已知盲区**：校验程序只认 `[path:start-end]()` 形式，KB 里另有 87 处「反引号短引用」（`agent-loop-runtime.md` 38 处、`tools.md` 27 处）尚未纳入程序校验，见 [README.md](README.md) 末节。
+
+
 ## [0.1.5-rc.2]（2026-09-11 落盘）
 
 > 依据上游 `dsh-v0.1.5-rc.1 → dsh-v0.1.5-rc.2` git diff（4 commits、324 个文件，绝大多数是快照/黄金文件复算）比对生成。

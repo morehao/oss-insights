@@ -9,7 +9,7 @@ tags: [deepseek-harness, dsh, remote-access, ssh-tunnel, loopback, settings-pers
 
 > 子文档之一，聚焦**远程访问**这条使用路径：dsh 跑在公网云主机上，我从本地随时用它。**主线是一份可复现的操作记录**：终局形态 → 服务器启动 → 本地隧道 → 浏览器登录 → 在 Settings 里配好模型 → 过程中踩过的坑与解法；机制层面的解释（为什么非 loopback 页面用不了 Settings、启动令牌与签名 cookie 怎么工作）收在文末[「原理与代码依据」](#原理与代码依据)，不挡操作路径。整体哲学见 [README](README.md)；浏览器 UI 那一半见 [web-client.md](web-client.md)，web 形态的启动组合见 [deployment.md](deployment.md)，settings/credentials 的 Remote 契约见 [remote-controllers.md](remote-controllers.md)，密钥文件本身见 [credentials.md](credentials.md)。
 >
-> 占位约定：`<server>` 服务器地址；`<ssh-key>` 本地私钥路径；`<token>` **当前进程**的启动令牌；`$DSH_HOME` 默认 `~/.dsh`；`3080` 服务器监听端口；`3081` 本地隧道端口（任意空闲端口）。所有代码引用按基线 `dsh-v0.1.5-rc.2` 源码程序化重定位。
+> 占位约定：`<server>` 服务器地址；`<ssh-key>` 本地私钥路径；`<token>` **当前进程**的启动令牌；`$DSH_HOME` 默认 `~/.dsh`；`3080` 服务器监听端口；`3081` 本地隧道端口（任意空闲端口）。所有代码引用按基线 `dsh-v0.1.7-rc.2` 源码程序化重定位。
 
 ## 目标：终局形态与取舍
 
@@ -33,8 +33,8 @@ tags: [deepseek-harness, dsh, remote-access, ssh-tunnel, loopback, settings-pers
 
 - CLI 层面就拒绝 `--host 0.0.0.0`，理由是会向网络暴露远程代码执行（[packages/bundle/web-app/src/startup.ts:75-75]()
 <!-- anchor-base64:cHJvZ3JhbS5lcnJvcignZXJyb3I6IC0taG9zdCAwLjAuMC4wIGlzIGludGVudGlvbmFsbHkgbm90IHN1cHBvcnRlZCB5ZXQgZm9yIHNhZmU= -->）。
-- 会话 cookie 刻意不带 `Secure`（随附载体假定 loopback HTTP），明文公网直连时 bearer cookie 可在传输中泄露（[packages/client/connection/README.zh.md:67-67]()
-<!-- anchor: - **浏览器 cookie 不带 `Secure`**：随附载体是 loopback HTTP；若部署经明文网络暴露同一 authority，bearer c -->）。
+- 会话 cookie 刻意不带 `Secure`（随附载体假定 loopback HTTP），明文公网直连时 bearer cookie 可在传输中泄露（[packages/client/connection/README.zh.md:75-75]()
+<!-- anchor: - **浏览器 cookie 不带 `Secure`**：当前随产品提供的传输方式是 loopback HTTP； -->）。
 - 就算绕道 profile patch 打开 `0.0.0.0` 并声明 `trustedHosts`，`/api` 全通了，**Settings 依然打不开**——因为那是客户端按页面 hostname 主动降级的，跟栅栏无关（机制见[附录](#门三客户端的持久化降级settings-报错就发生在这里)）。上游对网络部署的态度也很明确：认证不等于支持网络部署、TLS、转发头解释或代理配置（[.agents/notes/implemented/architecture/2026-08-24-browser-token-authentication.zh.md:23-23]()
 <!-- anchor-base64:6ZqP6ZmEIENMSSDnu6fnu63mi5Lnu50gYC0taG9zdCAwLjAuMC4wYOOAguiupOivgeS4jeS7o+ihqOaUr+aMgee9kee7nOmDqOe9suOAgVRMU+OAgei9rOWPkSBoZWFkZXIg6Kej6YeK5oiW5Luj55CG6YWN572u44CC -->）。
 
@@ -54,9 +54,9 @@ tags: [deepseek-harness, dsh, remote-access, ssh-tunnel, loopback, settings-pers
 
 ### 在 profile patch 里写死监听面
 
-dsh 的 webserver 默认就绑 `127.0.0.1`，端口默认 `3080`（[packages/bundle/web-app/cordis.patch.yml:139-139]()
+dsh 的 webserver 默认就绑 `127.0.0.1`，端口默认 `3080`（[packages/bundle/web-app/cordis.patch.yml:167-167]()
 <!-- anchor: host: !!js ctx.webStartup.host ?? '127.0.0.1' -->），所以本方案**不需要**任何「开放公网」的配置。把这两行显式写进 profile 的用户 patch 层（`$DSH_HOME/profiles/<name>/cordis.patch.yml`，profile 目录形状与「用户 patch 最后应用」的顺序见 [packages/boot/app-boot/src/profile.ts:5-11]()
-<!-- anchor: * A profile is a directory under `$DSH_HOME/profiles/<name>` holding a … * composed by applying each bundle's patch list in `dsh.profile.bundles` order o -->），是为了防止将来被 `--host` 参数或别的 patch 层改掉：
+<!-- anchor: * A profile is a directory under `$DSH_HOME/profiles/<name>` holding a … * ordered list of files); the tree is composed by applying each bundle's patch -->），是为了防止将来被 `--host` 参数或别的 patch 层改掉：
 
 ```yaml
 - id: webserver
@@ -71,7 +71,7 @@ dsh 的 webserver 默认就绑 `127.0.0.1`，端口默认 `3080`（[packages/bun
     surfaceContext: true
 ```
 
-这两行正是 `web-app` bundle 的 patch 层字段（[packages/bundle/web-app/cordis.patch.yml:135-140]()
+这两行正是 `web-app` bundle 的 patch 层字段（[packages/bundle/web-app/cordis.patch.yml:163-168]()
 <!-- anchor: - id: webserver … port: !!js ctx.webStartup.port ?? 3080 -->）。回环绑定下，启动输出不会带 LAN 地址（LAN 字面量只在 `0.0.0.0` 绑定时才推导，[packages/bundle/web-app/src/index.ts:126-131]()
 <!-- anchor: const lanAddresses = bindHost === ALL_INTERFACES_HOST … return { lanAddresses, trustedHosts: [...lanAddresses, ...extra] } -->），这也说明 `trustedHosts` 留空是正常状态。
 
@@ -189,12 +189,12 @@ http://localhost:3081/?token=<token>
 http://localhost:3081/
 ```
 
-cookie 是 host-only、`Path=/`、`HttpOnly`、`SameSite=Strict`，寿命默认 30 天（[packages/client/connection/src/index.ts:85-93]()
+cookie 是 host-only、`Path=/`、`HttpOnly`、`SameSite=Strict`，寿命默认 30 天（[packages/client/connection/src/index.ts:105-113]()
 <!-- anchor: cookieMaxAgeDays?: number … cookieMaxAgeDays: z.natural().min(1).default(30), -->）。在 30 天有效期内、且 authority 不变时，不需要再带 token——**服务器重启也不用重新登录**。
 
 ### cookie 绑定 authority 的后果
 
-cookie 名与签名 payload 都绑定规范化 `hostname:port`（[packages/client/connection/src/browser-auth.ts:246-261]()
+cookie 名与签名 payload 都绑定规范化 `hostname:port`（[packages/client/connection/src/browser-auth.ts:244-259]()
 <!-- anchor: if (req.method === 'GET' && url.pathname === '/' && tokens.length === 1 … cookieName(authority), value, expiresAt, Math.floor(this.maxAgeMilliseconds / 10 -->）。换来两个可以预期的行为：**换本地端口**（`3081` → `18080`）或**换写法**（`localhost` ↔ `127.0.0.1`）都要用 token 重新交换一次；好处是同一个服务器 home 在多个端口并行时互不串号。
 
 ## 在 Settings 里配置模型
@@ -215,9 +215,13 @@ cookie 名与签名 payload 都绑定规范化 `hostname:port`（[packages/clien
 | Web 进程日志（token 来源） | `/tmp/dshweb-current.log` | 由启动方式决定 |
 
 `$DSH_HOME` 未设置时回落 `~/.dsh`（[packages/util/home-paths/src/index.ts:87-90]()
-<!-- anchor: export function resolveDshHome(configured?: string, env: Record<string, string | … return resolve(expandHomePath(selected)) -->）；设置文档默认路径在 `resolveSpec` 解析（[packages/settings/settings-file/src/index.ts:56-58]()
-<!-- anchor: export function resolveSpec(config: Config): ResolvedSpec { … const format = FORMATS[extname(filename)] -->）；cookie 签名密钥本身也是这个文件里的一条 `grant` 记录（[packages/credentials/credentials-local/src/index.ts:84-84]()
+<!-- anchor: export function resolveDshHome(configured?: string, env: Record<string, string | … return resolve(expandHomePath(selected)) -->）；设置文档的默认路径现在就是当前 profile 的 Cordis patch（[packages/settings/settings/src/index.ts:292-296]()
+<!-- anchor: get documentPath(): string { return this.ownerContext.configEditor.documentPath } … prepareDocument(): Promise<string> { return Promise.resolve(this.documentPath) } -->、[packages/boot/config-editor/src/index.ts:34-34]()
+<!-- anchor: get documentPath(): string { return this.ownerContext.profileContext.patchPath } -->）；cookie 签名密钥本身是 `.credentials.yaml` 里的一条 `grant` 记录（[packages/credentials/credentials-local/src/index.ts:84-84]()
 <!-- anchor: * otherwise the document lives at `<harness home>/.credentials.yaml`. -->）——**删掉它并重启进程 = 一次性吊销全部浏览器会话**。
+
+> **演进说明(0.1.7-rc.2)**：上表「用户设置落盘 `$DSH_HOME/settings.yaml`」的文件后端（`dsh-settings-file` 与它的 `resolveSpec`）已整体下线，那一行的落盘位置随之作废，设置表单的写入改由 `config-editor` 落到当前 profile 的 Cordis patch；旧版遗留在 harness home 里的 `settings.yaml` 会在 Loader 就绪后被导入当前 profile 一次，并在首次写入前改名为 `settings.yaml.imported`（[packages/settings/settings/src/index.ts:238-243]()
+<!-- anchor: /** Move the sections of the removed `settings.yaml` into the active profile … const path = join(profile.home, 'settings.yaml') -->）。
 
 ## 踩坑与解法
 
@@ -227,8 +231,8 @@ cookie 名与签名 payload 都绑定规范化 `hostname:port`（[packages/clien
 
 - **现象**：用服务器 IP 打开 Web UI，`Settings → Models` 报「加载提供方目录失败: settings are unavailable in this browser」；服务端无报错，同一个 Host 换成 `http://localhost:3081/` 就一切正常。
 - **怎么确认**：看浏览器地址栏的 hostname 是不是 `localhost` / `127.0.0.1`；再看 `/api` 是否其实是通的（能加载会话、能发消息）——**`/api` 通而 Settings 不通，就是这一条**。
-- **原因**：客户端按页面 hostname 决定「要不要让 Host 持久化设置」，非 loopback 页面一律降级为 `memory` 模式，设置从不跨线路；上游把这条明写为已知限制（[packages/client/ui-settings/README.zh.md:97-97]()
-<!-- anchor: - **非 loopback 页面没有持久化设置**：本 Client 在那里禁用 Host 持久化，因此 scope 以 `unavailable` 起步且从 -->）。
+- **原因**：客户端按页面 hostname 决定「要不要让 Host 持久化设置」，非 loopback 页面一律降级为 `memory` 模式，设置从不跨线路；上游把这条明写为已知限制（[packages/client/ui-settings/README.zh.md:106-106]()
+<!-- anchor: - **非 loopback 页面没有持久化设置**：本 Client 在那里禁用 Host 持久化，因此 表单以 `unavailable` 起步且从不跨线路 -->）。
 - **解法**：让浏览器看到 loopback——走本文的 SSH 隧道，或直接在服务器本机开浏览器。
 - **容易走错的路**：把服务器 IP/域名加进 `trustedHosts`。它只扩展 `/api` 的 Host/Origin 信任（[.agents/notes/implemented/architecture/2026-07-28-api-browser-trust-boundary.zh.md:29-29]()
 <!-- anchor: - 自定义非 loopback 组合必须信任其服务 authority，否则请求会被拒绝 -->），**完全不改变**上面这条客户端判定，所以 Settings 依旧报同一句话。
@@ -244,7 +248,7 @@ cookie 名与签名 payload 都绑定规范化 `hostname:port`（[packages/clien
 
 - **现象**：页面返回 `dsh web authentication required; reopen the URL printed by dsh web.`
 - **怎么确认**：`curl -i http://localhost:3081/` 看状态码。
-- **原因**：token 过期/抄错、cookie 丢失（清了站点数据、换了浏览器），或换了端口/写法导致 cookie 的 authority 不匹配（[packages/client/connection/src/browser-auth.ts:304-311]()
+- **原因**：token 过期/抄错、cookie 丢失（清了站点数据、换了浏览器），或换了端口/写法导致 cookie 的 authority 不匹配（[packages/client/connection/src/browser-auth.ts:302-309]()
 <!-- anchor: private writeUnauthorized(req: ConnectionIndexRequest, res: ConnectionIndexRespo … : 'dsh web authentication required; reopen the URL printed by dsh web.\n') -->）。
 - **解法**：用**当前进程**的 token 打开一次 `http://localhost:3081/?token=<token>`，让服务器换出新 cookie。
 
@@ -320,6 +324,9 @@ curl -sS -i -H "Host: localhost:3081" \
 - `$DSH_HOME/settings.yaml` 出现且含刚配置的提供方；
 - API 密钥只出现在 `$DSH_HOME/.credentials.yaml`，页面不会回显；
 - `Settings → Models` 再次打开时能读到已保存的配置。
+
+> **演进说明(0.1.7-rc.2)**：上面第一条要核对的文件已经换了——设置现在写进当前 profile 的 `$DSH_HOME/profiles/<name>/cordis.patch.yml`；`$DSH_HOME/settings.yaml` 只在作为旧版遗留文件被导入时短暂出现，导入后即改名 `settings.yaml.imported`（[packages/settings/settings/src/index.ts:238-243]()
+<!-- anchor: /** Move the sections of the removed `settings.yaml` into the active profile … const path = join(profile.home, 'settings.yaml') -->）。
 
 ## 日常运维
 
@@ -416,53 +423,56 @@ sequenceDiagram
 
 每个 `/api` 请求先过 `isTrustedApiRequest`，判定核心只有一行：`Host` 既不是 loopback、又不在 `trustedHosts` 里就直接拒绝（[packages/client/connection/src/api-request-trust.ts:103-103]()
 <!-- anchor: if (!isLoopbackHostname(hostUrl.hostname) && !isTrustedAuthority(hostUrl, truste -->）。loopback 的判定范围很窄：字面 `localhost`、IPv6 的 `[::1]`、任意 `127.0.0.0/8` 点分四段地址（[packages/client/connection/src/loopback-hostname.ts:12-17]()
-<!-- anchor: export function isLoopbackHostname(hostname: string): boolean { … && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255) -->）；`trustedHosts` 则支持带端口的精确匹配与不带端口的任意端口匹配（[packages/client/connection/README.zh.md:39-39]()
+<!-- anchor: export function isLoopbackHostname(hostname: string): boolean { … && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255) -->）；`trustedHosts` 则支持带端口的精确匹配与不带端口的任意端口匹配（[packages/client/connection/README.zh.md:43-43]()
 <!-- anchor: 认证之前，每个请求仍经过 `src/api-request-trust.ts`。其 `Host` 必须是 loopback -->）。这道栅栏防的是 DNS rebinding 与跨站「简单请求」两类混淆代理人路径，成功只说明请求发给了本服务，**不建立身份**——`--trusted-host`「只扩展 Host/Origin 栅栏，绝不授予身份」（[.agents/notes/implemented/architecture/2026-07-28-api-browser-trust-boundary.zh.md:29-29]()
 <!-- anchor: - 自定义非 loopback 组合必须信任其服务 authority，否则请求会被拒绝 -->）。
 
 ### 门二：每进程启动令牌与签名 cookie
 
-身份由紧随其后的浏览器会话建立：**每个 Host 方法、每个 Remote 调用、每条 WebSocket 流都要求同一个会话，不存在按方法区分的 loopback 层**（[packages/client/connection/README.zh.md:35-35]()
-<!-- anchor: 每个 Host RPC 方法和 WebSocket stream 都要求同一个浏览器会话 -->）。启动令牌是 `randomBytes(32)` 的进程内随机量，按应用根 context 存在 `WeakMap` 里、不落盘（[packages/client/connection/src/browser-auth.ts:52-56]()
-<!-- anchor: function processLaunchToken(owner: object): string { … PROCESS_LAUNCH_TOKENS.set(owner, created) -->）；交换只发生在 `GET /` 且恰好带一个正确 `token` 时，回 `303` + `Set-Cookie` 再跳转到干净的 `/`（[packages/client/connection/src/browser-auth.ts:246-261]()
-<!-- anchor: if (req.method === 'GET' && url.pathname === '/' && tokens.length === 1 … cookieName(authority), value, expiresAt, Math.floor(this.maxAgeMilliseconds / 10 -->）；cookie 校验在每次请求上同步完成，并要求 payload 的 authority 与请求 authority 一致（[packages/client/connection/src/browser-auth.ts:289-301]()
+身份由紧随其后的浏览器会话建立：**每个 Host 方法、每个 Remote 调用、每条 WebSocket 流都要求同一个会话，不存在按方法区分的 loopback 层**（[packages/client/connection/README.zh.md:39-39]()
+<!-- anchor: 每个 Host RPC 方法和 WebSocket 流都要求一个浏览器会话，不存在按方法区分的 loopback 层。 -->）。启动令牌是 `randomBytes(32)` 的进程内随机量，按应用根 context 存在 `WeakMap` 里、不落盘（[packages/client/connection/src/browser-auth.ts:52-56]()
+<!-- anchor: function processLaunchToken(owner: object): string { … PROCESS_LAUNCH_TOKENS.set(owner, created) -->）；交换只发生在 `GET /` 且恰好带一个正确 `token` 时，回 `303` + `Set-Cookie` 再跳转到干净的 `/`（[packages/client/connection/src/browser-auth.ts:244-259]()
+<!-- anchor: if (req.method === 'GET' && url.pathname === '/' && tokens.length === 1 … cookieName(authority), value, expiresAt, Math.floor(this.maxAgeMilliseconds / 10 -->）；cookie 校验在每次请求上同步完成，并要求 payload 的 authority 与请求 authority 一致（[packages/client/connection/src/browser-auth.ts:287-299]()
 <!-- anchor: isAuthenticated(request: ConnectionTrustRequest): boolean { … && payload.expiresAt - payload.issuedAt <= this.maxAgeMilliseconds -->）。签名密钥是一条持久化的 `grant` 记录（落在 `$DSH_HOME/.credentials.yaml`），所以**令牌每次重启都换，cookie 却能跨重启继续有效**；想一次性吊销全部浏览器会话，删掉那条记录并重启进程即可。
 
 ### 门三：客户端的持久化降级（Settings 报错就发生在这里）
 
 真正的「不可用」不来自 Host，而是浏览器侧自己降的级：
 
-- 客户端把 Host 事实投影成 `RemoteHostFacts { home, isLoopback }`，且 `isLoopback` **在页面生命周期内固定**——只在 reference 变化时重建，不会因为认证成功而翻转（[packages/api/gateway/src/client/index.ts:194-196]()
+- 客户端把 Host 事实投影成 `RemoteHostFacts { home, isLoopback }`，且 `isLoopback` **在页面生命周期内固定**——只在 reference 变化时重建，不会因为认证成功而翻转（[packages/api/gateway/src/client/index.ts:195-197]()
 <!-- anchor: const home = this.connection.generation.getSnapshot()?.host.home … this.hostFacts = { home, isLoopback: this.connection.isLoopback } -->）。
-- `isLoopback` 是三项或运算：transport 声明自持 Host、非浏览器环境、或页面 hostname 命中 loopback（[packages/client/connection/src/client/index.ts:227-227]()
+- `isLoopback` 是三项或运算：transport 声明自持 Host、非浏览器环境、或页面 hostname 命中 loopback（[packages/client/connection/src/client/index.ts:248-248]()
 <!-- anchor: isLoopback: transport?.ownsHost === true || pageLocation === undefined || isLoop -->）。
-- ui-settings 在应用期把它固化成持久化模式：loopback 页面用 `host`，其余一律 `memory`（[packages/client/ui-settings/src/client/index.ts:58-58]()
+- ui-settings 在应用期把它固化成持久化模式：loopback 页面用 `host`，其余一律 `memory`（[packages/client/ui-settings/src/client/index.ts:39-39]()
 <!-- anchor: const persistence = ctx.remote.$host.isLoopback ? 'host' : 'memory' -->）。
 - `memory` 模式下镜像初始快照是 `status: 'unavailable'`、`view: undefined`、`error: null`（[packages/client/ui-settings/src/client/settings-mirror.ts:86-90]()
 <!-- anchor: private readonly persistence: 'host' | 'memory' = 'host', … view: undefined, -->），`load()` 与 `ensure()` 双双直接 `Promise.resolve()` 短路（[packages/client/ui-settings/src/client/settings-mirror.ts:115-115]()
 <!-- anchor: if (this.persistence === 'memory') return Promise.resolve() -->、[packages/client/ui-settings/src/client/settings-mirror.ts:133-133]()
 <!-- anchor: if (this.persistence === 'memory') return Promise.resolve() -->）——`view` 永远填不上。
-- 到页面层就成了 Models 页的兜底文案（[packages/client/ui-settings-models/src/client/store.ts:191-192]()
-<!-- anchor: if (mirrored.view === undefined) { … this.failLoad(generation, mirrored.error ?? 'settings are unavailable in this br -->）；Models 客户端刻意不自己再判一次 `isLoopback`，完全依赖 scope 的 memory 模式（[packages/client/ui-settings-models/src/client/index.ts:100-101]()
+- 到页面层就成了 Models 页的兜底文案（[packages/client/ui-settings-models/src/client/store.ts:195-196]()
+<!-- anchor: if (mirrored.view === undefined) { … this.failLoad(generation, mirrored.error ?? 'settings are unavailable in this br -->）；Models 客户端刻意不自己再判一次 `isLoopback`，完全依赖 scope 的 memory 模式（[packages/client/ui-settings-models/src/client/index.ts:107-108]()
 <!-- anchor: // The scope's own memory mode is what keeps a remote browser process-local, … // so the store needs no isLoopback branch of its own. -->）。
 
-同一个 `isLoopback` 还关掉了「在本地编辑器里打开设置文件」这个入口（[packages/client/ui-settings-general/src/client/index.ts:76-77]()
-<!-- anchor: const documentController = ctx.remote.$host.isLoopback … ? new SettingsDocumentStore(ctx, ctx.settingsScope.describe()) -->）。
+同一个 `isLoopback` 还关掉了「在本地编辑器里打开设置文件」这个入口（[packages/client/ui-settings-general/src/client/index.ts:102-103]()
+<!-- anchor: const documentController = ctx.remote.$host.isLoopback … ? new SettingsDocumentStore(ctx, ctx.configForms.describe()) -->）。
 
 ### 为什么门三是有意为之：服务端已经不拿 loopback 当权限了
 
 dsh 曾经有「按方法维护的 loopback 特权列表」，被明确否决——HTTP 客户端可以自己声明 `Host: localhost`，于是「能到达服务器的调用者可以声明 loopback、进入配置方法，再利用 Host 侧操作披露存储的凭据」；同样被否决的还有「从 TCP 对端地址判定特权调用者」（[.agents/notes/implemented/architecture/2026-08-24-browser-token-authentication.zh.md:31-31]()
 <!-- anchor: **从 TCP 对端地址判定特权调用者。** 直接对端地址仍可能只识别本地转发进程，而非浏览器用户；它会在 API 的命令执行能力旁保留第二套 authorit -->）。结论是：**服务端用「一个应用凭据覆盖全部方法」取代了 loopback 特权名单**，loopback 从此在服务端只是栅栏的一个通过条件，而客户端仍用它回答「这台 Host 是不是就跑在自己机器上」。
 
-值得说清的是：**门三并不是安全边界**——Host 侧没有按 loopback 收窄 settings 写入，`settings.describe` 只回报 provider 自身的可写性（[packages/api/settings-controller/src/index.ts:119-123]()
-<!-- anchor: return { … namespaces: settings.describe({ redactSecrets: true }).map(namespaceView), -->、[packages/settings/settings/src/types.ts:66-72]()
+值得说清的是：**门三并不是安全边界**——Host 侧没有按 loopback 收窄 settings 写入，`settings.describe` 只回报 provider 自身的可写性（[packages/api/settings-controller/src/index.ts:98-103]()
+<!-- anchor: describe(): SettingsDescribeValue { … namespaces: settings.describe({ redactSecrets: true }).map(namespaceView), -->、[packages/settings/settings/src/types.ts:57-63]()
 <!-- anchor: export interface SettingsDescribeValue { … namespaces: SettingsNamespaceView[] -->）。所以一个已认证的远端页面「本可以」写设置，是客户端主动放弃了这个能力——这是产品策略而非强制边界，也是它无法被 `trustedHosts` 打开的原因。
 
 ### 例外：`ownsHost` —— 自持 Host 的页面
 
-门三判据里的第一项 `transport?.ownsHost === true` 优先于 hostname：Host 跑在这个页面 spawn 的 worker 里、别的进程够不着它，「『操作者本机』这个 loopback 替身就变得没有意义」，于是 `isLoopback` 直接为真（[packages/client/connection/src/client/index.ts:227-227]()
-<!-- anchor: isLoopback: transport?.ownsHost === true || pageLocation === undefined || isLoop -->）。Electron 桌面壳正是这么用的：注入的传输脚本第一行就声明 `ownsHost:true`（[apps/desktop-host/src/index.ts:99-100]()
-<!-- anchor: const DESKTOP_TRANSPORT_SCRIPT = `globalThis.__DSH_TRANSPORT__={ … ownsHost:true, -->）。所以「桌面端 Settings 正常、浏览器远端不正常」不是两套逻辑，而是同一个判据的两个分支；WebWorker 预览同理（见 [webworker.md](webworker.md)）。
+门三判据里的第一项 `transport?.ownsHost === true` 优先于 hostname：Host 跑在这个页面 spawn 的 worker 里、别的进程够不着它，「『操作者本机』这个 loopback 替身就变得没有意义」，于是 `isLoopback` 直接为真（[packages/client/connection/src/client/index.ts:248-248]()
+<!-- anchor: isLoopback: transport?.ownsHost === true || pageLocation === undefined || isLoop -->）。Electron 桌面壳正是这么用的：注入的传输脚本第一行就声明 `ownsHost:true`。所以「桌面端 Settings 正常、浏览器远端不正常」不是两套逻辑，而是同一个判据的两个分支；WebWorker 预览同理（见 [webworker.md](webworker.md)）。
+
+> **演进说明(0.1.7-rc.2)**：上面那份「注入的传输脚本」已下线——0.1.7 起桌面宿主不再注入 `__DSH_TRANSPORT__` 脚本，而是直接以 Web 形态跑起 Desktop profile（[apps/desktop-host/src/index.ts:25-27]()
+<!-- anchor: const application = runProfile({ … profile: 'desktop', -->），`ownsHost: true` 改由渲染页在 `dshDesktopBoot.ready()` 兑现后自行声明（[apps/web/src/main.ts:25-26]()
+<!-- anchor: const transport = globalThis as { __DSH_TRANSPORT__?: { ownsHost: boolean; … transport.__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl } -->）。
 
 ## 与其他模块协同
 

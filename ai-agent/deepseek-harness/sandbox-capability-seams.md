@@ -2,12 +2,12 @@
 type: 项目解读
 title: "沙箱与 Capability Seam：可交换的执行后端 + 原生 Landlock"
 description: "DeepSeek Harness（dsh）沙箱与 Capability Seam 解读——fs/subprocess/shell/terminal/sandbox/lsp 可交换后端与同执行世界级联迁移、Landlock 原生沙箱与 node-addon-system 原生包族（capability subpath 与 Node-API flock）、fs seam 上有界可取消的字节区间读取，以及 subprocess 的原生 containment。"
-tags: [deepseek-harness, dsh, sandbox, capability-seam, landlock, node-addon-system, filesystem, process-containment, e2b]
+tags: [deepseek-harness, dsh, sandbox, capability-seam, landlock, node-addon-system, filesystem, process-containment, ssh]
 ---
 
 # 沙箱与 Capability Seam：可交换的执行后端 + 原生 Landlock
 
-> 子文档之一，聚焦工具执行的环境、隔离与安全边界。覆盖 `sandbox` 四包（`dsh-sandbox` / `sandbox-local` / `sandbox-policy` / `sandbox-windows-acl`）+ 六族 Capability Seam（`ctx.sandbox` 与 fs / subprocess / shell / terminal / lsp 五族）+ 原生 `node-addon-system`（Landlock C11 启动器 + Node-API flock）+ E2B POC。整体哲学见 [README](README.md)；本文上承 [tools.md](tools.md)（工具管道调用后端）、下启 [subagent.md](subagent.md)（多 agent 委派，依赖同类隔离）；subprocess 的原生 containment 细节归 [subprocess.md](subprocess.md)、有界字节读取的消费侧归 [workspace-files.md](workspace-files.md)、原生包族的打包与发布归 [desktop-app.md](desktop-app.md)。
+> 子文档之一，聚焦工具执行的环境、隔离与安全边界。覆盖 `sandbox` 四包（`dsh-sandbox` / `sandbox-local` / `sandbox-policy` / `sandbox-windows-acl`）+ 六族 Capability Seam（`ctx.sandbox` 与 fs / subprocess / shell / terminal / lsp 五族）+ 原生 `node-addon-system`（Landlock C11 启动器 + Node-API flock）+ 远端执行 provider 族（0.1.7-rc.2 为 POSIX SSH；原 E2B POC 已下线）。整体哲学见 [README](README.md)；本文上承 [tools.md](tools.md)（工具管道调用后端）、下启 [subagent.md](subagent.md)（多 agent 委派，依赖同类隔离）；subprocess 的原生 containment 细节归 [subprocess.md](subprocess.md)、有界字节读取的消费侧归 [workspace-files.md](workspace-files.md)、原生包族的打包与发布归 [desktop-app.md](desktop-app.md)。
 
 ## 在项目中的角色
 
@@ -30,9 +30,9 @@ tags: [deepseek-harness, dsh, sandbox, capability-seam, landlock, node-addon-sys
 <!-- anchor: const PLATFORM_CHAINS: Record<string, readonly SelectedRunner['runner'][]> = { … win32: ['windows-acl'], -->
 2. **策略必须 per-call 携带而非固定在 provider 上**。同一 provider 瞬间可被两个 consumer 以不同边界同时请求（bash 跑 `read-only`，受限 child agent 需要自己的 state 目录可写）；一次已批准的提权重试就是一次带更宽策略的新调用（`[packages/sandbox/sandbox/src/index.ts:62-68]()`）。于是「默认/解析」成为 consumer 边界的显式步骤，provider 只把策略当完全指定值。
 <!-- anchor: * What one confined execution is allowed to touch — carried PER CALL, not … * the consumer boundary; the provider treats the policy as fully specified. -->
-3. **隔离必须 fail-closed**。任何「本机没有可用后端却仍跑命令」的静默放行都是禁止的；`confine` 必须在 wrap 时抛 `SANDBOX_UNAVAILABLE`（`[packages/sandbox/sandbox/src/index.ts:158-158]()`，`[packages/sandbox/sandbox/src/index.ts:175-175]()`）。这让"找不到沙箱"与"命令本身失败"能被结构化区分。
+3. **隔离必须 fail-closed**。任何「本机没有可用后端却仍跑命令」的静默放行都是禁止的；`confine` 在 0.1.7-rc.2 已是 async 方法（并接受可选 `signal` 用于解析期间的取消），必须在 wrap 阶段以 rejection 抛 `SANDBOX_UNAVAILABLE`，绝不返回一条未受限的 argv（`[packages/sandbox/sandbox/src/index.ts:159-159]()`，`[packages/sandbox/sandbox/src/index.ts:177-177]()`）。这让"找不到沙箱"与"命令本身失败"能被结构化区分。
 <!-- anchor: export abstract class SandboxProvider extends Service { -->
-<!-- anchor: abstract confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv -->
+<!-- anchor: abstract confine(argv: readonly string[], policy: SandboxPolicy, signal?: AbortS -->
 
 ## 设计思路
 
@@ -40,14 +40,14 @@ tags: [deepseek-harness, dsh, sandbox, capability-seam, landlock, node-addon-sys
 
 这是整个架构的搭积木模型，`docs/capability-seams.md` 用一张图 + 一张表把它标成 `seam` 角色：
 
-- **Service Definition**（抽象，声明 `ctx.<key>`）：只声明与实现无关的接口与语义，如 `FileSystem`、`ShellExecutor`、`SubprocessRuntime`、`SandboxProvider`（`[packages/sandbox/sandbox/src/index.ts:158-158]()`）。
+- **Service Definition**（抽象，声明 `ctx.<key>`）：只声明与实现无关的接口与语义，如 `FileSystem`、`ShellExecutor`、`SubprocessRuntime`、`SandboxProvider`（`[packages/sandbox/sandbox/src/index.ts:159-159]()`）。
 <!-- anchor: export abstract class SandboxProvider extends Service { -->
-- **Service Provider**（实现，加载即注册，互斥）：`fs-local`/`fs-sandbox`/`fs-e2b` 都注册 `ctx.fs`（`[docs/capability-seams.md:533-533]()` 的 `ctx.fs` 行），`bash-local`/`bash-sandbox`/`pwsh-local` 都注册 `ctx.shell`（`[docs/capability-seams.md:525-525]()`）。Cordis 对同一个 key 重复加载会 loud-fail。
+- **Service Provider**（实现，加载即注册，互斥）：`fs-local`/`fs-sandbox`/`fs-ssh` 都注册 `ctx.fs`（`[docs/capability-seams.md:643-643]()` 的 `ctx.fs` 行），`bash-local`/`bash-sandbox`/`pwsh-local` 都注册 `ctx.shell`（`[docs/capability-seams.md:635-635]()`）。Cordis 对同一个 key 重复加载会 loud-fail。
 <!-- anchor: | `ctx.fs` | `seam` | [`fs`](../packages/fs/fs) -->
 <!-- anchor: | `ctx.shell` | `seam` | [`shell`](../packages/shell/shell) -->
 - **Consumer**（消费方，通常是模型面向的工具）：「工具层拥有 agent、call id、工具名，却在 seam 内消费」——例如 `tool-bash`、`tool-fs`、`tool-terminal` 通过 `ctx.shell`/`ctx.fs`/`ctx.terminals` 触达能力。
 
-**关键可交换性**：消费者不依赖具体 provider。`svc_shell --> pkg_tool_bash`、`svc_shell --> pkg_tool_pwsh`、`svc_shell --> pkg_hooks_claude_code` 等箭头显示：所有 shell 消费者都只连 `ctx.shell` 这一个 seam，而不连任何 concrete provider（`[docs/capability-seams.md:421-424]()`）。
+**关键可交换性**：消费者不依赖具体 provider。`svc_shell --> pkg_tool_bash`、`svc_shell --> pkg_tool_pwsh`、`svc_shell --> pkg_hooks_claude_code` 等箭头显示：所有 shell 消费者都只连 `ctx.shell` 这一个 seam，而不连任何 concrete provider（`[docs/capability-seams.md:510-513]()`）。
 <!-- anchor-base64:c3ZjX3NoZWxsIC0tPiBwa2dfaG9va3NfY2xhdWRlX2NvZGUg4oCmIHN2Y19zaGVsbCAtLT4gcGtnX3Rvb2xfcHdzaA== -->
 
 ### 「同执行世界」级联迁移：为什么六个族共享一个 world（根因答案）
@@ -57,14 +57,19 @@ tags: [deepseek-harness, dsh, sandbox, capability-seam, landlock, node-addon-sys
 机制依据散落在各族的 Service Definition 注释中：
 - fs 的 `processPath(target)` 返回"该 filesystem 执行世界里子进程能打开的绝对路径"，`fileUrl` 返回该平台的 `file:` URI（`[docs/subsystems/filesystem.md:15-15]()`）。
 <!-- anchor: Consumers that share the filesystem's execution world obtain cross-capability -->
-- subprocess 的 `resolveExecutable` 明确写：可执行路径属于"与本机 filesystem provider 共享的执行世界"（`[packages/subprocess/subprocess/src/index.ts:92-94]()`；`[docs/subsystems/subprocess.md:11-11]()` 明文）。
+- subprocess 的 `resolveExecutable` 明确写：可执行路径属于"与本机 filesystem provider 共享的执行世界"（`[packages/subprocess/subprocess/src/index.ts:94-96]()`；`[docs/subsystems/subprocess.md:11-11]()` 明文）。
 <!-- anchor: * Implementations must honor these semantics: … *   filesystem provider. -->
 <!-- anchor: One provider's spawn working directories, executable paths, ordinary processes, -->
 - LSP 的 `HostWorkspace.canonicalPath` 同样注明是 "filesystem/subprocess execution world" 里的规范路径（`[packages/lsp/lsp-stdio/src/host.ts:7-7]()`），且 `lsp-stdio` 同时注入 `['fs', 'lsp', 'subprocess']`（`[packages/lsp/lsp-stdio/src/index.ts:47-47]()`）。
 <!-- anchor: /** A canonical workspace in the filesystem/subprocess execution world. */ -->
 <!-- anchor: export const inject = ['fs', 'lsp', 'subprocess'] -->
 
-当把执行世界指向远端 E2B 时，Bash/PTY/LSP **一并移动**，而 Bash/PTY/LSP 各自的 provider 不会出现"本地分叉"。
+当把执行世界指向远端主机时，Bash/PTY/LSP **一并移动**，而 Bash/PTY/LSP 各自的 provider 不会出现"本地分叉"——0.1.7-rc.2 的远端实现是 POSIX SSH provider 族：`fs-ssh`/`subprocess-ssh`/`sandbox-ssh` 共享同一条部署方拥有的 OpenSSH 连接与远端 helper（`[docs/subsystems/ssh.md:5-5]()`、`[packages/ssh/sandbox-ssh/README.md:12-12]()`）。
+<!-- anchor: The [SSH provider family](../../packages/ssh/README.md) supplies one remote file -->
+<!-- anchor: `dsh-sandbox-ssh` supplies `ctx.sandbox` for processes launched by the SSH subpr -->
+
+> **演进说明(0.1.7-rc.2)**：原文以 E2B 作为远端世界的实例，E2B 执行后端（sandbox owner + `fs-e2b` + `subprocess-e2b`）已被仓库整体移除，不再提供任何 E2B 执行后端（`[.agents/notes/implemented/simplification/2026-09-11-remove-e2b-providers.md:17-17]()`）；承载同一「执行世界」假设的远端实现改为 SSH provider 族。
+> <!-- anchor: The repository excludes the E2B sandbox owner, filesystem provider and subproces -->
 
 ### Landlock 原生沙箱：进程级隔离怎么做
 
@@ -101,9 +106,9 @@ tags: [deepseek-harness, dsh, sandbox, capability-seam, landlock, node-addon-sys
 <!-- anchor: `system.node` uses stable Node-API v8. Its flock operation -->
 - **消费方与打包边界**：`sandbox-local` 依赖的是入口包 `@deepseek-ai/node-addon-system`，从 `/landlock-run` 子路径取 `LAUNCHER_BIN`/`LAUNCHER_FAILURE_EXIT`/`launcherPath`/`probe`（`[packages/sandbox/sandbox-local/src/index.ts:33-33]()`、`[packages/sandbox/sandbox-local/package.json:38-38]()`）。
 <!-- anchor: } from '@deepseek-ai/node-addon-system/landlock-run' -->
-<!-- anchor: "@deepseek-ai/node-addon-system": "workspace:^", -->
+<!-- anchor: "@deepseek-ai/node-addon-system": "workspace:~", -->
   平台二进制放在 `-linux-x64` 一类的 optional 平台包里，装包即用、消费方安装**从不编译原生代码**（`[native/system/packages/entry/package.json:40-45]()`）；二进制路径解析刻意不依赖 cwd："可 spawn 的相对路径会把'由哪个二进制来隔离'的决定权交给 cwd"（`[native/system/packages/entry/src/index.ts:78-80]()`）。打包/预编译矩阵与发布流程见 [desktop-app.md](desktop-app.md)。
-<!-- anchor: "optionalDependencies": { … "@deepseek-ai/node-addon-system-linux-x64": "workspace:*" -->
+<!-- anchor: "optionalDependencies": { … "@deepseek-ai/node-addon-system-linux-x64": "workspace:~" -->
 <!-- anchor: // absolute, inside this package's boundary (never cwd-relative: a … // confines), and nonexistent exactly when the package is absent. -->
 - **flock 的消费者在别处**：浏览器 worker 用单进程替身顶上 flock 条目，JSONL 会话后端保留 inode 校验并把 Windows 换成既有 koffi 信号量，POSIX 才落到这个 POSIX 绑定上（`[native/system/docs/architecture.md:19-19]()`）——跨进程会话写租约的完整故事归会话侧子文档。
 <!-- anchor: The JSONL backend retains its inode check, -->
@@ -114,34 +119,37 @@ tags: [deepseek-harness, dsh, sandbox, capability-seam, landlock, node-addon-sys
 
 0.1.5-alpha.1 给 `FileSystem`（`ctx.fs`）加了第四个读原语 `readByteRange(target, range, signal)`——它不是 `readBytes` 的语法糖，而是**换了一个"上界"**：
 
-- `readBytes(target, signal, maxBytes)` 的语义是"整文件读，但拒绝把超过 `maxBytes` 的内容缓冲进来"；`readByteRange` 的语义是"窗口就是上界"——后端至多在跳过前缀之外多传 `length` 字节，**永不缓冲整个文件**，所以"调用方对 `length` 的封顶就是对无界缓冲的防护"（`[packages/fs/fs/src/index.ts:215-227]()`）。
+- `readBytes(target, signal, maxBytes)` 的语义是"整文件读，但拒绝把超过 `maxBytes` 的内容缓冲进来"；`readByteRange` 的语义是"窗口就是上界"——后端至多在跳过前缀之外多传 `length` 字节，**永不缓冲整个文件**，所以"调用方对 `length` 的封顶就是对无界缓冲的防护"（`[packages/fs/fs/src/index.ts:231-243]()`）。
 <!-- anchor: * Read one byte window of the regular file as raw bytes with no decoding or … abstract readByteRange(target: FsTarget, range: { offset: number -->
-- **为什么必须可取消**：要"只传一个窗口"，远端后端只能流式跳过前缀再在窗口末尾截断——abort 因此是契约的一部分而不是可选项。本机实现把 `signal` 交给 `createReadStream` 的 `start`/`end` 窗口（`[packages/fs/fs-local/src/fsio.ts:439-449]()`），并把中断映射成稳定的 `FS_ABORTED`（`[packages/fs/fs-local/src/fsio.ts:458-460]()`）。
+- **为什么必须可取消**：要"只传一个窗口"，远端后端只能流式跳过前缀再在窗口末尾截断——abort 因此是契约的一部分而不是可选项。本机实现把 `signal` 交给 `createReadStream` 的 `start`/`end` 窗口（`[packages/fs/fs-local/src/fsio.ts:456-467]()`），并把中断映射成稳定的 `FS_ABORTED`（`[packages/fs/fs-local/src/fsio.ts:475-477]()`）。
 <!-- anchor: export async function readByteWindow( … ...signal ? { signal } : {}, -->
 <!-- anchor: } catch (error: unknown) { … if (isAbortError(error)) throw new FsError('read aborted', 'FS_ABORTED') -->
-  `fs-local` 的 override 只是把 `signal` 原样透传给窗口读取（`[packages/fs/fs-local/src/index.ts:160-161]()`）。
+  `fs-local` 的 override 只是把 `signal` 原样透传给窗口读取（`[packages/fs/fs-local/src/index.ts:187-188]()`）。
 <!-- anchor: override async readByteRange(target: FsTarget, range: { offset: number … return readByteWindow({ displayPath: target.displayPath, targetKey: -->
-- **E2B 侧为什么更贵**：SDK 只支持"从文件头开始流"，所以实现要流式跳到 `offset`、装满 `length` 后立刻 `reader.cancel()` 掐断远端流（`[packages/e2b/fs-e2b/src/index.ts:299-301]()`），并在 `finally` 里无论成败都取消未排空的流（`[packages/e2b/fs-e2b/src/index.ts:328-336]()`）——否则被抛弃的远端流会继续在沙箱里传输。
-<!-- anchor: // The SDK streams only from the file's start: skip to `offset`, keep … // beyond the skipped prefix is ever transferred. -->
-<!-- anchor: if (!drained) { … reader.releaseLock() -->
-  整段实现见 `[packages/e2b/fs-e2b/src/index.ts:295-338]()`：这是"同一条 seam 语义，远端世界要为它多付一次取消成本"的典型——正确性优先，浪费由取消兜住。
-<!-- anchor: override async readByteRange(target: FsTarget, range: { offset: number … return filled === range.length ? window : window.subarray(0, filled) -->
+- **远端世界为什么更贵（原 E2B 实现）**：SDK 只支持"从文件头开始流"，所以实现要流式跳到 `offset`、装满 `length` 后立刻 `reader.cancel()` 掐断远端流，并在 `finally` 里无论成败都取消未排空的流——否则被抛弃的远端流会继续在沙箱里传输。这是"同一条 seam 语义，远端世界要为它多付一次取消成本"的典型——正确性优先，浪费由取消兜住。
+
+  > **演进说明(0.1.7-rc.2)**：上述 `fs-e2b` 实现（`reader.cancel()` + `finally` 取消未排空的流）已随 E2B provider 整体下线；远端文件能力现由 `fs-ssh` 承担——harness 侧只发一条按 `offset`/`length` 的 `fs.readRange` RPC，实际窗口读取由远端 helper 内已安装的本地 filesystem 实现完成（`[packages/ssh/fs-ssh/src/index.ts:74-75]()`、`[packages/ssh/ssh/src/helper.ts:215-218]()`），"跳过前缀 + 截断"的流式成本因此落在远端本地实现上。
+  <!-- anchor: override async readByteRange(target: FsTarget, range: { offset: number; length: … return Buffer.from(await this.call('fs.readRange', { target, ...range }, z.base6 -->
+  <!-- anchor: : await ctx.fs.readByteRange(target, { … }, signal) -->
 - **为什么 `fs-sandbox` 一分钱没花**：`SandboxedFileSystem extends LocalFileSystem`，只对两个 mutation 加 per-call 策略栅栏，"读一律放行：每种模式都允许读"（`[packages/fs/fs-sandbox/src/index.ts:3-8]()`、`[packages/fs/fs-sandbox/src/index.ts:55-55]()`）。新读能力因此**无需新栅栏、也不会造成 provider 分叉**——这正是"一个文件系统后端 + 一把只锁 mutation 的锁"的回报。
 <!-- anchor: * `@deepseek-ai/dsh-fs` Service Definition. It extends `LocalFileSystem` so all … * on the two mutations. Reads pass through untouched: every mode permits -->
 <!-- anchor: export class SandboxedFileSystem extends LocalFileSystem { -->
-- **消费方**：`api-workspace-files` 的 `readBytes` 先由 `resolveWindow` 收敛 `offset`/`length`，再带上调用方 `signal` 走同一条 seam；`readAll` 复用同一原语、用 `length: limit + 1` 探测超限，于是"分页读"与"整文件读"共用一个后端原语（`[packages/api/workspace-files/src/index.ts:263-267]()`、`[packages/api/workspace-files/src/index.ts:284-284]()`）。消费侧细节见 [workspace-files.md](workspace-files.md)。
-<!-- anchor: const { offset, length } = this.resolveWindow(range, path) … const data = await this.ctx.fs.readByteRange(target, { offset, length }, signal) -->
-<!-- anchor: const data = await this.ctx.fs.readByteRange(target, { offset: 0, length: -->
+- **消费方**：`api-workspace-files` 的 `readBytes` 先由 `resolveWindow` 收敛 `offset`/`length`，再带上调用方 `signal` 走同一条 seam（`[packages/api/workspace-files/src/index.ts:263-270]()`）；无 range 的整文件读则走 `ctx.fs.readBytes(target, signal, maxFileBytes)` 并把 `FS_TOO_LARGE` 重映射成 `workspace-file/too-large`（`[packages/api/workspace-files/src/index.ts:272-277]()`）。消费侧细节见 [workspace-files.md](workspace-files.md)。
+<!-- anchor: const window = options.range === undefined ? undefined : this.resolveWindow(opti … return { ...this.statOf(target, info), offset, data, eof } -->
+<!-- anchor: const limit = this.config.maxFileBytes … throw cause -->
+
+> **演进说明(0.1.7-rc.2)**：原文所述 `readAll` 复用 `readByteRange`、并以 `length: limit + 1` 探测超限的路径已下线，"分页读与整文件读共用一个原语"随之不成立；现由 `readBytes` 的无 range 分支承担（以 `config.maxFileBytes` 为上限并把 `FS_TOO_LARGE` 重映射为 `workspace-file/too-large`）。
+> <!-- anchor: const limit = this.config.maxFileBytes … throw cause -->
 
 同一周期还归一了**守卫式 mutation 的模型向诊断**：provider/policy 保留各自的操作性原因，而"给模型看的稳定文案"由 `tool-fs` 拥有（`FS_NOT_OBSERVED` 被替换成一条带路径的统一原因 + 读取补救，`FS_STALE_VERSION` 保留 provider 原因再追加补救）（`[packages/fs/tool-fs/src/error.ts:11-21]()`）。这与 range 读取是同一个边界纪律的两面：**seam 负责机制与稳定错误码，消费者负责面向模型的词汇**，二者不互相渗透。
 <!-- anchor: * Render the stable model-facing diagnostic for a guarded-mutation failure. … export function remediateFsError(error: unknown, displayPath: string): unknown { -->
 
 ### subprocess 原生 containment：执行世界的最后一个缺口
 
-range 读取证明"seam 上新增能力必须对每个后端都可实现且可取消"；subprocess 族本周期走的是同一条路线的另一面：把"一次 spawn 到底管住了哪些进程"从**平台固定语义**改成**provider 自述的 managed range**——`terminate()` 与 `waitForExit()` 是仅有的两个动词，观察范围由 provider 文档化（`[packages/subprocess/subprocess/src/index.ts:102-103]()`），而 target 身份保持 provider 私有（`[packages/subprocess/subprocess/src/index.ts:95-96]()`）。
+range 读取证明"seam 上新增能力必须对每个后端都可实现且可取消"；subprocess 族本周期走的是同一条路线的另一面：把"一次 spawn 到底管住了哪些进程"从**平台固定语义**改成**provider 自述的 managed range**——`terminate()` 与 `waitForExit()` 是仅有的两个动词，观察范围由 provider 文档化（`[packages/subprocess/subprocess/src/index.ts:104-105]()`），而 target 身份保持 provider 私有（`[packages/subprocess/subprocess/src/index.ts:97-98]()`）。
 <!-- anchor: * - {@link SubprocessHandle.terminate} (and the spec's abort signal) starts the … *   provider's documented procedure against its managed range. -->
 <!-- anchor: * - {@link spawn} returns a live handle synchronously. Target identity remains … *   provider-private; `done` resolves with the spawned command's exit facts and -->
-  由拥有者持有原生 containment、并把可观察性边界写进契约，是为了让"逃逸的后代"仍落在可观察范围内，而不是变成孤儿——provider 再也观察不到自己的 range 时 `waitForExit` 直接抛错（`[docs/subsystems/subprocess.md:168-168]()`）。细节（原生 runner、Windows 清理助手、健康探针、取消结算）归 [subprocess.md](subprocess.md)，本文只把它记作"执行世界一致性"在进程层的落点。
+  由拥有者持有原生 containment、并把可观察性边界写进契约，是为了让"逃逸的后代"仍落在可观察范围内，而不是变成孤儿——provider 再也观察不到自己的 range 时 `waitForExit` 直接抛错（`[docs/subsystems/subprocess.md:172-172]()`）。细节（原生 runner、Windows 清理助手、健康探针、取消结算）归 [subprocess.md](subprocess.md)，本文只把它记作"执行世界一致性"在进程层的落点。
 <!-- anchor: * @throws when the selected provider can no longer observe its managed range. -->
 
 ## 关键数据结构
@@ -152,11 +160,11 @@ range 读取证明"seam 上新增能力必须对每个后端都可实现且可�
 <!-- anchor: export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access' -->
 - `SandboxPolicy extends SandboxExecutionPolicy`：把 mode 收窄成 `ConfinedSandboxMode`（去掉 `danger-full-access`），表示**一次受限执行**的允许集，per-call 携带（`[packages/sandbox/sandbox/src/index.ts:69-72]()`）。
 <!-- anchor: export interface SandboxPolicy extends SandboxExecutionPolicy { … mode: ConfinedSandboxMode -->
-- `ConfinedArgv`：`confine()` 的返回值——要 spawn 的包裹 argv + enforcement 事实 + denial 方言 + runner-failure 规则（`[packages/sandbox/sandbox/src/index.ts:95-115]()`）。
+- `ConfinedArgv`：`confine()` 的返回值——要 spawn 的包裹 argv + enforcement 事实 + denial 方言 + runner-failure 规则（`[packages/sandbox/sandbox/src/index.ts:96-116]()`）。
 <!-- anchor: export interface ConfinedArgv { … runnerFailureRules: readonly RunnerFailureRule[] -->
-- `SandboxProvider.confine(argv, policy)` 抽象方法（`[packages/sandbox/sandbox/src/index.ts:175-175]()`）。
-<!-- anchor: abstract confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv -->
-  `SandboxUnavailableError` 结构化错误（`[packages/sandbox/sandbox/src/index.ts:131-131]()`）与 `SANDBOX_UNAVAILABLE` 错误码（`[packages/sandbox/sandbox/src/index.ts:124-124]()`）。
+- `SandboxProvider.confine(argv, policy, signal?)` 抽象方法：0.1.7-rc.2 起返回 `Promise<ConfinedArgv>`，可选 `signal` 取消策略/runner 解析（`[packages/sandbox/sandbox/src/index.ts:177-177]()`）。
+<!-- anchor: abstract confine(argv: readonly string[], policy: SandboxPolicy, signal?: AbortS -->
+  `SandboxUnavailableError` 结构化错误（`[packages/sandbox/sandbox/src/index.ts:132-132]()`）与 `SANDBOX_UNAVAILABLE` 错误码（`[packages/sandbox/sandbox/src/index.ts:125-125]()`）。
 <!-- anchor: export class SandboxUnavailableError extends HarnessError { -->
 <!-- anchor: export const SANDBOX_UNAVAILABLE = 'SANDBOX_UNAVAILABLE' -->
 
@@ -164,14 +172,14 @@ range 读取证明"seam 上新增能力必须对每个后端都可实现且可�
 
 - `resolve(request)`：approved 显式 mode 高于 session 最后 `sandbox/mode` 事件、再高于部署默认；session cwd 是 workspace 边界（`[packages/sandbox/sandbox-policy/src/index.ts:163-170]()`）。
 <!-- anchor: resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy { … ...session === undefined ? {} : { sessionId: session.id }, -->
-- `defaultMode` / `workspaceRoot`：配置默认与 agentless 兜底（`[packages/sandbox/sandbox-policy/src/index.ts:121-123]()`）。
+- `defaultMode` / `workspaceRoot`：配置默认与 agentless 兜底（`[packages/sandbox/sandbox-policy/src/index.ts:122-124]()`）。
 <!-- anchor: readonly defaultMode: SandboxMode … readonly workspaceRoot: string -->
 - session-mode：override 是**会话 log 里的 `sandbox/mode` 事件**——"日志即状态"，重启靠 replay 重建；`effective = projection state ?? deployment default`（`[packages/sandbox/sandbox-policy/src/session-mode.ts:2-12]()`），`setSandboxMode` 是唯一写路径。
 <!-- anchor: * Per-session sandbox-mode override: the session log as the store. A runtime … * capability call, weakest-precedence beneath an escalation grant. -->
 
 ### `ctx.fs` — 读侧新增的字节窗口原语
 
-- `readByteRange(target, range, signal)`：抽象方法本身就在 seam 上，`signal` 是可选形参但契约上必须被后端兑现（`[packages/fs/fs/src/index.ts:215-227]()`，见上文「有界字节区间读取」）。
+- `readByteRange(target, range, signal)`：抽象方法本身就在 seam 上，`signal` 是可选形参但契约上必须被后端兑现（`[packages/fs/fs/src/index.ts:231-243]()`，见上文「有界字节区间读取」）。
 <!-- anchor: * Read one byte window of the regular file as raw bytes with no decoding or … abstract readByteRange(target: FsTarget, range: { offset: number -->
 
 ### `roots.ts` — 「workspace-write 可写根」的唯一语义家
@@ -187,32 +195,32 @@ range 读取证明"seam 上新增能力必须对每个后端都可实现且可�
 <!-- anchor: export const WIDER_MODES: Record<string, readonly SandboxMode[]> = { … 'workspace-write': ['danger-full-access'], -->
 - `ESCALATION_TARGETS`：schema 能枚举的闭合目标（去 `read-only`，因为它是最底）——schema 是 registry-global，而 effective mode 是 per-call truth，所以严格更宽检查必须在执行时做（`[packages/sandbox/sandbox/src/escalation.ts:41-41]()`）。
 <!-- anchor: export const ESCALATION_TARGETS: readonly SandboxMode[] = ['workspace-write', -->
-- `approveEscalation`：fail-closed 有序序列——先验严格更宽（非更宽**不惊动人**）、缺 approval service / 缺 agent 都抛、再走 `ctx.approval.request`（`[packages/sandbox/sandbox/src/escalation.ts:157-188]()`）。
+- `approveEscalation`：fail-closed 有序序列——先验严格更宽（非更宽**不惊动人**）、缺 approval service / 缺 agent 都抛、再走 `ctx.approval.request`（`[packages/sandbox/sandbox/src/escalation.ts:171-206]()`）。
 <!-- anchor: export async function approveEscalation<A, C>(request: EscalationRequest, appro … default: return assertNever(outcome, 'EscalationOutcome') -->
-- 生态位：`EscalationApprover` 是**结构函数形状**而非 approval service 类型，tool 层自己闭包 `ctx.approval.request(...)` 传下来，所以本包不依赖 approval/agent 包（`[packages/sandbox/sandbox/src/escalation.ts:10-14]()`、`[packages/sandbox/sandbox/src/escalation.ts:102-109]()`）。
+- 生态位：`EscalationApprover` 是**结构函数形状**而非 approval service 类型，tool 层自己闭包 `ctx.approval.request(...)` 传下来，所以本包不依赖 approval/agent 包（`[packages/sandbox/sandbox/src/escalation.ts:10-14]()`、`[packages/sandbox/sandbox/src/escalation.ts:113-120]()`）。
 <!-- anchor: * The channel is a minimal STRUCTURAL function shape ({@link EscalationAsk}), … * agent packages. -->
-<!-- anchor: export interface EscalationApprover<A = object, C = string> { … request(req: { agent: A; toolName: string; callId: C; reason: string; signal?: -->
+<!-- anchor: export interface EscalationApprover<A = object, C = string> { … request(req: { -->
 
 ### `sandbox-local` — provider 的 runner 链
 
 - `PLATFORM_CHAINS`：按平台选链（Linux `['bwrap','landlock']`、darwin `['seatbelt']`、win32 `['windows-acl']`）（`[packages/sandbox/sandbox-local/src/index.ts:159-166]()`）。
 <!-- anchor: const PLATFORM_CHAINS: Record<string, readonly SelectedRunner['runner'][]> = { … win32: ['windows-acl'], -->
-- 探针仲裁：多候选才探（探针只是仲裁，不去复验唯一选择）；单候选不探，其执行期拒绝仍由 runner-failure 规则 fail-closed 兜底（`[packages/sandbox/sandbox-local/src/index.ts:499-510]()`）。
+- 探针仲裁：多候选才探（探针只是仲裁，不去复验唯一选择）；单候选不探，其执行期拒绝仍由 runner-failure 规则 fail-closed 兜底（`[packages/sandbox/sandbox-local/src/index.ts:504-514]()`）。
 <!-- anchor: private chainVerdict(): SelectedRunner | 'unavailable' { … return 'unavailable' -->
-- `DENIAL_SIGNATURES`：每个 runner 的拒绝"方言"（bwrap `read-only file system`、Landlock `permission denied`、Seatbelt `operation not permitted`、windows-acl 三词条）（`[packages/sandbox/sandbox-local/src/index.ts:205-213]()`）。
+- `DENIAL_SIGNATURES`：每个 runner 的拒绝"方言"（bwrap `read-only file system`、Landlock `permission denied`、Seatbelt `operation not permitted`、windows-acl 三词条）（`[packages/sandbox/sandbox-local/src/index.ts:207-214]()`）。
 <!-- anchor: const DENIAL_SIGNATURES = { … runnerCommand: ['read-only file system', 'permission denied'], -->
-- `RUNNER_FAILURE_RULES`：Landlock 的 exit-125 + `landlock-run:`、windows-acl 的 exit-127 + `windows-acl-run:`（`[packages/sandbox/sandbox-local/src/index.ts:231-240]()`）。
+- `RUNNER_FAILURE_RULES`：Landlock 的 exit-125 + `landlock-run:`、windows-acl 的 exit-127 + `windows-acl-run:`（`[packages/sandbox/sandbox-local/src/index.ts:233-241]()`）。
 <!-- anchor: const RUNNER_FAILURE_RULES = { … 'windows-acl': [{ allowedExitCodes: [WINDOWS_ACL_RUNNER_FAILURE_EXIT], fatalSign -->
 
 ### windows-acl — restricted-token runner
 
-- `workspaceWriteSid`：**per-workspace 确定性 SID**（由规范 workspace 路径推出），故 workspace-root ACE 每 workspace 每机器只 materialize 一次，后续 provision 走 exact-ACE skip（`[packages/sandbox/sandbox-windows-acl/src/index.ts:13-18]()`）。
-<!-- anchor: * for the complete boundary). The write SID is the per-WORKSPACE identity … * per session for. Each private temp directory instead receives its own SID, -->
-- `tempWriteSid`：每个 live session/workspace 对的**随机私有 temp 目录 + 独立 SID**，兄弟 session 共享 workspace 也不能互入 temp 树（`[packages/sandbox/sandbox-windows-acl/src/index.ts:18-20]()`）。
+- `workspaceWriteSid`：**per-workspace 确定性 SID**（由规范 workspace 路径推出），故 workspace-root ACE 每 workspace 每机器只 materialize 一次，后续 provision 走 exact-ACE skip（`[packages/sandbox/sandbox-windows-acl/src/index.ts:16-20]()`）。
+<!-- anchor: * deny the `acl` module documents. The write SID is the per-WORKSPACE identity … * grant-reuse story the per-session random SID paid a full tree propagation -->
+- `tempWriteSid`：每个 live session/workspace 对的**随机私有 temp 目录 + 独立 SID**，兄弟 session 共享 workspace 也不能互入 temp 树（`[packages/sandbox/sandbox-windows-acl/src/index.ts:21-23]()`）。
 <!-- anchor: * per session for. Each private temp directory instead receives its own SID, … * trees. Unlike the POC, every API failure throws with the API -->
-- `AclSandbox` 是本后端的公开入口类（`[packages/sandbox/sandbox-windows-acl/src/index.ts:157-157]()`）。
+- `AclSandbox` 是本后端的公开入口类（`[packages/sandbox/sandbox-windows-acl/src/index.ts:162-162]()`）。
 <!-- anchor: export class AclSandbox { -->
-- 报告 `partial`：因为 WRITE_RESTRICTED 必须把 Everyone 留在 restricting list（去掉它早期 DLL 初始化与 CNG 会崩），Everyone 自身的环境授权就成了文档化的边界；NTFS hard link 又能把已授权文件 alias 到外部路径（`[packages/sandbox/sandbox-windows-acl/src/token.ts:176-176]()`、`[packages/sandbox/sandbox-windows-acl/src/runner.ts:19-19]()`）。
+- 报告 `partial`：因为 WRITE_RESTRICTED 必须把 Everyone 留在 restricting list（去掉它早期 DLL 初始化与 CNG 会崩），Everyone 自身的环境授权就成了文档化的边界；NTFS hard link 又能把已授权文件 alias 到外部路径（`[packages/sandbox/sandbox-windows-acl/src/token.ts:196-196]()`、`[packages/sandbox/sandbox-windows-acl/src/runner.ts:19-19]()`）。
 <!-- anchor: * Everyone's own ambient grants remain the documented partial boundary. -->
 <!-- anchor: *    except for the documented Everyone and hard-link boundaries. -->
 
@@ -243,9 +251,9 @@ flowchart LR
   CHAIN -->|"probe / 选 runner"| BWRAP
   BWRAP -->|"wrapped argv"| LSUBP
 ```
-参考锚点：`[packages/shell/bash-sandbox/src/index.ts:85-86]()`（resolve 落 policy）、`[packages/shell/bash-sandbox/src/index.ts:179-180]()`（confine 落 runner）。
+参考锚点：`[packages/shell/bash-sandbox/src/index.ts:85-86]()`（resolve 落 policy）、`[packages/shell/bash-sandbox/src/index.ts:187-188]()`（confine 落 runner）。
 <!-- anchor: override resolve(request: ShellExecRequest): ShellExecSpec { … return { ...super.resolve(request), sandboxPolicy: request.sandboxPolicy ??  -->
-<!-- anchor: private confine(command: string, policy: SandboxPolicy): ConfinedArgv { … return this.ctx.sandbox.confine(['bash', '-c', command], policy) -->
+<!-- anchor: private confine(command: string, policy: SandboxPolicy, signal?: AbortSignal): P … return this.ctx.sandbox.confine(['bash', '-c', command], policy, signal) -->
 
 ### 流程 B：fs 写操作经 seam 到 policy 栅栏（`FS_SANDBOX_DENIED` 提权）
 
@@ -279,7 +287,7 @@ flowchart LR
 
 ### 流程 C：本地 vs E2B provider 切换如何级联迁移六族
 
-左边本地 world 用 `LocalSandboxProvider` + `LocalSubprocessRuntime` + `fs-local`；右边 E2B world 用共同 `ctx.e2b` handle + `fs-e2b` + `subprocess-e2b`，Bash/PTY/LSP 一并移动。
+左边本地 world 用 `LocalSandboxProvider` + `LocalSubprocessRuntime` + `fs-local`；右边远端 world（原文为 E2B，0.1.7-rc.2 起由 SSH provider 族承担，见下）用共同连接 handle + `fs-e2b` + `subprocess-e2b`，Bash/PTY/LSP 一并移动。
 
 ```mermaid
 flowchart LR
@@ -304,19 +312,28 @@ flowchart LR
   E2 --> FSE
   E2 --> SUBE
 ```
-参考锚点：`[packages/e2b/e2b/src/index.ts:2-4]()`（同一 handle 供两个 provider）、`[packages/e2b/e2b/tests/composition.e2e.ts:127-127]()`（"FS, Bash, PTY, and LSP in one sandbox"）。
-<!-- anchor: * Shared ownership of one E2B sandbox. Capability adapters await the same SDK … * @module @deepseek-ai/dsh-e2b -->
-<!-- anchor: it('runs FS, Bash, PTY, and LSP in one sandbox and deletes it', async () => { -->
+参考锚点（远端世界部分已按 0.1.7-rc.2 的 SSH 实现重写）：`[packages/ssh/README.md:12-12]()`（一条 OpenSSH 连接 + 远端 helper 同时支撑 fs/subprocess/sandbox 三族）、`[docs/capability-seams.md:633-633]()`（`ctx.ssh` 行）。
+<!-- anchor: This family runs files, ordinary processes, terminals and sandbox enforcement on -->
+<!-- anchor: | `ctx.ssh` | `core` | [`ssh`](../packages/ssh/ssh) | - | [`fs-ssh`](../packages/ssh -->
 
-级联现在多了两条**同步迁移**的细节。其一，`readByteRange` 是 `ctx.fs` seam 上的一等能力，所以 E2B world 必须自己实现"跳过前缀 + 截断 + 取消流"，切 world 时分页文件读取随整族一起换实现（`[packages/e2b/fs-e2b/src/index.ts:295-338]()`）。
-<!-- anchor: override async readByteRange(target: FsTarget, range: { offset: number … return filled === range.length ? window : window.subarray(0, filled) -->
-其二，**网络路由也是"世界"的一部分**：E2B SDK 自建 undici dispatcher，全局 dispatcher 到不了它，于是运行时用 `proxyRouteFor(new URL(e2bApiUrl()))` 按 SDK **真正会调用的 URL** 决定是否给它 proxy（`[packages/e2b/e2b/src/index.ts:154-166]()`、`[packages/e2b/e2b/src/api-url.ts:21-25]()`）——判定若对着别的 URL 做，就会选错 scheme 的代理、忽略点名真实 host 的 bypass 条目，甚至把控制面流量和 API key 交给代理。
-<!-- anchor: // The SDK builds its own undici dispatcher, so the global one never reaches … ...route.proxied ? { proxy: route.proxy } : {}, -->
-<!-- anchor: export function e2bApiUrl(env: NodeJS.ProcessEnv = process.env): string { … return `https://api.${env.E2B_DOMAIN ?? E2B_DEFAULT_DOMAIN}` -->
+> **演进说明(0.1.7-rc.2)**：图中 E2B 执行世界（`ctx.e2b` + `fs-e2b` + `subprocess-e2b`）已整体下线，仓库不再提供 E2B 执行后端，切世界时"一个远端 handle 供两个 provider"的实例因此消失（`[.agents/notes/implemented/simplification/2026-09-11-remove-e2b-providers.md:17-17]()`）；级联迁移这一机制本身仍成立，现由共享一条 OpenSSH 连接的 `fs-ssh`/`subprocess-ssh`/`sandbox-ssh` 兑现（`[packages/ssh/sandbox-ssh/README.md:12-12]()`）。
+> <!-- anchor: The repository excludes the E2B sandbox owner, filesystem provider and subproces -->
+> <!-- anchor: `dsh-sandbox-ssh` supplies `ctx.sandbox` for processes launched by the SSH subpr -->
+
+级联现在多了两条**同步迁移**的细节。其一，`readByteRange` 是 `ctx.fs` seam 上的一等能力，所以远端 world 必须自己兑现"跳过前缀 + 截断 + 取消流"，切 world 时分页文件读取随整族一起换实现——原实现见 `fs-e2b`，现由 `fs-ssh` 的一条 `fs.readRange` RPC 承担（`[packages/ssh/fs-ssh/src/index.ts:74-75]()`）。
+<!-- anchor: override async readByteRange(target: FsTarget, range: { offset: number; length: … return Buffer.from(await this.call('fs.readRange', { target, ...range }, z.base6 -->
+其二，**出网路由也是"世界"的一部分**：远端后端若自建 HTTP 栈（如 E2B SDK 的 undici dispatcher），全局 dispatcher 到不了它，运行时就必须按该 SDK **真正会调用的 URL** 决定是否给它 proxy——判定若对着别的 URL 做，就会选错 scheme 的代理、忽略点名真实 host 的 bypass 条目，甚至把控制面流量和 API key 交给代理。
+
+> **演进说明(0.1.7-rc.2)**：E2B SDK 及其 undici dispatcher 特判（`proxyRouteFor(new URL(e2bApiUrl()))`，含 `packages/e2b/e2b/src/api-url.ts`）已随 E2B provider 一起下线；SSH 族的远端连接由部署方拥有的 OpenSSH alias 承担（含其既有 user/key/known-host 配置），harness 不再为某个远端 SDK 的私有 dispatcher 做代理特判（`[docs/subsystems/ssh.md:36-36]()`）。
+> <!-- anchor: /** OpenSSH host alias, including its existing user, key and known-host configur -->
 
 ### 流程 D：有界字节窗口在 seam 上的流转（本地 vs E2B）
 
-同一个 `readByteRange` 调用在两个执行世界里各自落到本机流窗口与远端流截断；`signal` 一路透传，是两端共同的取消契约。
+同一个 `readByteRange` 调用在两个执行世界里各自落到本机流窗口与远端窗口读取；`signal` 一路透传，是两端共同的取消契约。
+
+> **演进说明(0.1.7-rc.2)**：下图右侧的 E2B 远端执行世界（`fs-e2b` 的流式跳过 + `reader.cancel()`）已随 E2B provider 下线；远端一侧现为 `fs-ssh` 的 `fs.readRange` RPC，窗口读取与取消在远端 helper 内落到其本地 filesystem 实现（`[packages/ssh/fs-ssh/src/index.ts:74-75]()`、`[docs/subsystems/ssh.md:5-5]()`）。
+> <!-- anchor: override async readByteRange(target: FsTarget, range: { offset: number; length: … return Buffer.from(await this.call('fs.readRange', { target, ...range }, z.base6 -->
+> <!-- anchor: The [SSH provider family](../../packages/ssh/README.md) supplies one remote file -->
 
 ```mermaid
 sequenceDiagram
@@ -342,16 +359,16 @@ sequenceDiagram
 
 ## 与其他模块协同
 
-- **tools 管道消费 Consumer**：`ctx.tools` 注册工具（bash/fs/terminal/pwsh），这些工具经 seam 触达能力；`svc_tools --> pkg_tool_bash` 等（`[docs/capability-seams.md:450-459]()`）。工具层正是 Capability Seam 的 Consumer 位置。
+- **tools 管道消费 Consumer**：`ctx.tools` 注册工具（bash/fs/terminal/pwsh），这些工具经 seam 触达能力；`svc_tools --> pkg_tool_bash` 等（`[docs/capability-seams.md:543-552]()`）。工具层正是 Capability Seam 的 Consumer 位置。
 <!-- anchor-base64:c3ZjX3Rvb2xzIC0tPiBwa2dfYWdlbnRfbG9vcCDigKYgc3ZjX3Rvb2xzIC0tPiBwa2dfdG9vbF93ZWI= -->
-- **approval / guard 协同**：escalation 经 `EscalationApprover`（结构形状）指向 `ctx.approval`；`approval/request` 是 waterfall，缺 answerer fail-closed 到 `unavailable`（`[docs/subsystems/approval.md:28-28]()`；`[packages/sandbox/sandbox/src/escalation.ts:102-109]()`）。
+- **approval / guard 协同**：escalation 经 `EscalationApprover`（结构形状）指向 `ctx.approval`；`approval/request` 是 waterfall，缺 answerer fail-closed 到 `unavailable`（`[docs/subsystems/approval.md:28-28]()`；`[packages/sandbox/sandbox/src/escalation.ts:113-120]()`）。
 <!-- anchor: type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable' -->
-<!-- anchor: export interface EscalationApprover<A = object, C = string> { … request(req: { agent: A; toolName: string; callId: C; reason: string; signal?: -->
-  同时 `ctx.permissionPresets` 把 `workspace-write`/`danger-full-access` 两个预设打包 `sandbox-mode` + approval-policy 双旋钮（`[docs/capability-seams.md:531-531]()`）。
+<!-- anchor: export interface EscalationApprover<A = object, C = string> { … request(req: { -->
+  同时 `ctx.permissionPresets` 把 `workspace-write`/`danger-full-access` 两个预设打包 `sandbox-mode` + approval-policy 双旋钮（`[docs/capability-seams.md:641-641]()`）。
 <!-- anchor: | `ctx.permissionPresets` | `core` | [`permission-presets`] -->
-- **terminal 族同样吃沙箱策略**：`terminal-bash` 注入 `['terminals','sandboxPolicy','sessionProjections','subprocess']`（`[packages/terminal/terminal-bash/src/index.ts:27-27]()`），spawn 时 `sandbox.confine(argv, { ...policy, mode: policy.mode })`（`[packages/terminal/terminal-bash/src/index.ts:108-108]()`）。
+- **terminal 族同样吃沙箱策略**：`terminal-bash` 注入 `['terminals','sandboxPolicy','sessionProjections','subprocess']`（`[packages/terminal/terminal-bash/src/index.ts:27-27]()`），spawn 前 `await sandbox.confine(argv, { ...policy, mode: policy.mode }, signal)`（`[packages/terminal/terminal-bash/src/index.ts:108-108]()`）。
 <!-- anchor: export const inject = ['terminals', 'sandboxPolicy', 'sessionProjections', 'subpro -->
-<!-- anchor: return sandbox.confine(argv, { ...policy, mode: policy.mode }).argv -->
+<!-- anchor: return (await sandbox.confine(argv, { ...policy, mode: policy.mode }, signal)).a -->
   它还在 PTY 会话存活期间**禁止切换 sandbox mode**（`[packages/terminal/terminal-bash/src/index.ts:51-61]()` fence：模式变更事件在有 owner activity 时直接抛错）。
 <!-- anchor: owner.ctx.on('internal/dispatch', (_mode, eventName, args) => { … }, { global: true }) -->
 - **subagent：依赖同类隔离**（跨模块边界：另见 [subagent.md](subagent.md)）：session-mode 注释记录了 `source: 'delegation'`——子代理委派时可把 override 播种进 child（`[packages/sandbox/sandbox-policy/src/session-mode.ts:33-36]()`）；即 child agent 需要 state 目录可写而 bash 跑 read-only，consumer 可在同一时刻对同一 provider 请求不同边界。
@@ -361,7 +378,7 @@ sequenceDiagram
 <!-- anchor: /** A canonical workspace in the filesystem/subprocess execution world. */ -->
   它还调用 `subprocess.resolveExecutable` 解析 lsp server 进程的可执行（`[packages/lsp/lsp-stdio/src/index.ts:146-146]()`）。
 <!-- anchor: const executable = await ctx.subprocess.resolveExecutable( -->
-- **subprocess 的原生 containment** 是同一哲学在进程层的落点，本文只给定位，机制细节见 [subprocess.md](subprocess.md)（`[packages/subprocess/subprocess/src/index.ts:92-94]()` 的 execution-world 语义声明）。
+- **subprocess 的原生 containment** 是同一哲学在进程层的落点，本文只给定位，机制细节见 [subprocess.md](subprocess.md)（`[packages/subprocess/subprocess/src/index.ts:94-96]()` 的 execution-world 语义声明）。
 <!-- anchor: * Implementations must honor these semantics: … *   filesystem provider. -->
 - **fs 的 policy 通过事件而非服务**（观察策略插件）：`fs/write-intent`、`fs/edit-intent` 是 waterfall，`fs/observed` 是 emit——`dsh-fs-observation-policy` 注册**无 service**，仅靠事件门（`[docs/subsystems/filesystem.md:5-7]()`、`[docs/subsystems/filesystem.md:183-185]()`）；这正是"事件扩展点"哲学在 fs 族的体现。
 <!-- anchor: The optional filesystem capability has four parts: [dsh-fs](../../packages/fs/fs) … `dsh-fs-observation-policy` is optional. Without it, the `FileSystem` -->
@@ -369,11 +386,11 @@ sequenceDiagram
 
 ## 关键设计决策
 
-1. **「执行世界」共享，而非每能力独立沙箱**。六个族共路径/共命名空间/共 scrub/共生命周期（subprocess 明文字节 same execution world，`[packages/subprocess/subprocess/src/index.ts:92-94]()`；LSP world，`[packages/lsp/lsp-stdio/src/host.ts:7-7]()`）。权衡：如果把 fs/subprocess/terminal/lsp 各自做成独立沙箱，那么「一处策略解析」无法扩散到全部能力，且每个族都要重复 runner 选择/隔离边界；共享让 `sandboxPolicy` 一次 resolve、六族同时生效，且切远端 world 时整族级联移动。代价是"执行世界"必须被所有 provider 严格遵守，否则跨族路径互指会失效。
+1. **「执行世界」共享，而非每能力独立沙箱**。六个族共路径/共命名空间/共 scrub/共生命周期（subprocess 明文字节 same execution world，`[packages/subprocess/subprocess/src/index.ts:94-96]()`；LSP world，`[packages/lsp/lsp-stdio/src/host.ts:7-7]()`）。权衡：如果把 fs/subprocess/terminal/lsp 各自做成独立沙箱，那么「一处策略解析」无法扩散到全部能力，且每个族都要重复 runner 选择/隔离边界；共享让 `sandboxPolicy` 一次 resolve、六族同时生效，且切远端 world 时整族级联移动。代价是"执行世界"必须被所有 provider 严格遵守，否则跨族路径互指会失效。
 <!-- anchor: * Implementations must honor these semantics: … *   filesystem provider. -->
 <!-- anchor: /** A canonical workspace in the filesystem/subprocess execution world. */ -->
 
-2. **Capability Seam 三件套的权衡**。Definition/Provider/Consumer 分离让"一个提供方交换 = 整体产品迁移"（`[docs/capability-seams.md:389-393]()`：`svc_sandbox --> pkg_bash_sandbox`、`svc_sandbox --> pkg_terminal_bash`）。换来的是间接层与一套注册/dispose 纪律；代价是消费者不可直接触具体实现，只能走 seam。它的逆面是：没有"能力注册表分叉"——同一 seam 只允许一个 provider，重复注册 loud-fail，从而杜绝多 provider 语义漂移。
+2. **Capability Seam 三件套的权衡**。Definition/Provider/Consumer 分离让"一个提供方交换 = 整体产品迁移"（`[docs/capability-seams.md:481-485]()`：`svc_sandbox --> pkg_bash_sandbox`、`svc_sandbox --> pkg_terminal_bash`）。换来的是间接层与一套注册/dispose 纪律；代价是消费者不可直接触具体实现，只能走 seam。它的逆面是：没有"能力注册表分叉"——同一 seam 只允许一个 provider，重复注册 loud-fail，从而杜绝多 provider 语义漂移。
 <!-- anchor-base64:c3ZjX3NhbmRib3ggLS0+IHBrZ19iYXNoX3NhbmRib3gg4oCmIHN2Y19zYW5kYm94UG9saWN5IC0tPiBwa2dfdGVybWluYWxfYmFzaA== -->
 
 3. **Landlock 选型 vs 容器/其他**。不是二选一：容器/microVM 是**同级 seam 的整体替换**，Landlock 是 `ctx.sandbox` 内的进程级兜底，二者分属不同层（`[packages/sandbox/sandbox/src/index.ts:2-4]()`）。Landlock 相对 Seatbelt 是 Linux-only；相对 bwrap 是"免 user namespace / 免 mount"（`[native/system/packages/entry/src/main.c:4-8]()`）。取舍：C11 + musl 静态链接把审计面压到单文件 + 内核稳定 syscall 契约，换来的是手写 raw UAPI 的心智成本。
@@ -384,29 +401,32 @@ sequenceDiagram
 <!-- anchor: * the contract and the binaries version together in one package family, … * what a "sandbox mode" is, only which paths are granted read or write. -->
 <!-- anchor: "./landlock-run": { … "./package.json": "./package.json" -->
 
-5. **E2B 为何作为 POC**。E2B 组合测试标题即"FS, Bash, PTY, LSP in one sandbox，然后删掉"（`[packages/e2b/e2b/tests/composition.e2e.ts:127-127]()`）——它验证"同一执行世界"假设成立（fs-e2b + subprocess-e2b 共享 `ctx.e2b` 一个 handle，`[packages/e2b/e2b/src/index.ts:2-4]()`）。
-<!-- anchor: it('runs FS, Bash, PTY, and LSP in one sandbox and deletes it', async () => { -->
-<!-- anchor: * Shared ownership of one E2B sandbox. Capability adapters await the same SDK … * @module @deepseek-ai/dsh-e2b -->
-   之所以 POC 而非产品级，是因为它并不实现 `ctx.sandbox.confine`（E2B 的隔离由远端 VM 承担，属于"替换整个 seam"而非"某 provider"），也注记为 TODO（`[packages/e2b/e2b/src/index.ts:181-183]()` 的 rollback 态）。0.1.5-alpha.1 起它还额外承担"远端世界也要按 harness 的网络路由决定 proxy"这一条：世界切换不只是路径与进程，还包括出网路径（`[packages/e2b/e2b/src/index.ts:154-166]()`）。
-<!-- anchor: await sandbox.kill() … // TODO(e2b-setup-rollback): Add retry state only if a real double failure -->
-<!-- anchor: // The SDK builds its own undici dispatcher, so the global one never reaches … ...route.proxied ? { proxy: route.proxy } : {}, -->
+5. **远端世界为何曾作为 POC（E2B，已下线）**。E2B 组合测试标题即"FS, Bash, PTY, LSP in one sandbox，然后删掉"——它验证"同一执行世界"假设成立（fs-e2b + subprocess-e2b 共享 `ctx.e2b` 一个 handle）。之所以 POC 而非产品级，是因为它并不实现 `ctx.sandbox.confine`（E2B 的隔离由远端 VM 承担，属于"替换整个 seam"而非"某 provider"），也注记为 TODO 的 rollback 态。0.1.5-alpha.1 起它还额外承担"远端世界也要按 harness 的网络路由决定 proxy"这一条：世界切换不只是路径与进程，还包括出网路径。
 
-6. **escalation 提权语义**。严格更宽在**执行时**对 per-call effective mode 检查而非 schema 约束（`[packages/sandbox/sandbox/src/escalation.ts:159-163]()`）；非更宽请求**不惊动用户**。
+> **演进说明(0.1.7-rc.2)**：E2B 三 provider 已整体移除，仓库不再提供 E2B 执行后端（`[.agents/notes/implemented/simplification/2026-09-11-remove-e2b-providers.md:17-17]()`），理由是 PTC Node 隔离需要独立于程序标准流的双向控制通道，而被 pin 的 SDK 只暴露标准进程流（`[.agents/notes/implemented/simplification/2026-09-11-remove-e2b-providers.md:11-11]()`）。
+> <!-- anchor: The repository excludes the E2B sandbox owner, filesystem provider and subproces -->
+> <!-- anchor: PTC Node confinement requires bidirectional control traffic separate from arbitr -->
+> 远端执行仍是既定能力，现由 SSH 族承担，并且补齐了当年 E2B 缺的那块——`sandbox-ssh` 提供真正的 `ctx.sandbox` 远端实现（`[packages/ssh/sandbox-ssh/README.md:12-12]()`）。
+> <!-- anchor: `dsh-sandbox-ssh` supplies `ctx.sandbox` for processes launched by the SSH subpr -->
+
+6. **escalation 提权语义**。严格更宽在**执行时**对 per-call effective mode 检查而非 schema 约束（`[packages/sandbox/sandbox/src/escalation.ts:174-177]()`）；非更宽请求**不惊动用户**。
 <!-- anchor: // Strict widening is an EXECUTION check against the call's effective mode — … if (!(WIDER_MODES[effectiveMode] ?? []).includes(mode as SandboxMode)) { -->
-   `approveEscalation` 走 `ctx.approval.request`（结构闭包），把「批准」与「沙箱」解耦——bash 与 fs 共用同一提权词汇，拒绝/取消/不可用各自有确定错误文本（`[packages/sandbox/sandbox/src/escalation.ts:183-186]()`）。权衡：把"提权"从工具逻辑里抽出来放进共享模块，两端（`tool-bash`/`tool-fs`）的逐字错误不会漂移（`[packages/sandbox/sandbox/src/escalation.ts:4-8]()`）。
+   `approveEscalation` 走 `ctx.approval.request`（结构闭包），把「批准」与「沙箱」解耦——bash 与 fs 共用同一提权词汇，拒绝/取消/不可用各自有确定错误文本（`[packages/sandbox/sandbox/src/escalation.ts:202-205]()`）。权衡：把"提权"从工具逻辑里抽出来放进共享模块，两端（`tool-bash`/`tool-fs`）的逐字错误不会漂移（`[packages/sandbox/sandbox/src/escalation.ts:4-8]()`）。
 <!-- anchor: case 'allowed-once': return mode as SandboxMode … case 'unavailable': throw new Error(`sandbox escalation to "${mode}" requires a -->
 <!-- anchor: * strictly-wider ladder, the argument-pairing validation, the model-facing … * families' approval ordering and verbatim error texts from drifting apart. -->
 
 7. **bwrap 加 PID 命名空间隔离（rc.1）**。bwrap profile 新增 `--unshare-pid --proc /proc --die-with-parent`（`[packages/sandbox/sandbox-local/src/profiles.ts:17-17]()`）：把沙箱进程放进**独立 PID 命名空间**，修复"process 根逃逸"（沙箱内进程可见主机的 process 树根）。这是一次安全加固而非新能力——在不破坏既有 `SandboxMode` 词汇与 `--ro-bind`/`--dev` 语义的前提下，把可见进程范围进一步收窄；`--die-with-parent` 保证父进程退出时沙箱进程树随之消亡，避免孤儿进程残留在共享主机 PID 空间。取舍：PID ns 让沙箱内 `ps` 只见自己的进程树（与调试/工具预期一致），但对需要观察主机进程的少数工具是约束。
 <!-- anchor-base64:Y29uc3QgYXJncyA9IFsnLS1yby1iaW5kJywgJy8nLCAnLycsICctLWRldicsICcvZGV2JywgJy0tdW5zaGFyZS1waWQnLCAnLS1wcm9jJyw= -->
 
-8. **读能力下沉 seam：窗口是一等语义，取消是契约的一部分（0.1.5-alpha.1）**。把 `readByteRange` 放进抽象 `FileSystem` 而非留在某个 provider 里，是为了让"分页/随机访问"不再靠反复整文件读来拼（`[packages/fs/fs/src/index.ts:215-227]()`）。`signal` 是可调参数但必须被每个后端兑现——本机交给 `createReadStream` 的窗口并映射 `FS_ABORTED`（`[packages/fs/fs-local/src/fsio.ts:439-449]()`）。
+8. **读能力下沉 seam：窗口是一等语义，取消是契约的一部分（0.1.5-alpha.1）**。把 `readByteRange` 放进抽象 `FileSystem` 而非留在某个 provider 里，是为了让"分页/随机访问"不再靠反复整文件读来拼（`[packages/fs/fs/src/index.ts:231-243]()`）。`signal` 是可调参数但必须被每个后端兑现——本机交给 `createReadStream` 的窗口并映射 `FS_ABORTED`（`[packages/fs/fs-local/src/fsio.ts:456-467]()`）。
 <!-- anchor: * Read one byte window of the regular file as raw bytes with no decoding or … abstract readByteRange(target: FsTarget, range: { offset: number -->
 <!-- anchor: export async function readByteWindow( … ...signal ? { signal } : {}, -->
-   远端则必须在 `finally` 里显式取消被抛弃的流（`[packages/e2b/fs-e2b/src/index.ts:328-336]()`）。权衡：抽象 seam 每加一个原语，所有后端都要按同一语义实现（E2B 因此付出了"流式跳过 + 主动取消"的复杂度）；换来的是消费方（`api-workspace-files` 的分页与整文件读）只认一条 seam，切执行世界时无需分叉。
-<!-- anchor: if (!drained) { … reader.releaseLock() -->
+   远端旧的 `fs-e2b` 实现则必须在 `finally` 里显式取消被抛弃的流。权衡：抽象 seam 每加一个原语，所有后端都要按同一语义实现（E2B 因此付出了"流式跳过 + 主动取消"的复杂度）；换来的是消费方（`api-workspace-files` 的分页与整文件读）只认一条 seam，切执行世界时无需分叉。
+
+> **演进说明(0.1.7-rc.2)**：`fs-e2b` 的 `if (!drained) { … reader.releaseLock() }` 取消逻辑已随 E2B provider 删除，远端兑现改由 `fs-ssh` 的一条 `fs.readRange` RPC 交给远端本地 filesystem 承担，取消仍随 `signal` 透传（`[packages/ssh/fs-ssh/src/index.ts:74-75]()`）。
+> <!-- anchor: override async readByteRange(target: FsTarget, range: { offset: number; length: … return Buffer.from(await this.call('fs.readRange', { target, ...range }, z.base6 -->
 
 ## 全局关联：隔离是可交换哲学最硬核的考验
 
-沙箱是 dsh 最硬核考验「一切皆插件」的地方——因为它要同时实现对执行权的隔离、又保持后可交换。Capability Seam 三件套 + 「同一执行世界」共享 + `sandboxPolicy` 唯一所有者在策略面落点，使一次 `resolvePolicy` 六族同效、切远端 E2B 整族级联迁移而无 provider 分叉；原生侧则把同一纪律推进到 npm 包：`@deepseek-ai/node-addon-system` 只经 capability 子路径暴露机制（`/landlock-run`、`/flock`），策略与生命周期留给调用方（`[native/system/docs/architecture.md:9-9]()`），Landlock C11 + musl 把进程级隔离的自定义面压到单文件。而 0.1.5-alpha.1 把有界字节读取提升为 `ctx.fs` 的一等能力并强制可取消，说明这条哲学不是"新能力随手加在某个后端"，而是**新能力先落 seam、再让每个世界各自兑现**——`PLATFORM_CHAINS`（bwrap/landlock/seatbelt/windows-acl）与 E2B 的流截断正是同一语义在不同世界的方言。这份「隔离与读取都可移植」的坚持，是它能在 subagent（委派跨能力边界）与 tools（受控执行）两层同时成立的根本原因。
+沙箱是 dsh 最硬核考验「一切皆插件」的地方——因为它要同时实现对执行权的隔离、又保持后可交换。Capability Seam 三件套 + 「同一执行世界」共享 + `sandboxPolicy` 唯一所有者在策略面落点，使一次 `resolvePolicy` 六族同效、切远端执行世界（E2B 之后的 0.1.7-rc.2 实现是 SSH provider 族）整族级联迁移而无 provider 分叉；原生侧则把同一纪律推进到 npm 包：`@deepseek-ai/node-addon-system` 只经 capability 子路径暴露机制（`/landlock-run`、`/flock`），策略与生命周期留给调用方（`[native/system/docs/architecture.md:9-9]()`），Landlock C11 + musl 把进程级隔离的自定义面压到单文件。而 0.1.5-alpha.1 把有界字节读取提升为 `ctx.fs` 的一等能力并强制可取消，说明这条哲学不是"新能力随手加在某个后端"，而是**新能力先落 seam、再让每个世界各自兑现**——`PLATFORM_CHAINS`（bwrap/landlock/seatbelt/windows-acl）与远端 provider 的流截断正是同一语义在不同世界的方言。这份「隔离与读取都可移植」的坚持，是它能在 subagent（委派跨能力边界）与 tools（受控执行）两层同时成立的根本原因。
 <!-- anchor: The `./landlock-run` entry owns Landlock path resolution, -->

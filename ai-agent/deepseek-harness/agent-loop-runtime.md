@@ -4,6 +4,8 @@ title: 主 Agent 循环 + Runtime：turn/step 与 waterfall 拦截
 description: DeepSeek Harness（dsh）主循环（agent-loop）与 runtime（agent）的解构：唯一具名 driver 与 Agent 接口的分离、turn/step 双层与 Phase 状态机、waterfall/serial/emit 三类扩展点、从日志 derive 请求历史的准入规则、durable inbox 投影（agent/inbox/spliced 折叠与 claim 语义）、实时 assistant 流帧与 v2 内嵌持久流的分工、模型切换通知、系统提示词变更在 capable route 上的 in-history 追加与逐条记账 fix、消息冻结的证明复用、停止条件与「无特权内核」的自我印证。
 ---
 
+> **本轮增量复核补充（0.1.5-rc.2 → 0.1.7-rc.2 @ 477b4f4205 / 2026-09-24）**：本文已按新基线逐条复核并改写受影响论断（含"谁 append 哪个事件"对照表的 21 条引用由短引用升级为带指纹的规范引用）；上一版解读基线为 `dsh-v0.1.5-rc.2`。
+
 # 主 Agent 循环 + Runtime：turn/step 与 waterfall 拦截
 
 > 子文档之一，聚焦「循环（策略）」与「Runtime（执行引擎）」的分离。覆盖 `packages/core/agent-loop` 与 `packages/core/agent`。整体哲学见 [README](README.md)；本文上承 [session.md](session.md)（从日志 derive 模型历史）、下启 [tools.md](tools.md)（循环驱动的工具执行管道）。
@@ -20,8 +22,10 @@ description: DeepSeek Harness（dsh）主循环（agent-loop）与 runtime（age
 
 1. **模型请求永远不会被驱动。** `ctx.agents.create()` 只能查到注册工厂为空而抛 `no agent factory registered (load an agent-loop plugin)` [packages/core/agent/src/index.ts:206-209]()。没有任何代码在 `llm/stream` 上消费，turn/step 计数器永不前进。
 <!-- anchor: const NO_FACTORY_MESSAGE = 'no agent factory registered (load an agent-loop plugin)' … const DISPOSED_INITIATOR_MESSAGE = 'agent initiator scope is disposed' -->
-2. **inbox 连可读的投影都不会存在。** 承载两条 pending 列表（`next-turn` / `next-step`）的 `inbox` 投影定义本就由循环侧贡献——`ReactLoopInbox` 在构造函数里把自己那份 `inboxProjectionDefinition` 注册进 `ctx.sessionProjections`（[packages/core/agent-loop/src/inbox.ts:74-81]()）——0.1.5 起已从 runtime 完全下移到 loop。没有 agent-loop 时，即便有代码 append `agent/inbox/spliced` 事件，也没有 fold 去物化它，`Agent.inbox` 无从构造，输入永远停在日志里。
-<!-- anchor: export class ReactLoopInbox implements InboxContract { … this.projections.register(inboxProjectionDefinition) -->
+2. **inbox 连可读的投影都不会存在。** 承载两条 pending 列表（`next-turn` / `next-step`）的 `inbox` 投影定义本就由循环侧贡献：定义写在循环包里，注册则发生在 **agent-loop 插件装配阶段**，而且刻意排在所有配置校验之后，保证构造被拒时不留下投影单元（[packages/core/agent-loop/src/index.ts:362-365]()
+<!-- anchor: // Register only after every config validation above has passed, so a … ctx.sessionProjections.register(inboxProjectionDefinition) -->）；`ReactLoopInbox` 自己只持有注册表引用与被折叠出来的 pending 列表（[packages/core/agent-loop/src/inbox.ts:74-76]()
+<!-- anchor: export class ReactLoopInbox implements InboxContract { … private readonly projections: SessionProjectionRegistry, -->）。0.1.5 起已从 runtime 完全下移到 loop。没有 agent-loop 时，即便有代码 append `agent/inbox/spliced` 事件，也没有 fold 去物化它，`Agent.inbox` 无从构造，输入永远停在日志里。
+
 3. **任务转向工具。** `tool/*` 事件仍在注册表里，但没有循环驱动它们，工具永远不会被调度执行。
 
 一句话：没有循环的 DeepSeek Harness 是一个"有会话日志、有工具注册表、有模型适配器"但互不咬合的静止集合；循环是那个把它们串成一个可交互产品的唯一胶水。
@@ -47,7 +51,7 @@ A `step` = 一次模型请求 + 它所调用的工具；`turn` = 零或多个 st
 | `core/agent`（runtime） | 声明 `Agent` 接口、registry、`agent/*` 事件词汇与 wire 契约、initiator 作用域 | 接口层，可被任何"看似 Agent 的东西"实现 |
 | `core/agent-loop`（loop） | `ReactLoopAgent` 具体驱动：turn/step 推进、**durable inbox 投影**、**提示词准入**、**实时流帧**、请求构建、工具调度 | 具体的默认驱动，可被另一 loop 插件整体替换 |
 
-`agent-loop` 作为唯一 factory 通过 `ctx.agents.setFactory()` 注册 [packages/core/agent-loop/src/index.ts:420-421]()，使消费者只依赖 `ctx.agents` 抽象而不依赖具体 loop 包（`packages/core/agent/src/runtime-types.ts` 无 loop 依赖，`packages/core/agent-loop/src/agent.ts:7-18` 从 `dsh-agent` 导入接口）。这是"无特权内核"的直接体现：连内核自己也是被注册进去的。
+`agent-loop` 作为唯一 factory 通过 `ctx.agents.setFactory()` 注册 [packages/core/agent-loop/src/index.ts:369-370]()，使消费者只依赖 `ctx.agents` 抽象而不依赖具体 loop 包（`packages/core/agent/src/runtime-types.ts` 无 loop 依赖，`packages/core/agent-loop/src/agent.ts:7-18` 从 `dsh-agent` 导入接口）。这是"无特权内核"的直接体现：连内核自己也是被注册进去的。
 <!-- anchor: ctx.effect(() => ctx.agents.setFactory(this), 'agentLoop.setFactory()') … ctx.systemPrompt.variable('provider', context => context.agent?.options.provider) -->
 
 核心的观测力量来自**事件是扩展点**（`docs/architecture.md:55`）：循环内部不再直接调用任何能力，而是通过 Cordis 的 `waterfall` / `serial` / `emit` 三种派发打开拦截缝隙。这保证"主循环可替换"和"插件能拦截每一次交互"同时成立。
@@ -103,15 +107,15 @@ agent/request-error 请求失败后决定重试或终结          agent.ts:448-4
 <!-- anchor: this.registrations.set(key, { def: erased, cells: new WeakMap(), refs: 1 }) … existing.refs += 1 -->
 <!-- anchor: stateOf<K extends keyof SessionProjectionStateMap>( … return this.cellFor(registration, session).state as SessionProjectionStateMap[K] -->
 
-**动机三：编辑/移除变成同一套坐标。** 待处理消息的编辑（`replace`）与移除（`remove`）不再需要单独的内存语义，它们都被规范化成一次 splice，并在拼不出合法历史时**大声失败**：[packages/core/agent-loop/src/inbox.ts:31-55]() 会在 rebuild 时拒绝越界/非安全整数的 splice 坐标与跨两条列表重复的 `MessageId`，并把错误指向出问题的 `event.seq`；而 `ReactLoopInbox.current()` 在投影注册未生效时直接抛 `agent "<id>" cannot read inbox state: its projection registration is not active`（[packages/core/agent-loop/src/inbox.ts:189-197]()）。
+**动机三：编辑/移除变成同一套坐标。** 待处理消息的编辑（`replace`）与移除（`remove`）不再需要单独的内存语义，它们都被规范化成一次 splice，并在拼不出合法历史时**大声失败**：[packages/core/agent-loop/src/inbox.ts:31-55]() 会在 rebuild 时拒绝越界/非安全整数的 splice 坐标与跨两条列表重复的 `MessageId`，并把错误指向出问题的 `event.seq`；而 `ReactLoopInbox.current()` 在投影注册未生效时直接抛 `agent "<id>" cannot read inbox state: its projection registration is not active`（[packages/core/agent-loop/src/inbox.ts:187-194]()）。
 <!-- anchor: apply(state: InboxState, event) { … throw new Error(`invalid persisted inbox splice at session seq ${event.seq}`, { cause: error }) -->
 <!-- anchor: private current(): InboxState { … return state -->
 
-**代价。** 一是热路径上每次读写待处理队列都要经过投影物化（`mutate` → `current()`），而非直接数组索引——项目用"注册在构造函数里、`Session.append` 同步折叠"把这个成本压到与 append 同阶（[packages/core/agent-loop/src/inbox.ts:201-245]()）。二是**inbox 不再是 loop 可以私自持有的实现细节**：它必须带 `stateVersion` 与 `wire` 视图，于是格式演进（v3 canonical envelope / projection-cache 兼容版本）会把 inbox 一并卷入，见 [session-format-migration.md](session-format-migration.md)。三是 runtime 侧只剩契约（`Inbox` 接口）而无实现，任何不使用 `dsh-agent-loop` 的 driver 都必须自己贡献 `inbox` 投影，否则 `Agent.inbox` 不可用——能力缺席被显式化，而不是回落到一份空数组。
+**代价。** 一是热路径上每次读写待处理队列都要经过投影物化（`mutate` → `current()`），而非直接数组索引——项目用"注册在装配阶段、`Session.append` 同步折叠"把这个成本压到与 append 同阶（[packages/core/agent-loop/src/inbox.ts:198-242]()）。二是**inbox 不再是 loop 可以私自持有的实现细节**：它必须带 `stateVersion` 与 `wire` 视图，于是格式演进（v3 canonical envelope / projection-cache 兼容版本）会把 inbox 一并卷入，见 [session-format-migration.md](session-format-migration.md)。三是 runtime 侧只剩契约（`Inbox` 接口）而无实现，任何不使用 `dsh-agent-loop` 的 driver 都必须自己贡献 `inbox` 投影，否则 `Agent.inbox` 不可用——能力缺席被显式化，而不是回落到一份空数组。
 <!-- anchor: private mutate( … return removed -->
 
-同会话历史消息的编辑（改一条**已经进入 step** 的 user 消息再重跑）本周期曾落地，但随即被上游整体回滚，未进入任何发行版；当前可编辑的只有**仍 pending** 的队列项——`updateQueue` 把 `edit`/`remove` 落到 `agent.inbox.replace/remove`（[packages/api/session-controller/src/commands.ts:424-474]()），因此改的是一条尚未被 claim 的 durable splice，下一轮 step 自然按新内容重跑，无需"回退历史"。
-<!-- anchor: updateQueue(request: SessionUpdateQueueRequest): SessionUpdateQueueValue { … agent.inbox.remove(request.itemId) -->
+同会话历史消息的编辑（改一条**已经进入 step** 的 user 消息再重跑）本周期曾落地，但随即被上游整体回滚，未进入任何发行版；当前可编辑的只有**仍 pending** 的队列项——`updateQueue` 把 `edit`/`remove` 落到 `agent.inbox.replace/remove`（[packages/api/session-controller/src/commands.ts:432-496]()），因此改的是一条尚未被 claim 的 durable splice，下一轮 step 自然按新内容重跑，无需"回退历史"。
+<!-- anchor: async updateQueue(request: SessionUpdateQueueRequest): Promise<SessionUpdateQueu … agent.inbox.remove(request.itemId) -->
 
 > **演进说明（0.1.3-alpha.1 开发窗口内）**：`feat(session, agent, web): support same-session message editing` 合入后随即被 `Revert "feat(session, agent, web): support same-session message editing"` 完整回滚——两者都落在 `dsh-v0.1.2-rc.1..HEAD` 区间内，且回滚先于 `dsh-v0.1.3-alpha.1` 打标签。因此该能力未进入任何发行版，本文不把"编辑已发送消息"列为现存能力，只记录仍然存活的候选编辑路径（pending 队列项）与其落点。
 
@@ -126,9 +130,9 @@ agent/request-error 请求失败后决定重试或终结          agent.ts:448-4
 <!-- anchor: /** One process-local live assistant streaming publication. */ … | { readonly kind: 'abandoned' } -->
 <!-- anchor: settle( … outcome: { kind: 'committed', eventType, seq }, -->
 
-`fix(agent): terminate live assistant attempts` 补上了另一个方向：当 attempt 已经发出 `start`、却在无法提交任何持久事件的情况下失败时，必须补一个 `abandoned` end 帧（[packages/core/agent-loop/src/assistant-stream.ts:99-109]()），否则消费方会永远等一个不会再来的终结帧。循环侧对此有显式兜底：`live.start()` 之前的失败（取流、首次取消检查）不产生任何帧，之后的失败一定终结（[packages/core/agent-loop/src/agent.ts:388-398]()），而 `step` 的兜底 catch 里若 `!live.ended` 就补 `abandon()`（[packages/core/agent-loop/src/agent.ts:494-495]()）。
-<!-- anchor: /** Publish abandonment when no durable attempt event can be committed. */ … outcome: { kind: 'abandoned' }, --><!-- anchor: let started = false … signal.throwIfAborted() -->
-<!-- anchor: if (!live.ended) live.abandon() … throw error -->
+`fix(agent): terminate live assistant attempts` 补上了另一个方向：当 attempt 已经发出 `start`、却在无法提交任何持久事件的情况下失败时，必须补一个 `abandoned` end 帧（[packages/core/agent-loop/src/assistant-stream.ts:99-109]()），否则消费方会永远等一个不会再来的终结帧。循环侧对此有显式兜底：`live.start()` 之前的失败（取流、首次取消检查）不产生任何帧，之后的失败一定终结（[packages/core/agent-loop/src/agent.ts:417-429]()），而 `step` 的兜底 catch 里若 `!live.ended` 就补 `abandon()`（[packages/core/agent-loop/src/agent.ts:523-523]()）。
+<!-- anchor: /** Publish abandonment when no durable attempt event can be committed. */ … outcome: { kind: 'abandoned' }, --><!-- anchor: let started = false … if (!started) throw error -->
+<!-- anchor: if (!live.ended) live.abandon() -->
 
 **为什么客户端不再重放已 settled 的流**（`perf(client): avoid replaying settled assistant streams`）：既然持久结算里已经有完整 stream，客户端在重连/翻页时若把已结算 attempt 的帧再"放一遍"，就会把确定的历史渲染成第二次流式输出。落点是把 assistant 呈现统一从 `message.content` 结算（帧只服务活跃 attempt），因此 v2 内嵌流的逐记录读取也顺势下移到 host 侧——`perf(llm,host): read embedded Assistant streams per compact record` 把原先"先展开成 per-member 数组再 find/break"的消费改成**单遍早退的记录级 reader**，因为保留展开结果约等于紧凑 stream 的十倍内存。
 
@@ -136,7 +140,7 @@ agent/request-error 请求失败后决定重试或终结          agent.ts:448-4
 
 `feat(agent): announce model switches`（0.1.3-alpha.2）解决的是一类**只有模型自己能察觉的信息缺失**：会话历史标了消息角色，却没告诉新选中的模型"上面那些 assistant 消息是哪个路由生成的"。上游给出的真实事故是两个模型对图片能力的理解错位，新模型把前一个模型的限制当成了自己的限制。
 
-修法不是新加事件类型，而是复用已有的 user 角色消息通道：`installModelSelection` 在 `agent/pre-step` 上挂一个 `prepend: true` 的 listener，把提示词组装时**捕获**的路由与最新持久请求 header 比较，不同就追加一条带标识的 notice（[packages/core/agent/src/model-selection.ts:108-121]()，文案与 source 见 [packages/core/agent/src/model-selection.ts:41-53]()）。它之所以是"可观察/可回放的事件帧"，是因为这条 notice 在被接纳时会走普通 `user/message` 落盘——于是模型输入、Chat、Trajectory 三处都能看到它，而**请求 header 仍是"新路由已被真正使用"的持久记录**：若步骤在 header 落盘前失败，日志里的前一路由不变，下一个 step 会再次发提示（幂等重试，代价是可能留多条重复提示）。
+修法不是新加事件类型，而是复用已有的 user 角色消息通道：`installModelSelection` 在 `agent/pre-step` 上挂一个 `prepend: true` 的 listener，把提示词组装时**捕获**的路由与最新持久请求 header 比较，不同就追加一条带标识的 notice（[packages/core/agent/src/model-selection.ts:113-125]()，文案与 source 见 [packages/core/agent/src/model-selection.ts:47-58]()）。它之所以是"可观察/可回放的事件帧"，是因为这条 notice 在被接纳时会走普通 `user/message` 落盘——于是模型输入、Chat、Trajectory 三处都能看到它，而**请求 header 仍是"新路由已被真正使用"的持久记录**：若步骤在 header 落盘前失败，日志里的前一路由不变，下一个 step 会再次发提示（幂等重试，代价是可能留多条重复提示）。
 <!-- anchor: const disposeNotice = agentCtx.on( … { prepend: true }, --><!-- anchor: function modelSwitchNotice(previous: ModelSelection, selected: ModelSelection) { … summary: boundContextSummary(`${from} → ${to}`), -->
 
 它和 `model-selection.ts` 的关系是本设计最精巧的一处：`ModelSelectionRef` 把"当前选择"与"本次 step 进入组装时捕获的快照"拆成两个字段，**提示词组装快照、请求路由读快照**，所以 step 跑到一半的并发切换只会作用于更晚的 step，不会把 provider/model 两个面撕裂；notice 则拿快照与 header 对比，因此"仅 effort 变化"和"未真正发出请求的步骤"都不产生噪音。
@@ -154,19 +158,19 @@ agent/request-error 请求失败后决定重试或终结          agent.ts:448-4
 | `reconcile prompts after retry compaction` | 重试期间发生的压缩可能遮蔽刚追加的更新，或让更新落在已接纳用户消息之后 | 协调在 `pre-step` waterfall **之后**做，看到压缩结果；重试复用已接纳的组装，不重复接纳用户批次 |
 | `detect first resumed pre-step replacement` | 恢复被误当成"序列开始"而重新基线化 | 恢复属于序列延续——`resume` header 不是序列开始 |
 
-准入在 `step()` 里的位置是硬约束：先把 assembly 渲染成文本，再解析本次真正要用的 route，然后才计算提交并把 `system/message` 写在**本 step 的 `user/message` 之前**（[packages/core/agent-loop/src/agent.ts:358-377]()）。顺序反过来就会让模型先读到用户输入、再读到指令，与"system 在最前"的语义相悖。至于"是否算新序列"，判断依据是三选一：pre-step listener 显式声明、surface 替换代数自上次请求以来移动（压缩或任何替换）、可见工具 schema 与已记录 header 不同（[packages/core/agent-loop/src/agent.ts:363-369]()）。
+准入在 `step()` 里的位置是硬约束：先把 assembly 渲染成文本，再解析本次真正要用的 route，然后才计算提交并把 `system/message` 写在**本 step 的 `user/message` 之前**（[packages/core/agent-loop/src/agent.ts:387-404]()）。顺序反过来就会让模型先读到用户输入、再读到指令，与"system 在最前"的语义相悖。至于"是否算新序列"，判断依据是三选一：pre-step listener 显式声明、surface 替换代数自上次请求以来移动（压缩或任何替换）、可见工具 schema 与已记录 header 不同（[packages/core/agent-loop/src/agent.ts:392-397]()）。
 <!-- anchor: const { assembly } = decision … this.session.append('user/message', message, { surfaceOp: 'append' }) -->
-<!-- anchor: const startsRequestSeries = firstAttempt && decision.startsRequestSeries === true … || this.toolsChanged(assembly.tools), -->
+<!-- anchor: const startsRequestSeries = firstAttempt && decision.startsRequestSeries === true … || (preparedCall?.toolUpdate === undefined && this.toolsChanged(assembly.tools)) -->
 
 ### 消息冻结复用与准入
 
-长工具会话里 `buildRequest` 的 `deepFreeze` 曾是请求构建的主要 CPU 开销（`perf(agent-loop): reuse proven message freezes per agent`）。循环为每个实例持有一个 `WeakSet<Message>`，只记录**该实例上完整 `deepFreeze` 成功过的对象身份**，之后逐条跳过（[packages/core/agent-loop/src/agent.ts:93-94]()、[packages/core/agent-loop/src/agent.ts:601-609]()）。它不能退化成 `Object.isFrozen` 判断：浅冻结的根对象不证明其后代已冻结，而恢复路径明确允许接管独立所有权的未冻结对象图；用弱引用则是为了不延长被压缩历史的生命周期。同 `id` 不能证明同对象——替换操作可以保留 id 而换掉身份与内容，所以证明表以对象身份为键。
+长工具会话里 `buildRequest` 的 `deepFreeze` 曾是请求构建的主要 CPU 开销（`perf(agent-loop): reuse proven message freezes per agent`）。循环为每个实例持有一个 `WeakSet<Message>`，只记录**该实例上完整 `deepFreeze` 成功过的对象身份**，之后逐条跳过（[packages/core/agent-loop/src/agent.ts:119-120]()、[packages/core/agent-loop/src/agent.ts:652-658]()）。它不能退化成 `Object.isFrozen` 判断：浅冻结的根对象不证明其后代已冻结，而恢复路径明确允许接管独立所有权的未冻结对象图；用弱引用则是为了不延长被压缩历史的生命周期。同 `id` 不能证明同对象——替换操作可以保留 id 而换掉身份与内容，所以证明表以对象身份为键。
 <!-- anchor: /** Identities fully frozen by this loop; weak references do not retain replaced history. */ … private readonly frozenMessages = new WeakSet<Message>() -->
 <!-- anchor: // canonicalHeader is shallow; append logs a detached snapshot, not these local values. … this.frozenMessages.add(message) -->
 
 ### Runtime 与循环分离
 
-`Agent` 接口只谈"交互契约"（send/cancel/whenIdle/status/runMaintenance，`packages/core/agent/src/runtime-types.ts:164-242`），不谈"如何驱动"。`ReactLoopAgent` 负责驱动策略，`AgentRegistry` 提供执行引擎侧的服务（`packages/core/agent/src/index.ts:245-256`）：live 存储、initiator 作用域、factory 委托。运行时的父子关系不在 agent 身份上，而是**显式选项**：`CreateAgentOptions` 与 `ResumeAgentOptions` 各自带一个可选 `parentAgent`，省略即运行时根级（[packages/core/agent/src/index.ts:62-66]()、[packages/core/agent/src/index.ts:125-133]()）——这是 `refactor(agent): make runtime identity explicit` + `refactor(agent): move runtime parent into options` 收敛出的规则：`Agent.id` 只表持久身份，所有权走参数，不再依赖任何 context 上的反向指针。
+`Agent` 接口只谈"交互契约"（send/cancel/whenIdle/status/runMaintenance，`packages/core/agent/src/runtime-types.ts:164-242`），不谈"如何驱动"。`ReactLoopAgent` 负责驱动策略，`AgentRegistry` 提供执行引擎侧的服务（`packages/core/agent/src/index.ts:245-256`）：live 存储、initiator 作用域、factory 委托。运行时的父子关系不在 agent 身份上，而是**显式选项**：`CreateAgentOptions` 与 `ResumeAgentOptions` 各自带一个可选 `parentAgent`，省略即运行时根级（[packages/core/agent/src/index.ts:63-67]()、[packages/core/agent/src/index.ts:125-133]()）——这是 `refactor(agent): make runtime identity explicit` + `refactor(agent): move runtime parent into options` 收敛出的规则：`Agent.id` 只表持久身份，所有权走参数，不再依赖任何 context 上的反向指针。
 <!-- anchor: export interface CreateAgentOptions { … readonly parentAgent?: Agent -->
 <!-- anchor: export interface ResumeAgentOptions { … readonly signal?: AbortSignal -->
 
@@ -193,24 +197,24 @@ agent/request-error 请求失败后决定重试或终结          agent.ts:448-4
 
 ### Phase：turn/step 运行时状态机
 
-[packages/core/agent-loop/src/agent.ts:41-49]()。一句话定位：`ReactLoopAgent` 的私有状态机，区分 `idle` / `maintenance`（非 model 的维护任务）/ `running`（携带 `turn`+`step`+共享 `AbortController`）。
+[packages/core/agent-loop/src/agent.ts:42-50]()。一句话定位：`ReactLoopAgent` 的私有状态机，区分 `idle` / `maintenance`（非 model 的维护任务）/ `running`（携带 `turn`+`step`+共享 `AbortController`）。
 <!-- anchor: type Phase = … | { kind: 'running'; abort: AbortController; turn: number; step: number; wakeRequested: boolean } -->
 
-`setPhase` 在状态切换时发散 `agent/status`（[packages/core/agent-loop/src/agent.ts:119-126]()），对外只有 `idle`/`running` 两态（`packages/core/agent/src/runtime-types.ts:109`）。
+`setPhase` 在状态切换时发散 `agent/status`（[packages/core/agent-loop/src/agent.ts:145-150]()），对外只有 `idle`/`running` 两态（`packages/core/agent/src/runtime-types.ts:109`）。
 <!-- anchor: private setPhase(next: Phase): void { … this.dispatch.emit('agent/status', { status }) -->
 
 ### Inbox：driver 自有的 durable 投影
 
-[packages/core/agent-loop/src/inbox.ts:74-116]()。一句话定位：本周期起 inbox 的**实现随 loop 走**——`ReactLoopInbox` 在自己构造函数里向 `ctx.sessionProjections` 注册标准 `inbox` 投影，再用 `stateOf(session, 'inbox')` 读回状态，`claim` 供 step 边界消费，`splice` 记录每次规范化变更。
+[packages/core/agent-loop/src/inbox.ts:74-113]()。一句话定位：本周期起 inbox 的**实现随 loop 走**——`ReactLoopInbox` 在自己构造函数里向 `ctx.sessionProjections` 注册标准 `inbox` 投影，再用 `stateOf(session, 'inbox')` 读回状态，`claim` 供 step 边界消费，`splice` 记录每次规范化变更。
 <!-- anchor: export class ReactLoopInbox implements InboxContract { … return claimed -->
 
 投影定义本身是显式 schema + fold（[packages/core/agent-loop/src/inbox.ts:21-65]()）：`stateVersion: 1`、`init` 给出两条空列表、`apply` 只处理 `agent/inbox/spliced` 且对非法 splice 大声失败；`wire` 把 fold 状态直接当 JSON-safe 视图暴露给 Typert 远端。
 <!-- anchor: export const inboxProjectionSchema = z.object({ … stateVersion: 1, -->
 
-runtime 侧于是只剩契约与 wire 类型：`InboxState`（两条 `readonly UserMessage[]`）与 `InboxWireState`（两条 `readonly JsonValue[]`，因为 `UserMessage.source` 联合体带 `unknown` 回放字段，无法跨 Typert Remote 边界），并声明 `SessionProjectionStateMap.inbox` / `SessionProjectionMap.inbox` 两个映射（[packages/core/agent/src/types.ts:32-58]()）。
+runtime 侧于是只剩契约与 wire 类型：`InboxState`（两条 `readonly UserMessage[]`）与 `InboxWireState`（两条 `readonly JsonValue[]`，因为 `UserMessage.source` 联合体带 `unknown` 回放字段，无法跨 Typert Remote 边界），并声明 `SessionProjectionStateMap.inbox` / `SessionProjectionMap.inbox` 两个映射（[packages/core/agent/src/types.ts:41-65]()）。
 <!-- anchor: /** Complete pending Inbox value reconstructed from durable splices. */ … inbox: InboxWireState -->
 
-持久事件是唯一的变更入口：`agent/inbox/spliced` 携带 `target/start/removedCount/inserted` 与可选的 `outcome: 'canceled'`（[packages/core/agent/src/types.ts:87-93]()），注册表在 `Session.append()` 返回前就已折叠它，随后的 `agent/inbox/inserted` / `claimed` / `discarded` 通知才逐条发出。
+持久事件是唯一的变更入口：`agent/inbox/spliced` 携带 `target/start/removedCount/inserted` 与可选的 `outcome: 'canceled'`（[packages/core/agent/src/types.ts:96-101]()），注册表在 `Session.append()` 返回前就已折叠它，随后的 `agent/inbox/inserted` / `claimed` / `discarded` 通知才逐条发出。
 <!-- anchor: 'agent/inbox/spliced': { … outcome?: 'canceled' -->
 
 `claim(target, turn)` 的语义不变：取全部 next-step + 一个 next-turn，且不产生 discarded 通知。
@@ -220,21 +224,21 @@ runtime 侧于是只剩契约与 wire 类型：`InboxState`（两条 `readonly U
 [packages/core/agent/src/runtime-types.ts:127-161]()。一句话定位：`agent/assistant-stream` 的 payload 联合体，三种帧共享 branded `LlmAttemptId` 与 Agent-lifecycle 内单调的 `revision`。`start` 带 turn/step；`chunk` 带从 0 密集递增的 `index`、可复用于持久紧凑 stream 的 `time` 与原始 `chunk`；`end` 的 `index` 等于下一个 chunk 位置，`outcome` 二选一——命名已提交的 `assistant/message`/`assistant/attempt` 及其 `seq`，或 `abandoned`。
 <!-- anchor: /** One process-local live assistant streaming publication. */ … | { readonly kind: 'abandoned' } -->
 
-事件声明本身明确了分工（[packages/core/agent/src/runtime-types.ts:364-373]()）：chunk 帧是瞬态的，循环会在 committed end 帧之前把"同一份 stream"作为 v2 内嵌记录提交一次。
+事件声明本身明确了分工（[packages/core/agent/src/runtime-types.ts:355-363]()）：chunk 帧是瞬态的，循环会在 committed end 帧之前把"同一份 stream"作为 v2 内嵌记录提交一次。
 <!-- anchor: * Process-local assistant-stream publication. Chunk frames are transient; … 'agent/assistant-stream'(this: Scoped<Agent>, payload: { agent: Agent; frame: AssistantStreamFrame }): void -->
 
 ### SystemPromptProjection / RuntimeContextProjection：两条 surface 记账
 
 两者同在 `agent-loop` 的 runtime-context 模块，职责对称：都不拥有提交，只**决定要不要提交什么**，把结果交给循环按顺序 append。
 
-`SystemPromptProjection`（[packages/core/agent-loop/src/runtime-context.ts:59-96]()）接收"完全渲染后的提示词文本 + `{ inHistory, startsSeries }`"，返回有序的逐节点提交；没有存活系统节点时即使文本为空也要预留第 0 号节点。
-<!-- anchor: export class SystemPromptProjection { … return [{ message: createSystemMessage(rendered, SOURCE), intent: { surfaceOp: 'append' } }] -->
+`SystemPromptProjection`（[packages/core/agent-loop/src/runtime-context.ts:65-102]()）接收"完全渲染后的提示词文本 + `{ inHistory, startsSeries }`"，返回有序的逐节点提交；没有存活系统节点时即使文本为空也要预留第 0 号节点。
+<!-- anchor: export class SystemPromptProjection { … return [{ message: createSystemMessage(rendered), intent: { surfaceOp: 'append' } }] -->
 
-决策输入被显式建模成一个结构体而不是若干布尔参数（[packages/core/agent-loop/src/runtime-context.ts:34-44]()），并把"是否清空全部生效节点"与"是否重新基线化"的判据写进文档注释，使 0.1.5 那一串记账 fix 有单一落点。
+决策输入被显式建模成一个结构体而不是若干布尔参数（[packages/core/agent-loop/src/runtime-context.ts:39-48]()），并把"是否清空全部生效节点"与"是否重新基线化"的判据写进文档注释，使 0.1.5 那一串记账 fix 有单一落点。
 <!-- anchor: /** The request-series facts one prompt decision is made under. */ … startsSeries: boolean -->
 
-`RuntimeContextProjection`（[packages/core/agent-loop/src/runtime-context.ts:106-156]()）负责另一类会变化的事实——运行时上下文快照：构造时从日志倒序恢复"最近一个仍存活"的 owned `user/message`，之后跟随 `session/event` 更新；`project()` 只在快照文本真的变化时返回新候选，清空时写入一条显式的 `CLEARED` 标记而不是删除节点。
-<!-- anchor: export class RuntimeContextProjection { … : { kind: 'plugin', plugin: SOURCE, form: 'snapshot', sections }, -->
+`RuntimeContextProjection`（[packages/core/agent-loop/src/runtime-context.ts:114-161]()）负责另一类会变化的事实——运行时上下文快照：构造时从日志倒序恢复"最近一个仍存活"的 owned `user/message`，之后跟随 `session/event` 更新；`project()` 只在快照文本真的变化时返回新候选，清空时写入一条显式的 `CLEARED` 标记而不是删除节点。
+<!-- anchor: export class RuntimeContextProjection { … : { kind: SOURCE, form: 'snapshot', sections }, -->
 
 ### ConsumedWork：为日志回答"我消耗了什么"
 
@@ -248,10 +252,10 @@ runtime 侧于是只剩契约与 wire 类型：`InboxState`（两条 `readonly U
 
 ### ModelSelectionRef
 
-[packages/core/agent/src/model-selection.ts:26-31]()。一句话定位：把"可变的当前模型选择"与"当前 step 进入 prompt 组装时捕获的快照"耦合，避免并发切换撕裂 provider/model 两个面。
+[packages/core/agent/src/model-selection.ts:32-36]()。一句话定位：把"可变的当前模型选择"与"当前 step 进入 prompt 组装时捕获的快照"耦合，避免并发切换撕裂 provider/model 两个面。
 <!-- anchor: export interface ModelSelectionRef { … assembled: ModelSelection | undefined -->
 
-通过三个 listener 注入：`system-prompt/assemble` 快照当前选择、`agent/request` 用快照覆盖 provider/model/effort、`agent/pre-step`（`prepend: true`）按需要追加模型切换通知（[packages/core/agent/src/model-selection.ts:76-121]()）。第三个是本周期新增的，见上文§模型切换通知。
+通过三个 listener 注入：`system-prompt/assemble` 快照当前选择、`agent/request` 用快照覆盖 provider/model/effort、`agent/pre-step`（`prepend: true`）按需要追加模型切换通知（[packages/core/agent/src/model-selection.ts:81-125]()）。第三个是本周期新增的，见上文§模型切换通知。
 <!-- anchor: export function installModelSelection(agentCtx: Context, selection: ModelSelectionRef): () => void { … { prepend: true }, -->
 
 ---
@@ -354,24 +358,24 @@ sequenceDiagram
 
 | 步骤 | 谁做 | `next()`/委派关系 | 引用 |
 |---|---|---|---|
-| `agent/inbox/spliced` 写盘 + 折叠 | 循环经 `ReactLoopInbox` 写日志，注册表同步折叠 | — | `agent-loop/src/inbox.ts:230-245` |
-| `turn/start` | 循环 | — | `agent.ts:278` |
-| `preStep` 内 `claim` | 循环驱动，投影读回两条 pending 列表 | — | `agent.ts:244`, `inbox.ts:111-116` |
-| `preStep` 内 `agent/pre-step` waterfall | 循环驱动，innermost `next` 由循环传入；模型切换 listener 以 `prepend` 追加 notice | 外层 listener 调 `next()` 委派到内层 | `agent.ts:249-255`, `model-selection.ts:108-121` |
-| `step/start` | 循环 | — | `agent.ts:302` |
-| 提示词准入 `systemPrompt.project` | 循环在 `agent/request` 之后、接纳用户批之前 | — | `agent.ts:363-372` |
-| `buildRequest` 内 `deriveMessages` | 循环从 session 日志衍生历史并增量冻结 | — | `agent.ts:603-609` |
-| `agent/request` waterfall | 循环驱动，innermost `next` 返回 `seedConfig` | listener 可改 provider/model | `agent.ts:530-533` |
-| `request/header` 写盘 | 循环，避免重复请求时重写 header；序列开始用 `series`/`startsSeries` | — | `agent.ts:570-582` |
-| `request/context` 写盘 | 循环，记录路由与 `systemPromptUpdate` 能力 | — | `agent.ts:592-598` |
-| `llm/stream` | 循环消费，适配器/中间件触发 | — | `agent.ts:390` |
-| `agent/assistant-stream` 帧 | 循环 `emit`（不可拦截） | — | `agent.ts:380-387, 392-397`, `assistant-stream.ts:48-71` |
-| `assistant/message` / `assistant/attempt` | 循环以 v2 内嵌紧凑 stream 提交，随后发 committed end 帧 | — | `agent.ts:474-483`, `assistant-stream.ts:78-97` |
-| `agent/request-error` waterfall | 循环驱动；失败 attempt 先补终结帧 | `{kind:'retry'}` 则 `continue` 同 step 重试 | `agent.ts:443-463` |
-| `executeToolCalls` → `tools/*` | 循环调 `dsh-tools`，其内部 `pre/execute/post` 由 `dsh-tools` 触发（跨界，见 tools 子文档） | — | `agent.ts:486-492`, `tool-calls.ts` |
-| `step/end` | 循环，`finally` 保证写入 | — | `agent.ts:312` |
-| `agent/turn-stopping` serial | 循环，在无续作时做最终 checkpoint | — | `agent.ts:316` |
-| `turn/end` | 循环，`finally` 保证写入 | — | `agent.ts:339` |
+| `agent/inbox/spliced` 写盘 + 折叠 | 循环经 `ReactLoopInbox` 写日志，注册表同步折叠 | — | [packages/core/agent-loop/src/inbox.ts:227-235]()<!-- anchor: const splice: SessionEventMap['agent/inbox/spliced'] = { … const event = this.session.append('agent/inbox/spliced', splice) --> |
+| `turn/start` | 循环 | — | [packages/core/agent-loop/src/agent.ts:305-305]()<!-- anchor: this.session.append('turn/start', { turn }) --> |
+| `preStep` 内 `claim` | 循环驱动，投影读回两条 pending 列表 | — | [packages/core/agent-loop/src/agent.ts:267-271]()<!-- anchor: private async preStep(target: InboxTarget, position: { turn: number; step: numbe … const claimed = this.inbox.claim(target, position.turn) -->、[packages/core/agent-loop/src/inbox.ts:109-113]()<!-- anchor: claim(target: InboxTarget, turn: number): UserMessage[] { … return claimed --> |
+| `preStep` 内 `agent/pre-step` waterfall | 循环驱动，innermost `next` 由循环传入；模型切换 listener 以 `prepend` 追加 notice | 外层 listener 调 `next()` 委派到内层 | [packages/core/agent-loop/src/agent.ts:277-277]()<!-- anchor: 'agent/pre-step', { messages: claimed, ...position, signal }, -->、[packages/core/agent/src/model-selection.ts:114-125]()<!-- anchor: 'agent/pre-step', … { prepend: true }, --> |
+| `step/start` | 循环 | — | [packages/core/agent-loop/src/agent.ts:329-329]()<!-- anchor: this.session.append('step/start', { turn, step }) --> |
+| 提示词准入 `systemPrompt.project` | 循环在 `agent/request` 之后、接纳用户批之前 | — | [packages/core/agent-loop/src/agent.ts:393-394]()<!-- anchor: const commits = this.systemPrompt.project(renderedPrompt, { … inHistory: preparedCall?.systemPromptUpdate === 'in-history', --> |
+| `buildRequest` 内 `deriveMessages` | 循环从 session 日志衍生历史并增量冻结 | — | [packages/core/agent-loop/src/agent.ts:654-660]()<!-- anchor: const boundaryMessages = session.deriveMessages() … Object.freeze(boundaryMessages) --> |
+| `agent/request` waterfall | 循环驱动，innermost `next` 返回 `seedConfig` | listener 可改 provider/model | [packages/core/agent-loop/src/agent.ts:560-560]()<!-- anchor: 'agent/request', { turn, step, signal }, --> |
+| `request/header` 写盘 | 循环，避免重复请求时重写 header；序列开始用 `series`/`startsSeries` | — | [packages/core/agent-loop/src/agent.ts:603-616]()<!-- anchor: headerSeq = this.session.append('request/header', { … this.session.append('request/header', { header, reason: 'series' }) --> |
+| `request/context` 写盘 | 循环，记录路由与 `systemPromptUpdate` 能力 | — | [packages/core/agent-loop/src/agent.ts:648-648]()<!-- anchor: session.append('request/context', requestContext) --> |
+| `llm/stream` | 循环消费，适配器/中间件触发 | — | [packages/core/agent-loop/src/agent.ts:419-419]()<!-- anchor: const stream = preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request) --> |
+| `agent/assistant-stream` 帧 | 循环 `emit`（不可拦截） | — | [packages/core/agent-loop/src/agent.ts:415-415]()<!-- anchor: (frame) => { this.dispatch.emit('agent/assistant-stream', { frame }) }, -->、[packages/core/agent-loop/src/assistant-stream.ts:49-60]()<!-- anchor: start(): void { … push(chunk: StreamChunk): void { --> |
+| `assistant/message` / `assistant/attempt` | 循环以 v2 内嵌紧凑 stream 提交，随后发 committed end 帧 | — | [packages/core/agent-loop/src/agent.ts:451-452]()<!-- anchor: 'assistant/attempt', … () => this.session.append('assistant/attempt', { turn, step, stream: live.stream -->、[packages/core/agent-loop/src/agent.ts:503-511]()<!-- anchor: live.settle( … }, { surfaceOp: 'append' }).seq, -->、[packages/core/agent-loop/src/assistant-stream.ts:78-78]()<!-- anchor: settle( --> |
+| `agent/request-error` waterfall | 循环驱动；失败 attempt 先补终结帧 | `{kind:'retry'}` 则 `continue` 同 step 重试 | [packages/core/agent-loop/src/agent.ts:478-478]()<!-- anchor: 'agent/request-error', { --> |
+| `executeToolCalls` → `tools/*` | 循环调 `dsh-tools`，其内部 `pre/execute/post` 由 `dsh-tools` 触发（跨界，见 tools 子文档） | — | [packages/core/agent-loop/src/agent.ts:517-517]()<!-- anchor: const { concluded } = await executeToolCalls( --> |
+| `step/end` | 循环，`finally` 保证写入 | — | [packages/core/agent-loop/src/agent.ts:339-339]()<!-- anchor: this.session.append('step/end', { turn, step }) --> |
+| `agent/turn-stopping` serial | 循环，在无续作时做最终 checkpoint | — | [packages/core/agent-loop/src/agent.ts:343-343]()<!-- anchor: await this.dispatch.serial('agent/turn-stopping', { turn, signal }) --> |
+| `turn/end` | 循环，`finally` 保证写入 | — | [packages/core/agent-loop/src/agent.ts:368-368]()<!-- anchor: this.session.append('turn/end', { turn, reason: turnEnds! }) --> |
 
 
 ---
@@ -380,7 +384,7 @@ sequenceDiagram
 
 - **session 喂历史 + durable inbox**：`deriveMessages()` 从 session 日志派生出每个 step 的模型历史（`agent.ts:603`）。日志是唯一事实源，`Model-visible means logged`（`docs/architecture.md:96`）由 `agent-loop/invariant.ts:39-42` 强制执行——它校验每个 loop 构建的请求的 `messages` 与 `deriveMessages()` 逐字一致，否则 fail `log-reconstruction desync`。本周期这条原则又收进了一个新成员：待处理输入本身也变成日志事实（`agent/inbox/spliced` + `inbox` 投影），于是"用户提交了什么"与"模型看到了什么"共享同一个可回放的真源。
 
-- **session-format 与 assistant 流**：v2 把每次 attempt 的紧凑带时间 stream 内嵌进 `assistant/message` / `assistant/attempt` 单条记录，循环负责在 committed end 帧之前提交它（[packages/core/agent-loop/src/assistant-stream.ts:111-114]()、[packages/core/agent-loop/src/agent.ts:474-483]()）。格式迁移的世代与读取器契约见 [session-format-migration.md](session-format-migration.md)。
+- **session-format 与 assistant 流**：v2 把每次 attempt 的紧凑带时间 stream 内嵌进 `assistant/message` / `assistant/attempt` 单条记录，循环负责在 committed end 帧之前提交它（[packages/core/agent-loop/src/assistant-stream.ts:111-114]()、[packages/core/agent-loop/src/agent.ts:503-511]()）。格式迁移的世代与读取器契约见 [session-format-migration.md](session-format-migration.md)。
 <!-- anchor: /** Exact compact stream for the final durable event. */ … return [...this.accumulator.snapshot()] as AssistantStreamRecord[] -->
 <!-- anchor: live.settle( … }, { surfaceOp: 'append' }).seq, -->
 
@@ -388,7 +392,7 @@ sequenceDiagram
 
 - **system-prompt 组装与准入**：`preStep` 在 `agent/pre-step` 前先调 `loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))` 与 `runtimeContext.project(...)`（`agent.ts:245-248`），`agent-loop` 注册 `provider/model/cwd` 三个 prompt variable（`index.ts:421-423`）。`assemble` 与 `renderContextSections/renderPrompt` 的确切契约在 `dsh-system-prompt` 包（见 [system-prompt.md](system-prompt.md)）；循环侧的追问只剩"这条渲染结果要不要提交、提交成 append 还是 replace"，由 `SystemPromptProjection` 回答。
 
-- **llm 流式与实时帧**：`buildRequest` 生产冻结请求 `markAgentLoopRequest(Object.freeze({...}))`（[packages/core/agent-loop/src/agent.ts:610-617]()），再由 `preparedCall?.stream(request) ?? loopCtx.llm.stream(request)` 消费（`agent.ts:390`）。`agent/request` waterfall 在请求前替换配置，`llm/stream` 在请求后在适配器层拦截流式；实时呈现走 `agent/assistant-stream` 帧、持久呈现走 v2 内嵌 stream，两条路互不冒充。`PreparedLlmCall`/`prepareCall` 的确切语义在 `dsh-llm` 包（见 [llm.md](llm.md)）。
+- **llm 流式与实时帧**：`buildRequest` 生产冻结请求 `markAgentLoopRequest(Object.freeze({...}))`（[packages/core/agent-loop/src/agent.ts:661-669]()），再由 `preparedCall?.stream(request) ?? loopCtx.llm.stream(request)` 消费（`agent.ts:390`）。`agent/request` waterfall 在请求前替换配置，`llm/stream` 在请求后在适配器层拦截流式；实时呈现走 `agent/assistant-stream` 帧、持久呈现走 v2 内嵌 stream，两条路互不冒充。`PreparedLlmCall`/`prepareCall` 的确切语义在 `dsh-llm` 包（见 [llm.md](llm.md)）。
 <!-- anchor: const request = markAgentLoopRequest(Object.freeze({ … return request -->
 
 - **模型选择**：`core/agent` 侧的 `installModelSelection` 同时服务三个面——提示词变量快照、请求路由覆盖、以及把路由切换写成 `user/message` 通知（`model-selection.ts:76-121`）。它不依赖 loop 的任何内部类型，只用 `agent/pre-step` 与 `agent.session.requestHeader()`，因此自定义 driver 也能复用同一套切换语义。
@@ -404,7 +408,7 @@ sequenceDiagram
 **Why > What**：双层不是给开发者的额外概念负担，而是为了给"交互结束"一个**可判定的、持久化的边界**。单层 step 只能回答"一次请求+工具跑完没有"，无法回答"用户的这一番输入整体有没有跑完"——后者才是 UI、编排器、持久化真正需要的契点。日志也是按此建模：`turn/start` 与 `turn/end` 夹住一个稳定归巢点，`step/start`/`step/end` 只是中间态。`consumed-work.ts` 的存在本身就证明：即便双层，也还需要额外在日志上折叠（[packages/core/agent/src/consumed-work.ts:68-68]()）才能知道一个 turn "真正"消费了什么——说明双层解决的是"何时算完"，而"算不算有效消费"是另一个正交问题。
 <!-- anchor: export function foldConsumedWork(events: readonly SessionEvent[]): ConsumedWork { -->
 
-**权衡**：双层引入的复杂度是状态机必须显式处理 `turn`/`step` 双计数器的初始化、回卷（[packages/core/agent-loop/src/agent.ts:344-348]() 在换 turn 时重置 `step = 0`）。代价用一个简单模型换来了清晰的可观察停止语义，值得。
+**权衡**：双层引入的复杂度是状态机必须显式处理 `turn`/`step` 双计数器的初始化、回卷（[packages/core/agent-loop/src/agent.ts:373-377]() 在换 turn 时重置 `step = 0`）。代价用一个简单模型换来了清晰的可观察停止语义，值得。
 <!-- anchor: if (!this.inbox.hasPending) return false … phase.step = 0 -->
 
 ### 决策二：为什么用 waterfall 事件做拦截，而非直接调用/子类重写
@@ -466,7 +470,7 @@ sequenceDiagram
 
 ## 全局关联：循环是「无特权内核」的自证
 
-本模块是全篇哲学最锋利的一处证明：**连主循环都可以被当作插件替换**。`agent-loop` 通过 `ctx.agents.setFactory()` 注册自己是唯一驱动（[packages/core/agent-loop/src/index.ts:358-360]()），消费方只依赖 `ctx.agents` 抽象；而所有可定制决策点（`agent/pre-step`、`agent/request`、`agent/request-error`、`agent/turn-stopping`）都以 waterfall 事件开放，让零特权的插件在洋葱式 `next()` 委派下任意拦截。这正实现了第 1 根支柱「无特权内核」：内核自己没有特权，它只是把决策点以数据为媒地暴露出去——这与 [session.md](session.md) 的「日志即事实源」、[tools.md](tools.md) 的「工具也是可换插件」一脉相承。
+本模块是全篇哲学最锋利的一处证明：**连主循环都可以被当作插件替换**。`agent-loop` 通过 `ctx.agents.setFactory()` 注册自己是唯一驱动（[packages/core/agent-loop/src/index.ts:329-331]()），消费方只依赖 `ctx.agents` 抽象；而所有可定制决策点（`agent/pre-step`、`agent/request`、`agent/request-error`、`agent/turn-stopping`）都以 waterfall 事件开放，让零特权的插件在洋葱式 `next()` 委派下任意拦截。这正实现了第 1 根支柱「无特权内核」：内核自己没有特权，它只是把决策点以数据为媒地暴露出去——这与 [session.md](session.md) 的「日志即事实源」、[tools.md](tools.md) 的「工具也是可换插件」一脉相承。
 <!-- anchor: /** Concrete agent factory and driver service. */ … static inject = ['agents', 'sessions', 'llm', 'tools', 'systemPrompt', 'sessionProjections'] -->
 
 本周期（0.1.2-rc.1 → 0.1.5-rc.2）的三处改动，恰好是这条哲学在三个不同层面上的自我加固，而不是三次功能叠加：

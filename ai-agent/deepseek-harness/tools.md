@@ -12,7 +12,7 @@ tags:
 
 # 工具调用管道：scoped 注册 + 受控执行
 
-> 子文档之一，聚焦模型如何按 schema 调用受控工具。覆盖 `packages/core/tools`（管道主体与呈现契约类型）与作为模型面向工具实例的 `packages/fs/tool-present`。整体哲学见 [README](README.md)；本文上承 [agent-loop-runtime.md](agent-loop-runtime.md)（循环驱动工具调用）、下启 [sandbox-capability-seams.md](sandbox-capability-seams.md)（工具运行的环境与隔离）；交付链路的端到端细节见 [workspace-files.md](workspace-files.md)，客户端卡片渲染见 [web-client.md](web-client.md)。
+> 子文档之一，聚焦模型如何按 schema 调用受控工具。覆盖 `packages/core/tools`（管道主体与呈现契约类型）与作为模型面向工具实例的 `packages/deliverables/tool-present`。整体哲学见 [README](README.md)；本文上承 [agent-loop-runtime.md](agent-loop-runtime.md)（循环驱动工具调用）、下启 [sandbox-capability-seams.md](sandbox-capability-seams.md)（工具运行的环境与隔离）；交付链路的端到端细节见 [workspace-files.md](workspace-files.md)，客户端卡片渲染见 [web-client.md](web-client.md)。
 >
 > **本版增量更新（0.1.2-rc.1 → 0.1.5-rc.2 / 2026-09-11）**：依 `dsh-v0.1.2-rc.1..HEAD` git diff 与 `verify-references.mjs --diff` 预检清单比对更新。本次落在工具面的变化有四：
 > **(1) `str_replace_editor` 退出随附 profile**——base 默认工具集、SDK 应用与两份极简组合各自摘掉这个与 `read`/`write`/`edit` 重叠的编辑接口；注意上游「代码面删除」当日即被 revert，**工具包本身仍在发行物与 `docs/tool-catalog.md` 中**，只是不再被任何随附组合装配。
@@ -31,23 +31,23 @@ tags:
 - 分层（Scope）工具注册表：每个 agent 有独立的可见工具集，scoped 注册可遮蔽全局、可 restrict 全局工具；
 - pre‑execute → guard → execute → post‑execute → finalizeContent → result 的多段管道，以及围绕它的 `tools/*` 事件族。
 
-权威文档 `docs/tool-execution-pipeline.md` 的 Mermaid 图完整描绘了这条流水线（`[docs/tool-execution-pipeline.md:8-58]()`）。
+权威文档 `docs/tool-execution-pipeline.md` 的 Mermaid 图完整描绘了这条流水线（`[docs/tool-execution-pipeline.md:9-60]()`）。
 <!-- anchor-base64:Zmxvd2NoYXJ0IFREIOKApiBhbGxSZXN1bHRzIC0tPiBjb250ZXh0 -->
 
-关键：管道是被插件运行时（vendored Cordis）架起的一个 `Service`，工具注册是「可逆副作用」（dispose 即注销）——这正呼应"工具也是可替换插件"的整体哲学（`[packages/core/tools/src/index.ts:780-781]()`）。
+关键：管道是被插件运行时（vendored Cordis）架起的一个 `Service`，工具注册是「可逆副作用」（dispose 即注销）——这正呼应"工具也是可替换插件"的整体哲学（`[packages/core/tools/src/index.ts:807-808]()`）。
 <!-- anchor: export class ToolRuntime extends Service { … static inject = ['systemPrompt'] -->
 
 ## 解决什么问题 / 根因
 
 在"无特权内核、一切皆插件"的架构里，最大的张力是：**可扩展性要求任何插件都能挂到工具调用上，安全性又要求这些钩子必须可把关、可排序、不可被后到者撤销。** 根因有三：
 
-1. **模型输入不可信**：`arguments` 由模型生成，必须先做 lossless-JSON 物化、深冻结，否则执行体面对的是污染/带 getter 的攻击面（`[packages/core/tools/src/index.ts:1402-1406]()`，`snapshotJsonValue` 物化失败直接落 `TypeError`，成功则 `deepFreeze` 后才交给执行体）。
+1. **模型输入不可信**：`arguments` 由模型生成，必须先做 lossless-JSON 物化、深冻结，否则执行体面对的是污染/带 getter 的攻击面（`[packages/core/tools/src/index.ts:1441-1445]()`，`snapshotJsonValue` 物化失败直接落 `TypeError`，成功则 `deepFreeze` 后才交给执行体）。
    <!-- anchor: const detached = snapshotJsonValue(exec.arguments) … const execution: MutableToolRunContext = { ...base, arguments: deepFreeze(detached) } -->
 2. **副作用必须可审计可拦截**：会话日志是唯一事实源（Model-visible means logged），因此工具的每次调用都要留下 `tool/call` 与 `tool/result` 事件对，且 result 必须引用其 call 的 seq（`SurfaceOp.append` 的 `sourceEventSeqs`）（`[packages/core/agent-loop/src/tool-calls.ts:262-289]()`）。
    <!-- anchor: /** Append a started call and return the event seq that its result must cite. */ … }, { surfaceOp: 'append', sourceEventSeqs: [callSeq] }) -->
 3. **策略必须是"只减不增"**：多个策略插件对同一个调用可以有各自立场，但后注册的策略绝不能把前一个已经 deny 的调用"放行"——这就是 guard 设计成单调（monotonic）的原因。
 
-文档把这一分工作为明示契约：`[docs/subsystems/tools.md:313-313]()`（"a returned reason can only reduce permission"）、`[docs/subsystems/tools.md:402-402]()`（"arguments cannot be rewritten because history, audit, UI, and execution must agree"）。
+文档把这一分工作为明示契约：`[docs/subsystems/tools.md:325-325]()`（"a returned reason can only reduce permission"）、`[docs/subsystems/tools.md:428-428]()`（"arguments cannot be rewritten because history, audit, UI, and execution must agree"）。
 <!-- anchor: A `ToolGuard` is scope-aware final pre-dispatch policy. Its return type delibera -->
 <!-- anchor: Call `next()` for the default or return a decision to short-circuit. Pre-policy -->
 
@@ -75,28 +75,28 @@ tags:
 
 ### `ToolDefinition` — 一个已注册工具
 `schema`（模型可见 name/description/parameters）+ 强制 `output`（规范输出契约：`schema` + 纯 `render` + 可选 `presentationMeta`）+ `execute` 执行体 + 可选 `finalizeContent`/`timeoutMs`/`isConcurrencySafe`/`presentCall`/`presentResult`。
-- 定义：`[packages/core/tools/src/index.ts:214-280]()`（自 `export interface ToolDefinition extends ToolSchema` 到 `presentResult` 声明收尾）
+- 定义：`[packages/core/tools/src/index.ts:223-298]()`（自 `export interface ToolDefinition extends ToolSchema` 到 `presentResult` 声明收尾）
 - 关键点：`output` 强制（`index.ts:216`）、`execute` 承诺转发 `exec.signal` 并 settle 到 quiescence（`index.ts:217-227`）、`isConcurrencySafe` 只以精确 `true` 加入并行组（`index.ts:248-261`）。
 <!-- anchor: export interface ToolDefinition extends ToolSchema { … presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined -->
 
 ### `ToolExecution` / `ToolExecutionInput` / `ToolRunContext`
 调用标识（callId/name/arguments/agent）+ 关联（rootCallId/parent token）+ 协作取消（signal）。`ToolRunContext` 额外给 `deferContext` 与 `concludeTurn`。
-- `[packages/core/tools/src/index.ts:307-414]()`：输入 307 起、执行对象 372 起（补 `rootCallId` 与 `token`）、运行上下文 397 起（补 `deferContext`/`concludeTurn`）。
+- `[packages/core/tools/src/index.ts:326-434]()`：输入 326 起、执行对象 393 起（补 `rootCallId` 与 `token`）、运行上下文 418 起（补 `deferContext`/`concludeTurn`）。
   <!-- anchor: export interface ToolExecutionInput { …   concludeTurn(): void -->
 - 运行上下文由执行对象派生，是执行体收到的视图；其中 `deferContext` 把上下文挂到本执行结果上（复合工具的嵌套转发通道）。around-dispatch 包装器看到的是另一个视图 `ToolDispatchExecution`——只许替换 `signal`、不许删除（`index.ts:384-387`）。
 
 ### `ToolExecutionResult`（判别联合）
 `ToolExecutionSuccess`（`isError: false`，带 `value`）与 `ToolExecutionFailure`（`isError: true`，带 `error`）互斥。`concludesTurn` 只在成功态出现。
-- `[packages/core/tools/src/index.ts:549-573]()`。
+- `[packages/core/tools/src/index.ts:572-596]()`。
 <!-- anchor: export interface ToolExecutionSuccess { … export type ToolExecutionResult = ToolExecutionSuccess | ToolExecutionFailure -->
 
 ### `ToolLayer` / `ToolView` — 分层注册与派生视图
 - `ToolLayer implements ScopeLayer`：持有 `tools`/`restrictions`/`guards`/`mode`，`admits` 做 restrict-names 判断、`guardReason` 取首个单调拒绝（`index.ts:707-745`）。
-- `ToolView`：一次 layer 遍历派生的 `visible` map + `knownNames`（提示顺序校验用）+ `restrictableNames`（restrict 可用名），`index.ts:687-694`。
-- `view()` 是可见性核心：继承面 = 全局层 + 祖先链，restriction 取交集；own 层注册禁 filter；末尾插入保留传输（非 native 才插 `run_code`）（`[packages/core/tools/src/index.ts:707-745]()`、`[packages/core/tools/src/index.ts:1142-1183]()`）。
+- `ToolView`：一次 layer 遍历派生的 `visible` map + `knownNames`（提示顺序校验用）+ `restrictableNames`（restrict 可用名），`index.ts:714-721`。
+- `view()` 是可见性核心：继承面 = 全局层 + 祖先链，restriction 取交集；own 层注册禁 filter；末尾插入保留传输（非 native 才插 `run_code`）（`[packages/core/tools/src/index.ts:734-772]()`、`[packages/core/tools/src/index.ts:1178-1218]()`）。
   <!-- anchor: class ToolLayer implements ScopeLayer { … return undefined -->
   <!-- anchor: private view(scope?: ScopeKey): ToolView { … return { visible, knownNames, restrictableNames } -->
-  - 其中 own 层的"禁 filter"在源码里有一行**目的性注释**：这一层是唯一「scope 拥有而非继承」的贡献，故故意对链不敏感（`index.ts:1145-1147`）。
+  - 其中 own 层的"禁 filter"在源码里有一行**目的性注释**：这一层是唯一「scope 拥有而非继承」的贡献，故故意对链不敏感（`index.ts:1181-1183`）。
 - `ToolGuard` 类型只有"给理由"一条出口（`index.ts:704`），这正是单调性在类型层面的表达。
 
 ### `JsonSchemaNode` — 受约束 raw JSON Schema 子集
@@ -154,15 +154,15 @@ flowchart TD
 
 这条契约有两个容易踩空的地方，恰是 `read_image` 图片卡片实现时暴露出来的：
 
-- **宿主呈现层与客户端卡片是两条路，且客户端那条不看宿主的值。** 结构化卡片直接从第一方**原始 session event 字段**派生；Host 的 `presentCall` / `presentResult` 返回值不会进入 Client（`[packages/client/ui-tool/README.zh.md:46-46]()`）。
-  <!-- anchor: 本包拥有 generic fallback，以及 shell/pwsh、read、read_image、write/edit、running `str_repl -->
+- **宿主呈现层与客户端卡片是两条路，且客户端那条不看宿主的值。** 结构化卡片直接从第一方**原始 session event 字段**派生；Host 的 `presentCall` / `presentResult` 返回值不会进入 Client（`[packages/client/ui-tool/README.zh.md:52-52]()`）。
+  <!-- anchor: 本包拥有 generic fallback，以及 shell/pwsh、read、read_image、write/edit、运行中的 `str_replace -->
 - **因此"给结果加一种新外观"不该扩封闭联合。** `ToolResultView` 是封闭联合且没有 `image` 成员，第一版给 `read_image` 加 `card: 'image'` 分支 + `presentResult` 的实现被弃用——那个分支没有任何消费方。
-- **图片卡片的材料一分为二**：路径来自工具自己声明的 `output.presentationMeta`，且**只有 path 一项**（`[packages/fs/tool-fs/src/read-image.ts:236-236]()`）；附件引用则一律从已结算结果的 image block 里取，因为 `tools/post-execute` 合法改写结果时被替换的正是那个 block，在 `meta` 里再存一份就会在内容变化后变成过期副本。
+- **图片卡片的材料一分为二**：路径来自工具自己声明的 `output.presentationMeta`，且**只有 path 一项**（`[packages/fs/tool-fs/src/read-image.ts:234-234]()`）；附件引用则一律从已结算结果的 image block 里取，因为 `tools/post-execute` 合法改写结果时被替换的正是那个 block，在 `meta` 里再存一份就会在内容变化后变成过期副本。
   <!-- anchor: presentationMeta: (_args, value) => ({ path: value.path }), -->
 - 客户端 `imageCardModel` 对每条原始字段做防御式窄化，任何形状不符就退化成 generic 卡片而不是抛错或渲染半个图库（`[packages/client/ui-tool/src/client/tool/models/image-card-model.ts:224-233]()`）；顶层调用用持久化的 `meta.path`，`run_code` 内部派发的嵌套调用没有 `meta`，回退到调用自身的 `file_path` 参数。
   <!-- anchor: const metaPath = imageMeta(block.meta)?.path … if (refs === null) return null -->
-- 这次改造同时把卡片装配收敛成"按 key 注册的 toolview + 工具自有的 `tool.call.images` 子槽"，并**删除了 `ToolDetails`**——不再存在"选中调用的第二个全高展示面"（`[packages/client/ui-tool/README.zh.md:65-65]()`）。
-<!-- anchor: 每张卡片都在调用树里就地阅读；不存在选中调用的第二个全高展示面。行 renderer 为 terminal、read、diff、search 和 web 卡片各 -->
+- 这次改造同时把卡片装配收敛成"按 key 注册的 toolview + 工具自有的 `tool.call.images` 子槽"，并**删除了 `ToolDetails`**——不再存在"选中调用的第二个全高展示面"（`[packages/client/ui-tool/README.zh.md:76-76]()`）。
+<!-- anchor: 每张卡片都直接在调用树中查看；选中调用后不会再显示第二个全高视图。行 renderer 为 terminal、read、diff、search 和 web 卡片 -->
 
 > Why 值得单独讲：这套安排的代价是**客户端必须复刻宿主的窄化逻辑**（`imageCardModel` 里手写了一份 `ImageMediaType` 镜像，并在注释里承认新增成员忘记同步会静默退化成 generic 卡），换来的是客户端不依赖宿主呈现值、旧会话日志仍可按同一条降级路径重放。图片卡片的完整客户端细节（槽位声明、loader 下传、空槽位降级）见 [web-client.md](web-client.md)。
 
@@ -180,10 +180,10 @@ flowchart TD
 
 ### 工具名单的权威来源：生成式 `tool-catalog`
 
-上表与本文件其余章节提到的每一个工具名，都可以 1:1 对到 `docs/tool-catalog.md`——它不是手写清单，而是由 `scripts/gen-tool-catalog.ts` 从 **boot manifest** 收集生成的，并由 `package.json` 的两个脚本负责产出与校验（`[package.json:152-153]()`）。
+上表与本文件其余章节提到的每一个工具名，都可以 1:1 对到 `docs/tool-catalog.md`——它不是手写清单，而是由 `scripts/gen-tool-catalog.ts` 从 **boot manifest** 收集生成的，并由 `package.json` 的两个脚本负责产出与校验（`[package.json:159-162]()`）。
 <!-- anchor-base64:Imdlbi10b29sLWNhdGFsb2ciOiAidHN4IHNjcmlwdHMvZ2VuLXRvb2wtY2F0YWxvZy50cyIsIOKApiAidmVyaWZ5LXRvb2wtY2F0YWxvZyI6ICJ0c3ggc2NyaXB0cy9nZW4tdG9vbC1jYXRhbG9nLnRzIC0tY2hlY2siLA== -->
 
-这份名单还被一条**单元测试**钉住：`packages/core/tools/tests/gen-tool-catalog.spec.ts` 用一张扁平的名字数组断言整个收割结果，测试名里的 "team catalog" 就是这个 roster（`[packages/core/tools/tests/gen-tool-catalog.spec.ts:28-40]()`）。
+这份名单还被一条**单元测试**钉住：`packages/core/tools/tests/gen-tool-catalog.spec.ts` 用一张扁平的名字数组断言整个收割结果，测试名里的 "team catalog" 就是这个 roster（`[packages/core/tools/tests/gen-tool-catalog.spec.ts:28-42]()`）。
 <!-- anchor: expect(names).toEqual([ … 'update_goal', 'wait_agent', 'web_fetch', 'web_search', 'workflow', 'write', -->
 
 本轮增量恰好动过这张名单：`test(tools): update team catalog expectation` 把 `followup_task` 从中删掉（HEAD 上目录里已无此名）。同一次快照里 `present` 与 `str_replace_editor` **都仍在名单内**——这与 [决策 5](#决策-5str_replace_editor-退出随附-profile删的是重叠接口不是工具包) 的结论互为佐证：退出的是默认组合，不是工具本身。**给后来者的实证配方**：任何"某工具被删除/新增"的说法，先跑一次 `pnpm run verify-tool-catalog`（或直接看这张数组）再下笔——本窗口已有两条"合入后又被 revert"的改动（`str_replace_editor` 与 same-session message editing），仅凭 commit message 会写出错结论。
@@ -211,25 +211,25 @@ flowchart TD
 
 ### 决策 4：`present` 为什么不值得一条自己的管道
 
-0.1.5 新增的 `present`（交付声明）看起来像一个"特殊通道"，但它在管道里的位置完全普通：`packages/fs/tool-present` 只 `inject` 三个服务（`tools` / `fs` / `sessionProjections`）（`[packages/fs/tool-present/src/index.ts:26-26]()`），然后用 `ctx.tools.register(defineTool(...))` 注册——和 `read`/`bash` 走的是同一个入口（`[packages/fs/tool-present/src/index.ts:38-40]()`）。
+0.1.5 新增的 `present`（交付声明）看起来像一个"特殊通道"，但它在管道里的位置完全普通：`packages/deliverables/tool-present` 只 `inject` 三个服务（`tools` / `fs` / `sessionProjections`）（`[packages/deliverables/tool-present/src/index.ts:26-26]()`），然后用 `ctx.tools.register(defineTool(...))` 注册——和 `read`/`bash` 走的是同一个入口（`[packages/deliverables/tool-present/src/index.ts:38-40]()`）。
 <!-- anchor: export const inject = ['tools', 'fs', 'sessionProjections'] -->
-<!-- anchor: ctx.tools.register(defineTool({ … description: 'Declare existing files accessible through the Session filesystem a -->
+<!-- anchor: ctx.tools.register(defineTool({ … description: 'Declare existing files as final deliverables for the user. ' -->
 
-由此得到的**免费属性**是三件：guard 能拦它、approval 能让它停下来问人、spill 能掐它的结果体积——都不需要 `present` 作者写一行适配。它的执行体也自觉遵守普通契约：要求存在 agent 与**开着的 turn**、`maxFiles` 有硬上限（默认 8）、逐个文件用组合的 `ctx.fs` 做 `lstat`/`resolve`/`stat` 三重确认（`[packages/fs/tool-present/src/index.ts:76-92]()`），且 `exec.signal` 在收下声明前被检查一次。
+由此得到的**免费属性**是三件：guard 能拦它、approval 能让它停下来问人、spill 能掐它的结果体积——都不需要 `present` 作者写一行适配。它的执行体也自觉遵守普通契约：要求存在 agent 与**开着的 turn**、`maxFiles` 有硬上限（默认 8）、逐个文件用组合的 `ctx.fs` 做 `lstat`/`resolve`/`stat` 三重确认（`[packages/deliverables/tool-present/src/index.ts:77-93]()`），且 `exec.signal` 在收下声明前被检查一次。
 <!-- anchor: if (exec.agent === undefined) throw new Error('present requires an agent Session') … files.push({ ...file }) -->
 
-真正"额外"的只有一步，而且落在**管道之后**：它在 `tools/result` 观察点上查本次执行的 pending 声明，只有结果**不是错误**时才 `session.append('deliverables/presented', ...)`（`[packages/fs/tool-present/src/index.ts:99-107]()`）。生成式工具目录对它的事件列也写着同样的口径："`deliverables/presented after a successful final result`"（`[docs/tool-catalog.md:22-22]()`）。
+真正"额外"的只有一步，而且落在**管道之后**：它在 `tools/result` 观察点上查本次执行的 pending 声明，只有结果**不是错误**时才 `session.append('deliverables/presented', ...)`（`[packages/deliverables/tool-present/src/index.ts:100-106]()`）。生成式工具目录对它的事件列也写着同样的口径："`deliverables/presented after a successful final result`"（`[docs/tool-catalog.md:25-25]()`）。
 <!-- anchor: ctx.on('tools/result', (exec, result) => { … turn, callId: exec.callId, files, -->
 <!-- anchor: | `@deepseek-ai/dsh-tool-present` | `present` | `ctx.tools`, `ctx.fs`, `ctx.sess -->
 
-**Why 这样切？** 三个替代方案都被否掉：把声明写进工具自身的 `content` 文本里，会被 `post-execute` 或 spill 改写，"以文本作持久索引"不可靠；把声明塞进附件存储需要内容复制与保留策略；而新增一条专用事件通道又等于绕过 guard/approval。挂在 `tools/result` 上则天然继承"先执行、后落日志、只认成功结果"的语义——嵌套调用、父程序后续失败、被 block 的结果都不会误发交付声明（事件类型见 `[packages/fs/tool-present/src/types.ts:15-15]()`，注释明确覆盖 nested calls）。
+**Why 这样切？** 三个替代方案都被否掉：把声明写进工具自身的 `content` 文本里，会被 `post-execute` 或 spill 改写，"以文本作持久索引"不可靠；把声明塞进附件存储需要内容复制与保留策略；而新增一条专用事件通道又等于绕过 guard/approval。挂在 `tools/result` 上则天然继承"先执行、后落日志、只认成功结果"的语义——嵌套调用、父程序后续失败、被 block 的结果都不会误发交付声明（事件类型见 `[packages/deliverables/tool-present/src/types.ts:15-15]()`，注释明确覆盖 nested calls）。
 <!-- anchor: 'deliverables/presented': { turn: number; callId: ToolCallId; files: PresentedFi -->
 
 代价也说清楚：`present` 只声明**元数据**（路径 + 可选说明），不读内容、不复制，因此"交付"依赖源文件仍然存在——删除或移动文件即让声明失效。这是刻意的：用户要编辑的是**当前工作区源文件**，不是一份快照。完整交付链路（双面文件 API、`/api/file` 区间读取、Host 打开路径校验、下载卡片）见 [workspace-files.md](workspace-files.md)。
 
 ### 决策 5：`str_replace_editor` 退出随附 profile——删的是"重叠接口"，不是工具包
 
-本次增量最容易误读的一条：上游确实出现过 `refactor: remove str_replace_editor`（79b3d7a594，2026-09-03 17:02），但它**四小时后就被 `Revert "refactor: remove str_replace_editor"`（8d06ebb5ac，2026-09-03 21:05）回滚**，两条 commit 同在 `dsh-v0.1.5-alpha.2` 之前合入——所以"代码面删除"是一次**未遂变更**，不要按"能力被删除"来写。实证方式：`git ls-tree -r HEAD -- packages/fs/tool-str-replace-editor` 仍列出 7 个文件（`src/index.ts`、`package.json`、tests 齐全），`git grep -l str_replace_editor HEAD` 也仍在 `docs/tool-catalog.md` 与包内命中。工具目录里它的包条目与工具条目都还在（`[docs/tool-catalog.md:27-27]()`、`[docs/tool-catalog.md:603-603]()`）。
+本次增量最容易误读的一条：上游确实出现过 `refactor: remove str_replace_editor`（79b3d7a594，2026-09-03 17:02），但它**四小时后就被 `Revert "refactor: remove str_replace_editor"`（8d06ebb5ac，2026-09-03 21:05）回滚**，两条 commit 同在 `dsh-v0.1.5-alpha.2` 之前合入——所以"代码面删除"是一次**未遂变更**，不要按"能力被删除"来写。实证方式：`git ls-tree -r HEAD -- packages/fs/tool-str-replace-editor` 仍列出 7 个文件（`src/index.ts`、`package.json`、tests 齐全），`git grep -l str_replace_editor HEAD` 也仍在 `docs/tool-catalog.md` 与包内命中。工具目录里它的包条目与工具条目都还在（`[docs/tool-catalog.md:30-30]()`、`[docs/tool-catalog.md:840-840]()`）。
 <!-- anchor: | `@deepseek-ai/dsh-tool-str-replace-editor` | `str_replace_editor` | `ctx.tools` -->
 <!-- anchor: ## `@deepseek-ai/dsh-tool-str-replace-editor` -->
 
@@ -244,8 +244,9 @@ flowchart TD
 "显式加回"的**作用域**也需要说清：opt-in patch 可以写在 profile、home 或逐次调用三层中的任一层，但**必须是 `insert` 而不是 `disabled: false`**——`disabled` 只能切换已存在的配置项，无法凭空创建一项（这是 base 决策明确记录的后果）。base 的 README 直接给出配方原文（`[packages/bundle/base/README.zh.md:52-52]()`）。
 <!-- anchor: 默认文件编辑使用 `read`、`write` 和 `edit`。`str_replace_editor` 工具仍可显式启用。要将它加入基于 base 的 pr -->
 
-另外两个口径也有各自依据：极简 preset 的头注释把自己定义为 "single-tool coding-agent composition"、正文只剩持久 shell 一组（`[packages/preset/agent-presets/presets/minimal/agent.cordis.yml:1-7]()`）。
-<!-- anchor: # The `minimal` agent preset: a fixed-prompt, single-tool coding-agent compositi … # absent. -->
+另外两个口径也有各自依据：极简 preset 现在由 bundle 里的 patch **声明**而不是自带一份 composition 文件——patch 头注释写的是 "Agent preset minimal: one `@deepseek-ai/dsh-agent-preset` declaration inserted after the web patch"，正文只剩 persona + 持久 shell 一组（`[packages/bundle/web-app/presets/minimal.patch.yml:1-8]()`）。
+<!-- anchor: # Agent preset minimal: one `@deepseek-ai/dsh-agent-preset` declaration inserted … id: minimal -->
+> **演进说明(0.1.7-rc.2)**：这份极简 preset 原先是一份自带交付说明的 `packages/preset/agent-presets/presets/minimal/agent.cordis.yml`（头注释自称 "single-tool coding-agent composition"）；本轮 preset 目录整体收敛为 `packages/preset/{agent-preset,agent-preset-registry,persona}`，具体 preset 改为由 bundle 的 patch 插入一条 `@deepseek-ai/dsh-agent-preset` 声明（`config.id: minimal`、`order: 3`），头注释随之改写。
 
 `sdk-minimal` 的 README 则把"唯一公布的工具"写成按平台选择的持久 shell（`[packages/bundle/sdk-minimal/README.zh.md:39-39]()`）。
 <!-- anchor: 该 profile 只挂载一套持久 shell：Linux 和 macOS 使用 Bash，Windows 使用 PowerShell。两套配置都使用 300 -->

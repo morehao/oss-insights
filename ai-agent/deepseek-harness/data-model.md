@@ -5,6 +5,8 @@ description: "DeepSeek Harness（dsh）数据模型与持久化层解读——�
 tags: [deepseek-harness, dsh, data-model, persistence, jsonl, event-sourcing, projection-cache, storage-domain, lease]
 ---
 
+> **本轮增量复核补充（0.1.5-rc.2 → 0.1.7-rc.2 @ 477b4f4205 / 2026-09-24）**：本关注面在本次增量窗口内没有需要改写的论断，引用随新基线重锚后全部通过校验；上一版解读基线为 `dsh-v0.1.5-rc.2`。
+
 # 数据模型：事件日志的地面实现（持久化层）
 
 > 子文档之一，聚焦 dsh 的持久化数据模型。覆盖事件日志持久化（`session-persistence` 的 handle 化 seam + `session-persistence-jsonl` 唯一 shipped 后端 + `session-format*` 世代与迁移链）、非日志 KV 存储（`storage`* 可交换 backend + `storage-domain` 域表单）、派生投影缓存（`session-projection-cache`）、投影状态里的持久长列表（`util/chunked-list`）。整体哲学见 [README](README.md)；本文上承 [session.md](session.md)（事件日志的落盘形态）、衔接 [deployment.md](deployment.md)（部署时的数据落地）。**边界声明**：格式版本的语义细节（世代是什么、release record 归谁、迁移边怎么写）归 [session-format-migration.md](session-format-migration.md)，本文只讲这些世代**怎么落到磁盘、旧世代怎么被读、迁移后怎么落盘**；`dsh-session:` 这类可寻址资源的地址面归 [workspace-files.md](workspace-files.md)，本文只在数据模型里给它一个位置。
@@ -33,7 +35,7 @@ dsh 对这两类各给了一个服务抽象（`SessionPersistence` 与 `Storage`
 > **演进说明（0.1.3-alpha.1）**：0.1.2-rc.1 以前，`SessionPersistence` 是一个**十二方法的全局服务**，配一个订阅 `session/created`/`session/event`/`session/flush`/`session/disposed` 的 `PersistenceCoordinator`（`packages/session/session-persistence/src/coordinator.ts`）与一个批量写缓冲 `write-behind.ts`；协调者会"认领"任何已发布会话（ownerless claim、HMR 重播种、stored-prefix 采纳）。这两个文件在本次增量中**从仓库消失**。
 
 替代它的形状是「服务只发句柄，句柄拥有日志」：`create` 存一个新会话并交出**它自己的写句柄**，`open(id, 'read' | 'write')` 打开已存在的会话，`stat`/`list` 只观察快照（`header`、不透明 `revision`、可选的 `eventCount`/`sizeBytes` 提示）而不读日志，服务级 `flush()` 是一次"后端全局持久化屏障"[[packages/session/session-persistence/src/index.ts:116-133]()]()
-<!-- anchor: * Durable append-only session storage addressed through per-session handles. … * on this backend instance observe at least that prefix. -->，`create` 的返回值就是一个 `write` 句柄[[packages/session/session-persistence/src/index.ts:141-147]()]()
+<!-- anchor: * Durable append-only session storage addressed through per-session handles. … * on this backend instance observe at least that prefix. -->，`create` 的返回值就是一个 `write` 句柄[[packages/session/session-persistence/src/index.ts:144-150]()]()
 <!-- anchor: * Create a new stored session and take its write ownership. … abstract create(header: SessionHeader, options?: SessionPersistenceCreateOptions -->。
 
 为什么必须换？因为**跨进程写所有权没有诚实的落点**：所有权属于"一个有 owner 的 explicit per-session 通道"，而不属于一个全局监听者——旧形状里用"乐观 revision read/check/read 循环"冒充所有权，连续的外部写者可以把读方活锁住，而且没有任何机制排除第二个写者。句柄化把"写权"变成一次显式获取，后端据此**只按 id 路由**（进程内一个 id 只有一个活跃写句柄），于是"加一层跨进程租约"就只需要在句柄这一扇门上做检查。代价是：后端插件在活会话期间热重载会让旧句柄失效、写入**响亮失败**而不是像 adopt 那样静默重接。
@@ -42,15 +44,15 @@ dsh 对这两类各给了一个服务抽象（`SessionPersistence` 与 `Storage`
 
 ### JSONL：真相日志的"忠实回放"形态
 
-事件日志后端以 append-only、不可变为核心。`session-persistence-jsonl` 把它实现为每会话一个 JSONL 逻辑日志，物理上用 zstd 压缩的拼接帧写入（编码名 `zstd`/`none`）[[packages/session/session-persistence-jsonl/src/format.ts:33-41]()]()
+事件日志后端以 append-only、不可变为核心。`session-persistence-jsonl` 把它实现为每会话一个 JSONL 逻辑日志，物理上用 zstd 压缩的拼接帧写入（编码名 `zstd`/`none`）[[packages/session/session-persistence-jsonl/src/format.ts:34-42]()]()
 <!-- anchor: /** Physical encoding selected for JSONL session artifacts. */ … export function logSuffix(compression: JsonlCompression): '.jsonl.zstd' | '.json -->。
 
 选择 JSONL 的理由根植于"事件日志 = 可流式回放的真相"这一定位：
 
-- **追加语义**天然贴合事件溯源：每次 append 只往文件尾写一段，写后 `sync()` 即达持久化；崩溃后 `SessionLogScanner` 按换行符增量切分、只解码完整记录，把"写一半"的尾部当 torn tail 容忍[[packages/session/session-persistence-jsonl/src/format.ts:380-383]()]()
+- **追加语义**天然贴合事件溯源：每次 append 只往文件尾写一段，写后 `sync()` 即达持久化；崩溃后 `SessionLogScanner` 按换行符增量切分、只解码完整记录，把"写一半"的尾部当 torn tail 容忍[[packages/session/session-persistence-jsonl/src/format.ts:381-384]()]()
 <!-- anchor: * Incrementally scan complete JSONL event records after an independently … * copied because a decoder may reuse its output buffer after `write()` returns. -->。
 - **流式回放**：回放不要求随机寻址，顺序扫一行解一行即可恢复，正好匹配真相日志"从头重演"的语义。
-- **人可读与可压缩兼得**（`zstd` 关闭时）——一个会话一个文件、头部首行即物理头记录，只读首行即可做列表而不整日志解析（`parseHeaderRecord`）[[packages/session/session-persistence-jsonl/src/format.ts:347-376]()]()
+- **人可读与可压缩兼得**（`zstd` 关闭时）——一个会话一个文件、头部首行即物理头记录，只读首行即可做列表而不整日志解析（`parseHeaderRecord`）[[packages/session/session-persistence-jsonl/src/format.ts:348-377]()]()
 <!-- anchor: /** Parse one complete header record supplied independently from event rows. */ …   return { meta: fromHeaderLine(parsed).meta, restore } -->。
 
 代价与权衡：没有 seek-by-seq。句柄的 `read(offset, length)` 在 JSONL 上仍要解到目标偏移再切片——该原语只承诺"返回合法连续前缀的一段、绝不返回 torn tail、同一句柄上重复读不会看到更旧的状态"[[packages/session/session-persistence/src/handle.ts:74-83]()]()
@@ -67,7 +69,7 @@ dsh 对这两类各给了一个服务抽象（`SessionPersistence` 与 `Storage`
 |------|------|------|
 | 项目目录 | `root/<projectKey>/` | `projectKey` 由 cwd 派生（分隔符转 `-`、不安全码元转 `~XXXX`、截断到 251 字符并加 `--` 包裹）；无 cwd 落到 `_no-cwd`[[packages/session/session-persistence-jsonl/src/format.ts:224-256]()]() <!-- anchor: export function projectKey(cwd: string): string { …   return join(root, projectKey(cwd)) --> |
 | 会话目录 | `<projectDir>/<encodeSegment(sessionId)>/` | `SessionId` 是未校验的 branded string，必须先经 `encodeSegment` 单段安全编码才能进路径（中和 `../`、绝对路径、NUL、分隔符）[[packages/session/session-persistence-jsonl/src/format.ts:198-213]()]() <!-- anchor: export function encodeSegment(raw: string): string { …   return out --> |
-| 世代文件 | `session.vN.jsonl[.zstd]` | 内容寻址的"世代"以**文件名为准**，与文件内 header 的 `version` 独立复核（不一致即报错）；当前世代由 `SESSION_FORMAT_VERSION` 决定写入路径[[packages/session/session-persistence-jsonl/src/format.ts:62-75]()]() <!-- anchor: * Parse one canonical generation filename for the selected physical encoding. … return parseSessionFormatLogFilename(filename.slice(0, filename.length - suffix. --> |
+| 世代文件 | `session.vN.jsonl[.zstd]` | 内容寻址的"世代"以**文件名为准**，与文件内 header 的 `version` 独立复核（不一致即报错）；当前世代由 `SESSION_FORMAT_VERSION` 决定写入路径[[packages/session/session-persistence-jsonl/src/format.ts:63-76]()]() <!-- anchor: * Parse one canonical generation filename for the selected physical encoding. … return parseSessionFormatLogFilename(filename.slice(0, filename.length - suffix. --> |
 
 **为什么用文件名而不是"就地升级文件内容"**：世代文件一旦发布即不可变，于是"读者看到一个旧世代"和"写者发布新世代"可以并存而互不干扰——迁移不再是一次危险的原地重写，而是一次**新文件的独占发布**。临时文件（`session.migration.<token>.tmp`）、大写、前导零、带 `.v0` 的名字都不算 canonical 世代，因此中介状态永远不会被误读成已提交的世代。
 
@@ -180,25 +182,25 @@ graph TB
 
 ### SessionEvent 邮箱信封（内存事实源）
 
-职责：一条会话内不可变事件。信封是判别联合（type 与 data 的联合由编译器保证类型收窄），surface 字段为条件存在——**0.1.5-alpha.1 起 `system/message` 也是 surface 事件**，因此携带 `surfaceOp`/`sourceEventSeqs` 的类型从三种变四种[[packages/core/session/src/types.ts:412-416]()]()
-<!-- anchor: export type SurfaceEventType = … | 'tool/result' -->[[packages/core/session/src/types.ts:453-487]()]()
+职责：一条会话内不可变事件。信封是判别联合（type 与 data 的联合由编译器保证类型收窄），surface 字段为条件存在——**0.1.5-alpha.1 起 `system/message` 也是 surface 事件**，因此携带 `surfaceOp`/`sourceEventSeqs` 的类型从三种变四种[[packages/core/session/src/types.ts:439-444]()]()
+<!-- anchor: export type SurfaceEventType = … | 'tool/result' -->[[packages/core/session/src/types.ts:481-514]()]()
 <!-- anchor: * One immutable entry in the session log. … sourceEventSeqs?: never -->。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
 | type | SessionEventType | 判别 key | 事件类型，`SessionEventMap` 可被插件合并扩展 |
-| seq | SessionSeq | branded number | 会话内单调连续；`SessionSeq` 标识**一条已存在事件**，与标识"间隙/前缀长度/读偏移"的 `SessionLogOffset` 分离，编译期禁止互换[[packages/core/session/src/types.ts:31-46]()]() <!-- anchor: export type SessionSeq = BrandedNumber<'SessionSeq'> … export type SessionLogOffset = BrandedNumber<'SessionLogOffset'> --> |
+| seq | SessionSeq | branded number | 会话内单调连续；`SessionSeq` 标识**一条已存在事件**，与标识"间隙/前缀长度/读偏移"的 `SessionLogOffset` 分离，编译期禁止互换[[packages/core/session/src/types.ts:32-47]()]() <!-- anchor: export type SessionSeq = BrandedNumber<'SessionSeq'> … export type SessionLogOffset = BrandedNumber<'SessionLogOffset'> --> |
 | time | number | Unix epoch ms | 事件时间戳 |
 | data | SessionEventMap[K] | JSON-serializable | 负载，构造期强制 `isJsonValue` |
 | ignorable | true(可选) | 仅日志型 | 未知类型的"可跳过"标记；缺省=必需，遇未知类型须拒绝而非静默丢弃 |
 | sourceEventSeqs | SessionSeq[](可选) | 仅 surface 事件 | 引用的先前事件 seq（compaction 遮蔽等）；`assistant/message` 显式声明为 `never`——它内嵌自己的流 |
-| surfaceOp | SurfaceOp(可选) | 仅 surface 事件 | `'append'` 或 `{ op:'replace', startSeq, endSeq }`，记录如何进 surface[[packages/core/session/src/types.ts:422-436]()]() <!-- anchor: * How a session event entered the ordered surface. Only valid on … | { op: 'replace'; startSeq: SessionSeq; endSeq: SessionSeq } --> |
+| surfaceOp | SurfaceOp(可选) | 仅 surface 事件 | `'append'` 或 `{ op:'replace', startSeq, endSeq }`，记录如何进 surface[[packages/core/session/src/types.ts:450-464]()]() <!-- anchor: * How a session event entered the ordered surface. Only valid on … | { op: 'replace'; startSeq: SessionSeq; endSeq: SessionSeq } --> |
 
 > **演进说明（0.1.5-alpha.1）**：本表原写"surface 字段仅 `user/message`/`assistant/message`/`tool/result` 三类型携带"、`surfaceOp` 形如 `{ op:'replace', start, end }`、`sourceEventSeqs` 用来表达"assistant chunk→message"。本次增量后：`system/message` 提升为 **surface node zero** 并加入该集合；replace 的坐标字段改名为 `startSeq`/`endSeq`；`assistant/message` 的 provider 流改为**内嵌**（`AssistantStreamRecord[]`），不再靠 `sourceEventSeqs` 反查 chunk。格式版本语义见 [session-format-migration.md](session-format-migration.md)。
 
 ### SessionHeader（真相日志旁的元数据）
 
-职责：**存储元数据，不是会话事件**——format version、cwd、lineage、seed 标记都对模型不可见，不进入 `deriveMessages()`，挂在 `session.header`[[packages/core/session/src/types.ts:91-111]()]()
+职责：**存储元数据，不是会话事件**——format version、cwd、lineage、seed 标记都对模型不可见，不进入 `deriveMessages()`，挂在 `session.header`[[packages/core/session/src/types.ts:92-112]()]()
 <!-- anchor: * Immutable validated storage metadata, kept outside the conversation event log. … readonly isSeeded: boolean -->。
 
 | 字段 | 类型 | 约束 | 说明 |
@@ -213,7 +215,7 @@ graph TB
 | delegationDepth | number(可选) | | 代理深度，持久化使递归预算跨重启存活 |
 | agentPreset | string(可选) | deployment 按会话组合时置 | preset 决定工具的 prompt，持久化避免 resume 换组合重放 |
 
-**`inheritedEventCount` 不在 header 里**（这是一处容易记错的边界）：它已经变成"随 header 一起走的会话状态"，由读写操作的 options 显式传入、由句柄作为只读属性回传[[packages/core/session/src/types.ts:133-145]()]()
+**`inheritedEventCount` 不在 header 里**（这是一处容易记错的边界）：它已经变成"随 header 一起走的会话状态"，由读写操作的 options 显式传入、由句柄作为只读属性回传[[packages/core/session/src/types.ts:134-146]()]()
 <!-- anchor: * Options for creating a {@link Session} via the store. `seed` replays/forks … readonly inheritedEventCount?: SessionLogOffset -->。所以三种读者看到三种东西：**只读 header**（`stat`/`list`）完全看不到这个数字；**body-bearing 读**（`SessionStorageMetadata`/`SessionInspection`/`SessionHandle.inheritedEventCount`）拿到 `meta` + 精确 cut；**物理行**里它由最后一个带 tag 的 `session/end-seed` 事件承载。这正是"精确前缀长度不是可重放事件、但也不是普通元数据"的折中：放进 header 会让 header-only 读者被迫重建 body，放进事件又会让它变成可被重放的模型历史。
 
 > **演进说明（0.1.2-rc.1）**：本表原有一行 `inheritedEventCount | SessionLogOffset(可选) | body-bearing 观测携带`。本次增量确认它已从 `SessionHeader` 接口移除（对照 `types.ts:91-111` 的字段全集），改挂到 `CreateSessionOptions` / `SessionPersistenceCreateOptions` / 句柄属性上；语义不变（`isSeeded` 为 true 时必需、否则必须为 0，后端在 create 时拒绝不匹配），位置变了。
@@ -289,24 +291,24 @@ zstd 物理编码在 alpha 期间拆分出「核心扫描 + 双解码器」：`z
 
 > **演进说明（0.1.2-rc.1）**：projcache 域 spec 从「单一当前版本戳、升级即报废」演进出**跨版本读兼容**与**失效记录 backup-and-skip**。这是 storage 层「schema 不迁移、只拒绝」哲学的一次软化：拒绝从"一刀切版本门槛"细化为"owner 显式背书的白名单 + 失效派生数据可移走"，而非自动迁移。
 
-> **演进说明（0.1.5-rc.2）**：本次增量把域从 `version:5 + compatibleVersions:[3,4]` 推进到 **`version:7 + compatibleVersions:[3,4,5,6] + invalidRecords:'backup-and-skip'`**，并在 `checkpointIdentity` 里新增 `formatVersion`——**Session 格式世代**。这个字段是一次语义收紧：v3~v6 的缓存行结构上仍可解析，但它们的身份缺 `formatVersion`，因此**永远不能当折叠捷径**（缓存行的折叠语义无法证明源自当前 Session 事件语义）；能继续服务的只剩"生命周期匹配的前代记录里的 title 列表提示"——列表页的零 IO hint，用 `asOfSeq: -1` 哨兵避免复用可能被基数变化迁移重映射过的 seq，其余前代投影一律不暴露[[packages/session/session-projection-cache/src/index.ts:156-162]()]()
+> **演进说明（0.1.5-rc.2）**：本次增量把域从 `version:5 + compatibleVersions:[3,4]` 推进到 **`version:7 + compatibleVersions:[3,4,5,6] + invalidRecords:'backup-and-skip'`**，并在 `checkpointIdentity` 里新增 `formatVersion`——**Session 格式世代**。这个字段是一次语义收紧：v3~v6 的缓存行结构上仍可解析，但它们的身份缺 `formatVersion`，因此**永远不能当折叠捷径**（缓存行的折叠语义无法证明源自当前 Session 事件语义）；能继续服务的只剩"生命周期匹配的前代记录里的 title 列表提示"——列表页的零 IO hint，用 `asOfSeq: -1` 哨兵避免复用可能被基数变化迁移重映射过的 seq，其余前代投影一律不暴露[[packages/session/session-projection-cache/src/index.ts:172-178]()]()
 <!-- anchor: * Read only a predecessor checkpoint's title as a zero-I/O listing hint. … * projection's row version and schema. No other predecessor projection is -->。注意**它不等于 Session V3**：域版本号是投影缓存自己的世代，字面量 7 与 Session 的 3 互不相干，`docs(token-meter): distinguish projection cache from Session V3` 专门点了这个区分。
 
-职责：投影检查点持久化，`(sessionId, key, ver, seq, val)` 的 RFC 形态；`row 从不错误，只可能过期`——ver 不匹配即丢弃（从非迁移）[[packages/session/session-projection-cache/src/spec.ts:24-24]()]()
-<!-- anchor: * discards it at read time (never a migration). -->。日志身份绑定（`formatVersion`/createdAt/cwd/谱系）防止"同 id 不同生命周期"或"不同格式世代"的旧行通过水位检查[[packages/session/session-projection-cache/src/spec.ts:34-54]()]()
+职责：投影检查点持久化，`(sessionId, key, ver, seq, val)` 的 RFC 形态；`row 从不错误，只可能过期`——ver 不匹配即丢弃（从非迁移）[[packages/session/session-projection-cache/src/spec.ts:27-27]()]()
+<!-- anchor: * discards it at read time (never a migration). -->。日志身份绑定（`formatVersion`/createdAt/cwd/谱系）防止"同 id 不同生命周期"或"不同格式世代"的旧行通过水位检查[[packages/session/session-projection-cache/src/spec.ts:37-57]()]()
 <!-- anchor: * The stored-log identity a record is bound to: the immutable header fields … inheritedEventCount: z.number().int().nonnegative().transform(SessionLogOffset). -->。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
-| formatVersion | z.number(可选) | checkpointIdentity | **0.1.5-rc.2 起加入**：记录折自哪一代 Session 事件语义；缺席（前代记录）即拒绝当折叠捷径[[packages/session/session-projection-cache/src/spec.ts:49-54]()]() <!-- anchor: export const checkpointIdentity = z.object({ … inheritedEventCount: z.number().int().nonnegative().transform(SessionLogOffset). --> |
+| formatVersion | z.number(可选) | checkpointIdentity | **0.1.5-rc.2 起加入**：记录折自哪一代 Session 事件语义；缺席（前代记录）即拒绝当折叠捷径[[packages/session/session-projection-cache/src/spec.ts:52-57]()]() <!-- anchor: export const checkpointIdentity = z.object({ … inheritedEventCount: z.number().int().nonnegative().transform(SessionLogOffset). --> |
 | createdAt / cwd | z.number/z.string.optional | checkpointIdentity | 日志身份（列表/冷读时对 live header 校验） |
 | isSeeded / inheritedEventCount | z.boolean(可选) / SessionLogOffset(可选) | checkpointIdentity | 0.1.2-alpha 起加入的谱系位；**rc.1 起变为可选**——经 `compatibleVersions` 放进来的旧版本记录本就缺失这两字段，缺席在 `identityMatches` 读作「unseeded 谱系」，对 seeded 期望则不匹配、整行丢弃走冷重建 |
 | rows | Record<key, row> | rows 键为投影 key | 每 key 一个 checkpoint |
 | row.ver | int≥0 | | 该 unit 的 **stateVersion**，不匹配即弃。它与域版本、Session 格式版本都不同层：`fix(token-meter): invalidate header-based breakdown caches` 把 `contextBreakdown` 的 `stateVersion` 2→**4**、`fix(token-meter): distinguish compact caches from parent scalar version` 把 compact 层的 `contextPressure` 也定为 4，靠的就是这个 per-row 数字而非域版本[[packages/llm/token-meter/src/breakdown-projection.ts:48-51]()]() <!-- anchor: export const contextBreakdownProjectionDefinition = { … stateSchema: contextBreakdownStateSchema, --> |
-| row.seq | SessionSeqCursor | int≥-1 转 SessionSeq | 投影最后一次折叠的 seq；`-1` 表示首事件前的 watermark[[packages/session/session-projection-cache/src/spec.ts:26-28]()]() <!-- anchor: export const checkpointRow = z.object({ … seq: z.number().int().gte(-1).transform((value): SessionSeqCursor => --> |
+| row.seq | SessionSeqCursor | int≥-1 转 SessionSeq | 投影最后一次折叠的 seq；`-1` 表示首事件前的 watermark[[packages/session/session-projection-cache/src/spec.ts:29-31]()]() <!-- anchor: export const checkpointRow = z.object({ … seq: z.number().int().gte(-1).transform((value): SessionSeqCursor => --> |
 | row.val | z.json() | | 该投影 unit 的内部状态，纯 JSON |
 
-写为整记录替换（whole-value 纪律）。域 spec 的当前声明是 `version:7`、`compatibleVersions:[3,4,5,6]`、`invalidRecords:'backup-and-skip'`、`layout:'per-record'`[[packages/session/session-projection-cache/src/spec.ts:98-104]()]()
+写为整记录替换（whole-value 纪律）。域 spec 的当前声明是 `version:7`、`compatibleVersions:[3,4,5,6]`、`invalidRecords:'backup-and-skip'`、`layout:'per-record'`[[packages/session/session-projection-cache/src/spec.ts:101-107]()]()
 <!-- anchor: export const projectionCacheDomainSpec = defineDomain({ … tables: { sessions: domainTable<SessionId, CheckpointRecord>(checkpointRecord) } -->。
 
 **为什么"接受结构"与"接受语义"要分成两层**：`compatibleVersions` 让 V7 的 schema 能**解析** v3~v6 的记录（做法是把前代缺的字段声明为 optional），于是升级后的 home 不会因为一条旧缓存而拒绝整个域；但"能解析"不等于"能信它的值"——一个在旧 Session 事件语义下折出来的 `val` 可能因为中途经过基数改变的历史迁移而与当前 fold 不等价。因此 `identityMatches` 是比结构接纳**更严的第二道门**：`formatVersion` 缺席直接判不匹配，谱系缺席只在格式匹配后归一化为 unseeded。代价是升级后每个会话的首个投影要冷重建一次；换来的是"缓存只可能过期、绝不可能错值"这条不变式不被格式演进击穿。三档版本号各司其职的对照见下表。
@@ -317,7 +319,7 @@ zstd 物理编码在 alpha 期间拆分出「核心扫描 + 双解码器」：`z
 | 域版本 | `DomainSpec.version` / medium 戳 | projcache 7 | 不在接受集即丢该记录（per-record）或整体拒绝（single） |
 | 投影 unit 状态版本 | `row.ver`（= `ProjectionDefinition.stateVersion`） | 如 contextBreakdown 4 | 该行丢弃、走冷重放 |
 
-`invalidRecords: 'backup-and-skip'` 是最后一道兜底：前两道门都通过、却在 schema 校验时才炸的记录，被移成 `<key>.json.bak.<stamp>` 后按缺席续开[[packages/session/session-projection-cache/src/spec.ts:92-96]()]()
+`invalidRecords: 'backup-and-skip'` 是最后一道兜底：前两道门都通过、却在 schema 校验时才炸的记录，被移成 `<key>.json.bak.<stamp>` 后按缺席续开[[packages/session/session-projection-cache/src/spec.ts:95-99]()]()
 <!-- anchor: * `invalidRecords: 'backup-and-skip'`: a stored record that fails the schema … * cold read rebuilds and rewrites it). -->。该策略**只由本域声明**，默认仍是 fail-loud。alpha 期间新增的**冷读播种**仍在：冷会话从缓存行 seed 折叠而非全量重放，写回在持久化后异步进行——缓存从「只读捷径」升级为「可播种的折叠捷径」（`session-projection-cache` 的 `coldSnapshot` 路径，见下文「读写路径」）。
 
 ### chunked-list：投影状态里的持久长列表（subagent catalog）
@@ -328,9 +330,9 @@ zstd 物理编码在 alpha 期间拆分出「核心扫描 + 双解码器」：`z
 
 它出现在数据模型里的理由是**投影检查点必须能被 JSON 序列化且 append 不能是 O(D)**：一个扁平数组 `[...facts, fact]` 每次追加拷贝 D 个元素；一个每事实一节点的链表虽然 O(1) 追加，却会把检查点变成 JSON 嵌套 D 层。64 值分块保住了渐近成本又压平了嵌套深度。
 
-消费方是 subagent 的**父方拥有 child catalog**（`feat(subagent): record and observe parent-owned child catalogs`）：父会话日志新增必填事件 `subagent/catalog`（每条是一次成功创建的事实：`childId`/`childCreatedAt`/mode/label），子代理发现从此不再扫全仓库 + 每个子日志[[packages/subagent/subagent/src/catalog.ts:34-47]()]()
-<!-- anchor: declare module '@deepseek-ai/dsh-session/types' { … readonly head?: ChunkedList<SubagentCatalogEvent> | undefined -->。其投影状态 `SubagentCatalogState` 就是 `{ inheritedEventCount, head?: ChunkedList<SubagentCatalogEvent> }`，checkpoint 校验直接用 `chunkedListSchema`[[packages/subagent/subagent/src/catalog.ts:79-82]()]()
-<!-- anchor: const stateSchema: z.ZodType<SubagentCatalogState> = z.object({ … }).strict() -->。两处细节值得注意：**fork 隔离**靠投影初始化时拿到的 `Session.inheritedEventCount`，fold 忽略该偏移以下的 `subagent/catalog`，所以被 seed 的父日志不会继承原会话的孩子；**顺序权威**是"成功 append 的顺序"，与子会话时间戳/uid 无关，因此 `childCreatedAt` 在快照归一化里被清零（它源自进程时钟）。
+消费方是 subagent 的**父方拥有 child catalog**（`feat(subagent): record and observe parent-owned child catalogs`）：父会话日志新增必填事件 `subagent/catalog`（每条是一次成功创建的事实：`childId`/`childCreatedAt`/mode/label），子代理发现从此不再扫全仓库 + 每个子日志[[packages/subagent/subagent/src/catalog.ts:37-50]()]()
+<!-- anchor: declare module '@deepseek-ai/dsh-session/types' { … readonly head?: ChunkedList<SubagentCatalogEvent> | undefined -->。其投影状态 `SubagentCatalogState` 就是 `{ inheritedEventCount, head?: ChunkedList<SubagentCatalogEvent> }`，checkpoint 校验直接用 `chunkedListSchema`[[packages/subagent/subagent/src/catalog.ts:88-90]()]()
+<!-- anchor: const stateSchema: z.ZodType<SubagentCatalogState> = z.object({ … head: chunkedListSchema(eventDataSchema).optional(), -->。两处细节值得注意：**fork 隔离**靠投影初始化时拿到的 `Session.inheritedEventCount`，fold 忽略该偏移以下的 `subagent/catalog`，所以被 seed 的父日志不会继承原会话的孩子；**顺序权威**是"成功 append 的顺序"，与子会话时间戳/uid 无关，因此 `childCreatedAt` 在快照归一化里被清零（它源自进程时钟）。
 
 **权衡**：视图每次 O(D)，于是 D 次创建会累计 O(D²) 的视图工作——这是既有投影机制的既有代价，换来的是"发现事实只有一份、就在父日志里"，不必为它另建一个 durable 索引与配套的对账/补偿协议。
 
@@ -366,14 +368,14 @@ zstd 物理编码在 alpha 期间拆分出「核心扫描 + 双解码器」：`z
 
 dsh 的 schema 演进哲学与多数系统相反——**pre-release，无兼容承诺，宁可拒绝也不猜测迁移**。主要体现在几个单调版本号：
 
-- `SESSION_FORMAT_VERSION = 3`：单一单调整数，无 major/minor 拆分。当前会话格式世代不再由手写常量单独定义，而是由**代码常量 + 生成式 catalog + release record 三方共同背书**；bump 的判据是 **writer 发什么**，而非新 reader 能否接受——只有结构性变化才 bump（header 形态、Event 信封、core 事件语义、surface 机制/SurfaceEventType 集）；普通加事件类型不 bump，用 `ignorable` 防词汇增长[[packages/core/session/src/types.ts:67-88]()]()
-<!-- anchor: * Current logical Session format version, stamped into every newly written … export const SESSION_FORMAT_VERSION = 3 -->。
+- `SESSION_FORMAT_VERSION = 4`：单一单调整数，无 major/minor 拆分。当前会话格式世代不再由手写常量单独定义，而是由**代码常量 + 生成式 catalog + release record 三方共同背书**；bump 的判据是 **writer 发什么**，而非新 reader 能否接受——只有结构性变化才 bump（header 形态、Event 信封、core 事件语义、surface 机制/SurfaceEventType 集）；普通加事件类型不 bump，用 `ignorable` 防词汇增长[[packages/core/session/src/types.ts:68-89]()]()
+<!-- anchor: * Current logical Session format version, stamped into every newly written … export const SESSION_FORMAT_VERSION = 4 -->。
   - bump 的代价权衡见 constant 注释："near-identity 升级几乎一步到位，漏 bump 会让旧 runtime 静默读错新日志"——宁可过度拒绝也不静默重演被掏空的会话。
 - 会话级版本：JSONL 后端从**首行 header** 就分类世代，`refuseForeignFormatVersion` 先于校验当前 header 形态与解码任何事件行，所以未来世代报的是"升级方向"而非"corrupt"。
-- **世代解析与迁移是两件事**：`stat`/`list` 只按 canonical 文件名选出"最高可用世代"并翻译其 header，**不读 body、不改字节**；body-bearing 的 `open` 才把历史世代跑成当前 artifact，read 句柄吃内存结果、write 句柄独占发布当前世代文件[[packages/session/session-persistence-jsonl/src/index.ts:494-498]()]()
+- **世代解析与迁移是两件事**：`stat`/`list` 只按 canonical 文件名选出"最高可用世代"并翻译其 header，**不读 body、不改字节**；body-bearing 的 `open` 才把历史世代跑成当前 artifact，read 句柄吃内存结果、write 句柄独占发布当前世代文件[[packages/session/session-persistence-jsonl/src/index.ts:513-517]()]()
 <!-- anchor: /** Resolve and read one stored log, refusing loudly when the artifact is absent … if (selected.sourceVersion < SESSION_FORMAT_VERSION) { -->[[docs/subsystems/persistence.md:189-189]()]()
-<!-- anchor: A backend refuses a log it cannot faithfully interpret with `SessionFormatUnsupp -->。迁移链本身是 build-static 的：catalog 一次性声明 `currentVersion: 3`、四个物理 codec（v0/v1/v2/v3）与三条相邻边 v0→v1→v2→v3[[packages/session/session-format-catalog/src/generated.ts:14-18]()]()
-<!-- anchor: export const sessionFormatCatalog = createSessionFormatCatalog({ … migrations: [sessionFormatV0ToV1, sessionFormatV1ToV2, sessionFormatV2ToV3], -->。
+<!-- anchor: A backend refuses a log it cannot faithfully interpret with `SessionFormatUnsupp -->。迁移链本身是 build-static 的：catalog 一次性声明 `currentVersion: 4`、五个物理 codec（v0/v1/v2/v3/v4）与四条相邻边 v0→v1→v2→v3→v4[[packages/session/session-format-catalog/src/generated.ts:16-30]()]()
+<!-- anchor: export const sessionFormatCatalogOptions: SessionFormatCatalogOptions = { … sessionFormatV3ToV4, -->。
 - ~~`SCHEMA_VERSION = 17`（SQLite 会话后端）~~ **0.1.2-alpha.1 随 SQLite 后端一并移除**（原 rc.8 自 15 bump 到 17 的 `PRAGMA user_version` 校验、openDatabase 盖章/拒绝逻辑不再存在于仓库）；会话日志的格式拒绝现收敛为 `SESSION_FORMAT_VERSION` + 世代分类。
 - `STORAGE_SQLITE_SCHEMA_VERSION = 1`（KV sqlite）：`PRAGMA user_version`，与每 unit 版本正交；非当前拒绝，不迁移[[packages/storage/storage-sqlite/src/schema.ts:20-20]()]()
 <!-- anchor: export const STORAGE_SQLITE_SCHEMA_VERSION = 1 -->
@@ -381,10 +383,10 @@ dsh 的 schema 演进哲学与多数系统相反——**pre-release，无兼容�
 <!-- anchor: /** Static declaration of one domain: identity, version, and record layout. */ … readonly version: number -->；**rc.1 起 per-record 布局读侧接受 `compatibleVersions` 白名单内的旧戳**（`acceptedStamps = [current, ...compatibleVersions]`[[packages/storage/storage-json/src/per-record-unit.ts:104-106]()]()
 <!-- anchor: /** The version stamps this unit reads as its own: current plus declared compati … return [descriptor.version, ...descriptor.compatibleVersions ?? []] -->），owner 声明"旧版记录我的当前 schema 也认"（靠把旧版缺的字段声明为 optional）[[packages/storage/storage-domain/src/spec.ts:49-56]()]()
 <!-- anchor: * Older domain versions whose stored records the current record schemas … readonly compatibleVersions?: readonly number[] -->、契约面同义[[packages/storage/storage/src/backend.ts:65-73]()]()
-<!-- anchor: * Older unit versions whose stored records are also readable under the … readonly compatibleVersions?: readonly number[] -->；`single` 布局仍 exact-version 拒绝。投影 projcache 域正是借此声明 `compatibleVersions:[3,4,5,6]` 让升级 home 不拒开，并配 `invalidRecords:'backup-and-skip'` 兜底——cache 语义是"stale/不可读 cache 只花一次长尾重放，绝不产出错值"[[packages/session/session-projection-cache/src/spec.ts:92-96]()]()
+<!-- anchor: * Older unit versions whose stored records are also readable under the … readonly compatibleVersions?: readonly number[] -->；`single` 布局仍 exact-version 拒绝。投影 projcache 域正是借此声明 `compatibleVersions:[3,4,5,6]` 让升级 home 不拒开，并配 `invalidRecords:'backup-and-skip'` 兜底——cache 语义是"stale/不可读 cache 只花一次长尾重放，绝不产出错值"[[packages/session/session-projection-cache/src/spec.ts:95-99]()]()
 <!-- anchor: * `invalidRecords: 'backup-and-skip'`: a stored record that fails the schema … * cold read rebuilds and rewrites it). -->。
 
-**回滚/灰度**：会话日志层因为**源世代文件永久保留**，回滚到旧 build 仍能读到旧世代（它不认的更新世代会被拒绝，但不会损坏）——这是"不可变世代"相对"就地迁移"最大的运维优势。KV 层由于"拒绝不迁移"，上线前必须保证磁盘格式与代码版本配套；投影缓存依赖 `row.ver` 的版本不匹配就地丢弃，是唯一"自动回滚"点（重读重放即可）。压缩编码则**没有级联回退**：一个 root 只属于一种编码，`zstd` 与 `none` 的世代文件互不发现，换编码要换 root，且保留的前代世代不提供自动降级[[packages/session/session-persistence-jsonl/README.md:154-156]()]()
+**回滚/灰度**：会话日志层因为**源世代文件永久保留**，回滚到旧 build 仍能读到旧世代（它不认的更新世代会被拒绝，但不会损坏）——这是"不可变世代"相对"就地迁移"最大的运维优势。KV 层由于"拒绝不迁移"，上线前必须保证磁盘格式与代码版本配套；投影缓存依赖 `row.ver` 的版本不匹配就地丢弃，是唯一"自动回滚"点（重读重放即可）。压缩编码则**没有级联回退**：一个 root 只属于一种编码，`zstd` 与 `none` 的世代文件互不发现，换编码要换 root，且保留的前代世代不提供自动降级[[packages/session/session-persistence-jsonl/README.md:160-162]()]()
 <!-- anchor: - **Format migration preserves the configured encoding and supports only the cat … - **Compressed files are not directly line-readable** — use the backend to load  -->。
 
 ## 读写路径
@@ -449,13 +451,13 @@ sequenceDiagram
 
 这是 `perf(session-persistence): prepare historical reads before publication` 与 `perf(session): transfer frozen persistence reads into restore` 两条提交合起来的数据模型含义：
 
-- **准备与发布解耦**。`prepareJsonlMigration()` 只读一个稳定 revision、把整条 Stage 链跑一遍、返回当前 artifact **而不编码不写盘**；`publish()` 幂等（并发/后续调用共享同一个终态 Promise）[[packages/session/session-persistence-jsonl/src/generation.ts:996-1002]()]()
+- **准备与发布解耦**。`prepareJsonlMigration()` 只读一个稳定 revision、把整条 Stage 链跑一遍、返回当前 artifact **而不编码不写盘**；`publish()` 幂等（并发/后续调用共享同一个终态 Promise）[[packages/session/session-persistence-jsonl/src/generation.ts:1003-1009]()]()
 <!-- anchor: * Decode and migrate one historical generation without writing its successor. … ): Promise<PreparedJsonlMigration> { -->。read open **只等准备**——因为分页、投影准备、导出、`session.follow` 的开场快照只需要"合法化的当前逻辑 artifact"，而旧的串行实现会为了显示历史先建临时文件、起 Worker 校验、发布、再重开，白等约 2.2 秒还改了存储。
-- **write open 才发布**，且发布是**独占新建**：read 句柄停在内存 artifact 上，既拿到了逻辑历史又不动源文件；write 句柄拿到租约后复用同一份 preparation，把当前世代写成新文件并发布[[packages/session/session-persistence-jsonl/src/index.ts:642-647]()]()
+- **write open 才发布**，且发布是**独占新建**：read 句柄停在内存 artifact 上，既拿到了逻辑历史又不动源文件；write 句柄拿到租约后复用同一份 preparation，把当前世代写成新文件并发布[[packages/session/session-persistence-jsonl/src/index.ts:691-696]()]()
 <!-- anchor: /** Publish a prepared historical log before granting write access. */ … identity = await migration.value.publish() -->。发布前会复核源身份（变了就报 `JsonlGenerationSourceChangedError`，不重跑迁移），发布后用 Worker 在隔离环境校验 staged 文件；竞争失败者要能证明"胜者字节以我 staged 的迁移前缀开头"。
 - **读侧语义不再是"整文件截断"，而是"合法连续前缀"**：句柄 `read` 保证 slice 是合法日志前缀段、永不返回 torn tail、同一句柄重复读不会变旧[[packages/session/session-persistence/src/handle.ts:74-83]()]()
 <!-- anchor: * Read a slice of the valid contiguous logical log. The slice is a legal log … read(offset?: number, length?: number, options?: SessionHandleReadOptions): Prom -->。
-- **读取值的所有权是显式携带的**：`SessionHandle.read` 的返回带 `eventState`，声明事件值"独占自有"还是"深冻结后共享"；切片长度不改变这个状态，由生产者确立。这正是 `perf(session): transfer frozen persistence reads into restore` 把 `seedSource:'persistence'` 换成 `SessionSeedEventState` 的原因——恢复路径据此**省掉一次拷贝与冻结遍历**[[packages/core/session/src/types.ts:162-165]()]()
+- **读取值的所有权是显式携带的**：`SessionHandle.read` 的返回带 `eventState`，声明事件值"独占自有"还是"深冻结后共享"；切片长度不改变这个状态，由生产者确立。这正是 `perf(session): transfer frozen persistence reads into restore` 把 `seedSource:'persistence'` 换成 `SessionSeedEventState` 的原因——恢复路径据此**省掉一次拷贝与冻结遍历**[[packages/core/session/src/types.ts:163-166]()]()
 <!-- anchor: * Aliasing state of an adoptable Session seed. `shared-frozen` permits deeply … export type SessionSeedEventState = 'detached' | 'shared-frozen' -->。同时，assistant 流的"重放校验"也从 core 的恢复路径搬到了**隔离的世代校验 Worker**里，只有写发布这条路才会付出全量重放流的代价。
 
 冷读 + 投影缓存播种（0.1.2-alpha 新增，`session-projection-cache` 的 `coldSnapshot`）：
@@ -478,12 +480,12 @@ sequenceDiagram
     Note over C: 写入过期只多一次重放
 ```
 
-关键语义：`row 从不错误，只可能过期`，这条哲学在本次增量里被延伸到读侧并**加了格式世代门槛**——缓存在行身份（含 `formatVersion` 与谱系位）匹配时折叠到 `row.seq`、剩余尾部补重放；身份不符（尤其缺席 `formatVersion`）就整行丢弃、从 0 重折，绝不产出越过日志的幻影值[[packages/session/session-projection-cache/src/index.ts:265-277]()]()
-<!-- anchor: * Cold-read one session's projections from its complete log. Each unit is … coldSnapshot( -->[[packages/session/session-projection-cache/src/index.ts:283-295]()]()
+关键语义：`row 从不错误，只可能过期`，这条哲学在本次增量里被延伸到读侧并**加了格式世代门槛**——缓存在行身份（含 `formatVersion` 与谱系位）匹配时折叠到 `row.seq`、剩余尾部补重放；身份不符（尤其缺席 `formatVersion`）就整行丢弃、从 0 重折，绝不产出越过日志的幻影值[[packages/session/session-projection-cache/src/index.ts:275-287]()]()
+<!-- anchor: * Cold-read one session's projections from its complete log. Each unit is … coldSnapshot( -->[[packages/session/session-projection-cache/src/index.ts:293-305]()]()
 <!-- anchor: const restored = this.ctx.sessionProjections.restore( … return restored.snapshot -->。
 
 另一个本次增量引入的形状约束是**投影视图收敛为 all-or-none**，而且这个开关最终**落在了观测层而不是投影层**。过程值得记一笔：`refactor(session): limit hydration views to all or none` 先把 `hydratePrepared`/`hydrate`/`restore` 的 `keys?: Key[]` 换成 `projectionMode: 'all' | 'none'`，随后 `refactor(session-query): return all projection states by default` 又把它从投影 registry 彻底删掉——registry 的 `restore`/`hydrate` 现在**无条件算出全部视图**，`'all' | 'none'` 上移成 session-query 观测选项[[packages/session-query/session-query/src/observation.ts:44-48]()]()
-<!-- anchor: export interface SessionObservationOptions { … readonly projectionMode?: 'all' | 'none' -->，`'none'` 的含义也从"算状态不算视图"变成"**干脆不做投影**、不产出 `ProjectionSnapshot`"[[packages/session-query/session-query/src/observation.ts:150-152]()]()
+<!-- anchor: export interface SessionObservationOptions { … readonly projectionMode?: 'all' | 'none' -->，`'none'` 的含义也从"算状态不算视图"变成"**干脆不做投影**、不产出 `ProjectionSnapshot`"[[packages/session-query/session-query/src/observation.ts:151-153]()]()
 <!-- anchor: let projections: ProjectionSnapshot | undefined … projections = projectionMode === 'none' ? undefined : this.preparedProjections(e -->。为什么砍掉"只算我关心的几个视图"：投影状态（state）本来就必须全部折叠（否则 checkpoint 不完整），可选的只有"客户端视图（wire）算不算"。"list of keys"让调用方以为能省掉折叠，实际只省掉了 `wire` 计算，却让每个调用点都要维护一份 key 清单、并把"哪些 key 算视图"的知识泄漏到消费方；先收敛成布尔、再上移一层之后，语义只剩两种真实意图——"我要一份完整快照"与"我连投影都不需要"。
 
 ### 非日志 KV 写路径：domain 写 → backend 持久化 → domain/changed

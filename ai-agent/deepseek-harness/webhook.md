@@ -5,6 +5,8 @@ description: dsh 的 webhook 子系统（0.1.2-alpha 新增）——把经认证
 tags: [deepseek-harness, webhook, agent, fire-and-forget]
 ---
 
+> **本轮增量复核补充（0.1.5-rc.2 → 0.1.7-rc.2 @ 477b4f4205 / 2026-09-24）**：本文本轮未做内容改写，其引用在本次全库复跑中全部通过校验；上一版解读基线为 `dsh-v0.1.5-rc.2`。
+
 # Webhook 子系统：把外部事件投递成普通 root Session
 
 > 子文档之一，聚焦 dsh 0.1.2-alpha 新增的 `webhook` 能力面。覆盖 `packages/webhook/webhook`（provider 中立的运行时）与 `packages/webhook/webhook-github`（GitHub 适配器）。整体哲学见 [README](README.md)；本文衔接 [session.md](session.md)（投递最终落成一条普通 `user/message` 事件）、[credentials.md](credentials.md)（secret 凭据解析）、[deployment.md](deployment.md)（独立 WebServer 挂载）。按 ai-agent ⊗ framework 类规格产出。
@@ -139,15 +141,15 @@ flowchart LR
 
 1. `resolveRequest` 同步快照并校验规则结果（workspacePath 必须绝对路径、title/prompt/agentPreset/permissionPreset 非空；可选 model 若缺席则**快照当前部署的完整模型选择**，包括 reasoning effort）[[packages/webhook/webhook/src/session.ts:42-83]()]()
 <!-- anchor: /** Snapshot and validate a same-process rule result before crossing awaits. */ …   return { workspacePath, title, prompt, agentPreset, permissionPreset, modelSelection, agentOptions } -->；
-2. 解析 permission/agent preset → `workspaceRegistry.create`（resolve 或创建规范 Workspace）→ `agents.create`（`sessionId = webhook-<uuid>`、`meta.cwd = workspace.path`、agentOptions）[[packages/webhook/webhook/src/session.ts:117-138]()]()
+2. 解析 permission/agent preset → `workspaceRegistry.create`（resolve 或创建规范 Workspace）→ `agents.create`（`sessionId = webhook-<uuid>`、`meta.cwd = workspace.path`、agentOptions）[[packages/webhook/webhook/src/session.ts:117-139]()]()
 <!-- anchor: export async function createWebhookSession( …     setup: async (agentCtx) => { -->；
-3. `workspace.attachSession`（durable attach）→ 设 permissionPreset → `sessionTitle.rename` → `followup(createUserMessage({ source: { kind: 'webhook', …provenance } }))`[[packages/webhook/webhook/src/session.ts:147-159]()]()
+3. `workspace.attachSession`（durable attach）→ 设 permissionPreset → `sessionTitle.rename` → `followup(createUserMessage({ source: { kind: 'webhook', …provenance } }))`[[packages/webhook/webhook/src/session.ts:148-160]()]()
 <!-- anchor:     await workspace.attachSession(sessionId) …         ruleId, -->。
 
 Followup 是一条**普通** durable `user/message`，`source.kind: 'webhook'` + provider/source/delivery/rule 溯源；其 inbox 被接受即提交 webhook 操作，此后不特判 flush/等待 turn——普通 Session 持久化与 Agent 生命周期接管[[docs/subsystems/webhook.md:29-29]()]()
 <!-- anchor: The follow-up is a normal durable user-role message with -->
 
-回滚纪律：attach 前失败 → dispose 新建 Agent；attach 后失败 → 先 `workspace.detachSession` 再 `handle.dispose()`，且回滚失败只记 warn、不覆盖原始错误[[packages/webhook/webhook/src/session.ts:164-177]()]()
+回滚纪律：attach 前失败 → dispose 新建 Agent；attach 后失败 → 先 `workspace.detachSession` 再 `handle.dispose()`，且回滚失败只记 warn、不覆盖原始错误[[packages/webhook/webhook/src/session.ts:165-178]()]()
 <!-- anchor:   } catch (error: unknown) { …     throw error -->。唯一的"遗留"是 preflight 中自动创建的 Workspace 目录——它保留，因为并发调用方可能已在使用[[docs/subsystems/webhook.md:31-31]()]()
 <!-- anchor: Failed attachment disposes the new Agent before a prompt exists. -->。这也是一种务实取舍：**清理的是 Session 与 Agent 这类"活的资源"，保留的是目录这类"可复用资源"**。
 

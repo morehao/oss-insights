@@ -206,6 +206,7 @@ graph TB
 | [Coze Studio](ai-agent/coze-studio/) | Go + React/TS | 字节/扣子开源一站式 AI Agent 开发平台（自托管）：Go 单体 Hertz 承载 agent/workflow/knowledge/plugin/memory 五域，运行时站 CloudWeGo **Eino**（ReAct + compose Graph 编排，四要素折叠为统一 tool），工作流画布（FlowGram）编译成 eino Graph 可流式/中断恢复并被 Agent 复用为 tool，RAG 三层抽象 + 异步索引 + 表格库 NL2SQL，插件系统（manifest+OpenAPI 声明式 + AES + OAuth + 草稿/版本/绑定），gorm/gen + Atlas + 不可变版本快照，docker-compose + Helm 双轨自托管 | Apache-2.0 | [GitHub](https://github.com/coze-dev/coze-studio) |
 | [zacp](ai-agent/zacp/) | Go + Vue3 | 基于 ACP 协议的多 Agent Web 网关（"让 CLI Agent 拥有浏览器"）：本地单二进制以 ACP Client 宿主角色拉起多个 CLI Agent，浏览器经 REST/WS 使用；promptGate 三槽并发 + 空闲回收 + unknown-session 自动恢复，WS 订阅集合 + 权限 Web 端确认，SQLite WAL + v1-v6 迁移 + events 瘦身，Web TTY + 前端 embed | AGPL-3.0 | [GitHub](https://github.com/helloxz/zacp) |
 | [CompozyOS](ai-agent/compozy/) | Go + TS (React/Electron) | "agent 操作系统"：单二进制 local-first daemon 以 ACP 宿主收养 Claude Code/OpenClaw 等 CLI agent，session/loop/memory/approval/skill 皆 daemon 一等对象；多控制面共享同一 daemon-owned truth，多文件 SQLite + 先持久后广播；含 Gateway 与 Compozy Network；10 篇深度子文档（架构/session/loop/memory/审批/ACP/工具与 Skill/扩展/网关网络/数据模型） | MIT | [GitHub](https://github.com/compozy/compozy) |
+| [TripStar](ai-agent/tripstar/) | Python + Vue3 | 多智能体 AI 旅行规划全栈应用（FastAPI + Vue3）：3 个 `SimpleAgent` 经私有文本协议协作；小红书原生签名客户端绕过风控 + SSR 降级 + LLM 提纯三语景点并抽取预约提醒；Google 优先/高德兜底地图调度（失败进程级短路）；带权重记忆库（阈值 + 惰性衰减 + 合并 + TOP-K）；ECharts 知识图谱；进程内任务表 + 原子快照 + WebSocket 快照优先推送；五层 JSON 容错修复链 | GPL-2.0 | [GitHub](https://github.com/1sdv/TripStar) |
 
 ### [Agent 基础设施（AI Infra）](ai-infra/)
 

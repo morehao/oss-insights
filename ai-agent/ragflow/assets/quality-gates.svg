@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1860 620">
+  <title>四道质量闸门：上游缺陷下游无法补救</title>
+  <desc>RAGFlow 质量闸门链：原始文档经版式理解、语义切分、检索与重排、引用修复四道菱形闸门，产出结构化正文、带确定性身份的 chunk、上下文与带出处的答案。第一道闸失守时沿向下的失败路径产生垃圾进与垃圾出，该路径以风险色加虚线绘制，标注"下游无法补救"。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+    <marker id="arrow-risk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--risk)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.mono { font-size: 11.5px; fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.risk { fill: var(--risk); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; }
+.edge-arrow { marker-end: url(#arrow); }
+.zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.8; }
+  </style>
+  <rect x="0" y="0" width="1860" height="620" fill="var(--bg)"/>
+
+  <!-- 1. zones -->
+  <rect class="zone" x="20" y="140" width="1820" height="168" rx="10"/>
+
+  <!-- 2. connectors -->
+  <path class="edge edge-arrow" d="M 206 220 H 246"/>
+  <path class="edge edge-arrow" d="M 406 220 H 446"/>
+  <path class="edge edge-arrow" d="M 616 220 H 656"/>
+  <path class="edge edge-arrow" d="M 816 220 H 856"/>
+  <path class="edge edge-arrow" d="M 1026 220 H 1066"/>
+  <path class="edge edge-arrow" d="M 1226 220 H 1266"/>
+  <path class="edge edge-arrow" d="M 1406 220 H 1446"/>
+  <path class="edge edge-arrow" d="M 1606 220 H 1646"/>
+  <path class="edge-dashed" style="stroke: var(--risk); marker-end: url(#arrow-risk)" d="M 326 260 V 340"/>
+  <path class="edge-dashed" style="stroke: var(--risk); marker-end: url(#arrow-risk)" d="M 326 424 V 490"/>
+
+  <!-- 3. nodes -->
+  <rect class="node input" x="56" y="164" width="150" height="112" rx="6"/>
+  <path class="node process" d="M 326 180 L 406 220 L 326 260 L 246 220 Z"/>
+  <rect class="node process" x="446" y="164" width="170" height="112" rx="6"/>
+  <path class="node process" d="M 736 180 L 816 220 L 736 260 L 656 220 Z"/>
+  <rect class="node process" x="856" y="164" width="170" height="112" rx="6"/>
+  <path class="node process" d="M 1146 180 L 1226 220 L 1146 260 L 1066 220 Z"/>
+  <rect class="node process" x="1266" y="164" width="140" height="112" rx="6"/>
+  <path class="node process" d="M 1526 180 L 1606 220 L 1526 260 L 1446 220 Z"/>
+  <rect class="node process" x="1646" y="164" width="170" height="112" rx="6"/>
+  <rect class="node risk" x="241" y="340" width="170" height="84" rx="6"/>
+  <rect class="node risk" x="241" y="490" width="170" height="84" rx="6"/>
+  <rect class="node neutral" x="560" y="400" width="460" height="124" rx="6"/>
+
+  <!-- 4. titles / labels -->
+  <text class="title" x="40" y="44">四道质量闸门：上游缺陷下游无法补救</text>
+  <text class="small" x="40" y="68">入料质量 → 检索质量 → 能力交付；任一闸门失守，损失沿链传导且不可逆</text>
+  <text class="small" x="36" y="132">质量闸门链</text>
+
+  <text class="label" x="131" y="205" text-anchor="middle">原始文档</text>
+  <text class="small" x="131" y="229" text-anchor="middle">PDF / Office</text>
+  <text class="small" x="131" y="249" text-anchor="middle">扫描件</text>
+
+  <text class="label" x="326" y="215" text-anchor="middle">版式理解</text>
+  <text class="small" x="326" y="233" text-anchor="middle">第一道闸</text>
+
+  <text class="label" x="531" y="205" text-anchor="middle">结构化正文</text>
+  <text class="small" x="531" y="227" text-anchor="middle">标题 / 段落</text>
+  <text class="small" x="531" y="249" text-anchor="middle">表格 / 图</text>
+
+  <text class="label" x="736" y="215" text-anchor="middle">语义切分</text>
+  <text class="small" x="736" y="233" text-anchor="middle">第二道闸</text>
+
+  <text class="label" x="941" y="205" text-anchor="middle">chunk</text>
+  <text class="small" x="941" y="229" text-anchor="middle">带确定性身份</text>
+
+  <text class="label" x="1146" y="215" text-anchor="middle">检索与重排</text>
+  <text class="small" x="1146" y="233" text-anchor="middle">第三道闸</text>
+
+  <text class="label" x="1336" y="205" text-anchor="middle">上下文</text>
+  <text class="small" x="1336" y="229" text-anchor="middle">召回片段</text>
+
+  <text class="label" x="1526" y="215" text-anchor="middle">引用修复</text>
+  <text class="small" x="1526" y="233" text-anchor="middle">第四道闸</text>
+
+  <text class="label" x="1731" y="205" text-anchor="middle">带出处的答案</text>
+  <text class="small" x="1731" y="229" text-anchor="middle">句句可溯源</text>
+
+  <text class="label" x="326" y="387" text-anchor="middle">垃圾进</text>
+  <text class="label" x="326" y="537" text-anchor="middle">垃圾出</text>
+
+  <text class="label" x="584" y="440">上游缺陷下游无法补救</text>
+  <text class="small" x="584" y="466">被切碎的跨页表格，无论重排模型多强、</text>
+  <text class="small" x="584" y="490">LLM 多聪明，都还原不出原文的结构关系</text>
+
+  <text class="small" x="226" y="292" text-anchor="middle">读懂结构</text>
+  <text class="small" x="636" y="292" text-anchor="middle">按语义单元切开</text>
+  <text class="small" x="1046" y="292" text-anchor="middle">多路召回 + 重排</text>
+  <text class="small" x="1626" y="292" text-anchor="middle">句句可溯源</text>
+  <text class="small" x="342" y="330">读不懂</text>
+  <text class="small" x="342" y="462">下游无法补救</text>
+</svg>

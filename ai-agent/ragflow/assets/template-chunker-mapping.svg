@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 894" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>切分 —— 模板层与算法层两层解耦</title>
+  <desc>两栏映射图。左栏为模板层（业务语义）：问答对模板、表格模板、标题层级模板、按页模板、通用模板、手工模板。右栏为算法层（切分实现）：按问答、按表格、按标题、按标题分组、按层级标题、按页、按分隔符 / 令牌、通用规则、手工指定、整篇单块。算法列按模板顺序排列并用连线与模板一一映射，因此连线不交叉：业务同学改模板、工程同学改算法，少量模板乘以少量算法覆盖多数文档形态。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+      --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+      --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+        --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+        --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+      }
+    }
+    svg { background: var(--bg); }
+    .title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+    .label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+    .small { font-size: 12px; fill: var(--muted); }
+    .mono { font-size: 11.5px; fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .node { stroke: var(--line); stroke-width: 1; }
+    .neutral { fill: var(--neutral); }
+    .input { fill: var(--input); }
+    .process { fill: var(--process); }
+    .storage { fill: var(--storage); }
+    .external { fill: var(--external); }
+    .risk { fill: var(--risk); }
+    .edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+    .edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; }
+    .edge-arrow { marker-end: url(#arrow); }
+    .zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.8; }
+  </style>
+  <rect x="0" y="0" width="800" height="894" fill="var(--bg)"/>
+
+  <!-- 1. zones -->
+  <rect class="zone" rx="10" x="40" y="64" width="280" height="790"/>
+  <rect class="zone" rx="10" x="460" y="64" width="300" height="790"/>
+  <text class="small" x="56" y="84">模板层：业务语义</text>
+  <text class="small" x="476" y="84">算法层：切分实现</text>
+
+  <!-- 2. connectors: 模板 → 算法（算法列按模板顺序排列，连线不交叉） -->
+  <path class="edge edge-arrow" d="M 296 130 H 484"/>
+  <path class="edge edge-arrow" d="M 296 204 H 484"/>
+  <path class="edge edge-arrow" d="M 296 352 C 372 352, 408 278, 484 278"/>
+  <path class="edge edge-arrow" d="M 296 352 H 484"/>
+  <path class="edge edge-arrow" d="M 296 352 C 372 352, 408 426, 484 426"/>
+  <path class="edge edge-arrow" d="M 296 500 H 484"/>
+  <path class="edge edge-arrow" d="M 296 611 C 372 611, 408 574, 484 574"/>
+  <path class="edge edge-arrow" d="M 296 611 C 372 611, 408 648, 484 648"/>
+  <path class="edge edge-arrow" d="M 296 759 C 372 759, 408 722, 484 722"/>
+  <path class="edge edge-arrow" d="M 296 759 C 372 759, 408 796, 484 796"/>
+
+  <!-- 3. nodes: 模板层 -->
+  <rect class="node input" rx="6" x="64" y="96" width="232" height="68"/>
+  <text class="label" x="180" y="134" text-anchor="middle">问答对模板</text>
+
+  <rect class="node input" rx="6" x="64" y="170" width="232" height="68"/>
+  <text class="label" x="180" y="208" text-anchor="middle">表格模板</text>
+
+  <rect class="node input" rx="6" x="64" y="318" width="232" height="68"/>
+  <text class="label" x="180" y="356" text-anchor="middle">标题层级模板</text>
+
+  <rect class="node input" rx="6" x="64" y="466" width="232" height="68"/>
+  <text class="label" x="180" y="504" text-anchor="middle">按页模板</text>
+
+  <rect class="node input" rx="6" x="64" y="577" width="232" height="68"/>
+  <text class="label" x="180" y="615" text-anchor="middle">通用模板</text>
+
+  <rect class="node input" rx="6" x="64" y="725" width="232" height="68"/>
+  <text class="label" x="180" y="763" text-anchor="middle">手工模板</text>
+
+  <!-- 3. nodes: 算法层 -->
+  <rect class="node process" rx="6" x="484" y="96" width="252" height="68"/>
+  <text class="label" x="610" y="134" text-anchor="middle">按问答</text>
+
+  <rect class="node process" rx="6" x="484" y="170" width="252" height="68"/>
+  <text class="label" x="610" y="208" text-anchor="middle">按表格</text>
+
+  <rect class="node process" rx="6" x="484" y="244" width="252" height="68"/>
+  <text class="label" x="610" y="282" text-anchor="middle">按标题</text>
+
+  <rect class="node process" rx="6" x="484" y="318" width="252" height="68"/>
+  <text class="label" x="610" y="356" text-anchor="middle">按标题分组</text>
+
+  <rect class="node process" rx="6" x="484" y="392" width="252" height="68"/>
+  <text class="label" x="610" y="430" text-anchor="middle">按层级标题</text>
+
+  <rect class="node process" rx="6" x="484" y="466" width="252" height="68"/>
+  <text class="label" x="610" y="504" text-anchor="middle">按页</text>
+
+  <rect class="node process" rx="6" x="484" y="540" width="252" height="68"/>
+  <text class="label" x="610" y="578" text-anchor="middle">按分隔符 / 令牌</text>
+
+  <rect class="node process" rx="6" x="484" y="614" width="252" height="68"/>
+  <text class="label" x="610" y="652" text-anchor="middle">通用规则</text>
+
+  <rect class="node process" rx="6" x="484" y="688" width="252" height="68"/>
+  <text class="label" x="610" y="726" text-anchor="middle">手工指定</text>
+
+  <rect class="node process" rx="6" x="484" y="762" width="252" height="68"/>
+  <text class="label" x="610" y="800" text-anchor="middle">整篇单块</text>
+
+  <!-- 4. titles / notes -->
+  <text class="title" x="32" y="40">切分：模板层与算法层解耦</text>
+  <text class="small" x="400" y="876" text-anchor="middle">少量模板 × 少量算法，覆盖多数文档形态：改模板不动实现，改实现不动模板</text>
+</svg>

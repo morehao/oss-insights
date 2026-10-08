@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>记忆调度 —— 从消息竞争到持久化状态机</title>
+  <desc>左右对比两种记忆任务调度设计。左侧旧设计把任务数据全部放进消息流，多个消费者竞争消费，失败后无处落账；右侧新设计以数据库任务记录为唯一真源，通过条件更新抢占任务，失败即状态回流并退避重试，消息退化为纯唤醒信号。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+      --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+      --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+        --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+        --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+      }
+    }
+    svg { background: var(--bg); }
+    .title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+    .label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+    .small { font-size: 12px; fill: var(--muted); }
+    .mono { font-size: 11.5px; fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .node { stroke: var(--line); stroke-width: 1; }
+    .neutral { fill: var(--neutral); }
+    .input { fill: var(--input); }
+    .process { fill: var(--process); }
+    .storage { fill: var(--storage); }
+    .external { fill: var(--external); }
+    .risk { fill: var(--risk); }
+    .edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+    .edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; }
+    .edge-arrow { marker-end: url(#arrow); }
+    .zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.8; }
+  </style>
+  <rect x="0" y="0" width="1280" height="640" fill="var(--bg)"/>
+
+  <!-- 1. zones -->
+  <rect class="zone" rx="10" x="40" y="84" width="520" height="466"/>
+  <rect class="zone" rx="10" x="620" y="84" width="620" height="466"/>
+  <text class="small" x="64" y="114">旧：消息即任务</text>
+  <text class="small" x="64" y="136">消息流充当任务真源</text>
+  <text class="small" x="644" y="114">新：数据库是真源（持久化状态机）</text>
+  <text class="small" x="644" y="136">数据库即任务真源，消息只是信号</text>
+
+  <!-- 2. connectors -->
+  <path class="edge edge-arrow" d="M 300 260 L 300 294"/>
+  <path class="edge edge-arrow" d="M 300 384 L 300 418"/>
+  <path class="edge edge-arrow" d="M 820 260 L 820 294"/>
+  <path class="edge edge-arrow" d="M 820 384 L 820 418"/>
+  <path class="edge-dashed edge-arrow" d="M 1010 339 L 980 339"/>
+
+  <!-- 3. nodes: 旧 -->
+  <rect class="node process" rx="6" x="130" y="170" width="340" height="90"/>
+  <text class="label" x="300" y="208" text-anchor="middle">消息里有全部数据</text>
+  <text class="small" x="300" y="234" text-anchor="middle">任务负载与消息强绑定</text>
+
+  <rect class="node process" rx="6" x="130" y="294" width="340" height="90"/>
+  <text class="label" x="300" y="332" text-anchor="middle">消费者竞争</text>
+  <text class="small" x="300" y="358" text-anchor="middle">并发去重与超时回收无保障</text>
+
+  <rect class="node risk" rx="6" x="130" y="418" width="340" height="90"/>
+  <text class="label" x="300" y="456" text-anchor="middle">失败无处落账</text>
+  <text class="small" x="300" y="482" text-anchor="middle">无状态 · 无重试 · 无租约</text>
+
+  <!-- 3. nodes: 新 -->
+  <rect class="node storage" rx="6" x="660" y="170" width="320" height="90"/>
+  <text class="label" x="820" y="208" text-anchor="middle">数据库任务记录</text>
+  <text class="small" x="820" y="234" text-anchor="middle">状态 / 重试次数 / 租约</text>
+
+  <rect class="node process" rx="6" x="660" y="294" width="320" height="90"/>
+  <text class="label" x="820" y="332" text-anchor="middle">条件更新抢占</text>
+  <text class="small" x="820" y="358" text-anchor="middle">行锁串行化，谁抢到谁执行</text>
+
+  <rect class="node process" rx="6" x="660" y="418" width="320" height="90"/>
+  <text class="label" x="820" y="456" text-anchor="middle">失败即状态回流 + 退避重试</text>
+  <text class="small" x="820" y="482" text-anchor="middle">回到数据库，按下次重试时间再抢</text>
+
+  <rect class="node neutral" rx="6" stroke-dasharray="5 4" x="1010" y="294" width="190" height="90"/>
+  <text class="label" x="1105" y="332" text-anchor="middle">消息只作唤醒</text>
+  <text class="small" x="1105" y="358" text-anchor="middle">不含业务数据</text>
+
+  <!-- 4. titles -->
+  <text class="title" x="32" y="40">记忆调度：从消息竞争到持久化状态机</text>
+  <text class="small" x="40" y="600">左：任务塞进消息、失败无账可落；右：任务在库、消息只是唤醒信号——同一模式在摄取与记忆两处独立演进，说明这是架构偏好而非偶然。</text>
+</svg>

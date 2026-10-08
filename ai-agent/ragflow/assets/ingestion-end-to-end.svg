@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1720 980" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>摄取链路端到端全景</title>
+  <desc>这张图刻画 RAGFlow 文档摄取从客户端上传到知识编译调度的端到端链路：文档先落对象存储并建立摄取任务与 run 身份，任务消息只带标识入队；worker 在心跳续约后校验归属领取任务，再按任务状态决定直接确认、去重或进入执行；随后整图跑完版式解析、语义切分、富化与建索引，最后清理缓存、写终态日志并发布完成事件。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.chip { font-size: 12.5px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.risk { fill: var(--risk); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-arrow { marker-end: url(#arrow); }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+.zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.85; }
+  </style>
+  <rect x="0" y="0" width="1720" height="980" fill="var(--bg)"/>
+
+  <!-- 1. zones -->
+  <rect class="zone" x="8" y="100" width="399" height="850" rx="12"/>
+  <rect class="zone" x="443" y="100" width="399" height="850" rx="12"/>
+  <rect class="zone" x="878" y="100" width="399" height="850" rx="12"/>
+  <rect class="zone" x="1313" y="100" width="399" height="850" rx="12"/>
+  <text class="chip" x="207.5" y="126" text-anchor="middle">① 受理</text>
+  <text class="chip" x="642.5" y="126" text-anchor="middle">② 入队与调度</text>
+  <text class="chip" x="1077.5" y="126" text-anchor="middle">③ 状态判定与执行</text>
+  <text class="chip" x="1512.5" y="126" text-anchor="middle">④ 落库与收尾</text>
+
+  <!-- 2. connectors (under the boxes) -->
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 207.5 216 V 278"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 207.5 346 V 408"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 207.5 476 V 538"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 207.5 626 V 688"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 207.5 776 V 838"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 395 882 H 425 V 182 H 490"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 642.5 210 V 300"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 570 397.82 V 508"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 745 383.68 V 508"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 490 552 H 466 V 366 H 502.5"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 745 596 V 672"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 642.5 760 V 836"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 830 880 H 860 V 214 H 937.5"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 965 226.96 V 329"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1182.5 230.5 V 329"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1077.5 280 V 466"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1182.5 417 V 466"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1077.5 534 V 583"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1077.5 651 V 700"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1077.5 788 V 837"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1265 881 H 1295 V 192 H 1325"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1512.5 236 V 306"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1512.5 374 V 444"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1512.5 512 V 582"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1512.5 650 V 720"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 1512.5 788 V 858"/>
+
+  <!-- 3. nodes -->
+  <rect class="node input" x="20" y="148" width="375" height="68" rx="8"/>
+  <rect class="node storage" x="20" y="278" width="375" height="68" rx="8"/>
+  <rect class="node process" x="20" y="408" width="375" height="68" rx="8"/>
+  <rect class="node process" x="20" y="538" width="375" height="88" rx="8"/>
+  <rect class="node process" x="20" y="688" width="375" height="88" rx="8"/>
+  <rect class="node process" x="20" y="838" width="375" height="88" rx="8"/>
+  <path class="node storage" d="M 490 162 V 210 A 152.5 14 0 0 0 795 210 V 162"/>
+  <ellipse class="node storage" cx="642.5" cy="162" rx="152.5" ry="14"/>
+  <polygon class="node neutral" points="642.5,300 782.5,366 642.5,432 502.5,366"/>
+  <rect class="node neutral" x="490" y="508" width="160" height="88" rx="8"/>
+  <rect class="node process" x="660" y="508" width="170" height="88" rx="8"/>
+  <rect class="node process" x="455" y="672" width="375" height="88" rx="8"/>
+  <rect class="node process" x="455" y="836" width="375" height="88" rx="8"/>
+  <polygon class="node neutral" points="1077.5,148 1217.5,214 1077.5,280 937.5,214"/>
+  <rect class="node neutral" x="890" y="329" width="150" height="88" rx="8"/>
+  <rect class="node neutral" x="1100" y="329" width="165" height="88" rx="8"/>
+  <rect class="node process" x="890" y="466" width="375" height="68" rx="8"/>
+  <rect class="node process" x="890" y="583" width="375" height="68" rx="8"/>
+  <rect class="node process" x="890" y="700" width="375" height="88" rx="8"/>
+  <rect class="node process" x="890" y="837" width="375" height="88" rx="8"/>
+  <rect class="node process" x="1325" y="148" width="375" height="88" rx="8"/>
+  <rect class="node process" x="1325" y="306" width="375" height="68" rx="8"/>
+  <rect class="node process" x="1325" y="444" width="375" height="68" rx="8"/>
+  <rect class="node neutral" x="1325" y="582" width="375" height="68" rx="8"/>
+  <rect class="node process" x="1325" y="720" width="375" height="68" rx="8"/>
+  <rect class="node process" x="1325" y="858" width="375" height="68" rx="8"/>
+
+  <!-- 4. node labels -->
+  <text class="label" x="207.5" y="187" text-anchor="middle">客户端上传文档</text>
+  <text class="label" x="207.5" y="317" text-anchor="middle">原文落对象存储</text>
+  <text class="label" x="207.5" y="447" text-anchor="middle">建文档记录 + 建摄取任务</text>
+  <text class="label" x="207.5" y="576" text-anchor="middle">分配 run 身份</text>
+  <text class="chip" x="207.5" y="598" text-anchor="middle">文档级串行 + 序号自增</text>
+  <text class="label" x="207.5" y="726" text-anchor="middle">开一条运行日志</text>
+  <text class="chip" x="207.5" y="748" text-anchor="middle">绑定本次 run</text>
+  <text class="label" x="207.5" y="876" text-anchor="middle">发布任务消息</text>
+  <text class="chip" x="207.5" y="898" text-anchor="middle">载荷只带任务标识</text>
+  <text class="label" x="642.5" y="191" text-anchor="middle">消息队列</text>
+  <text class="label" x="642.5" y="371" text-anchor="middle">有 worker 空闲吗</text>
+  <text class="label" x="570" y="546" text-anchor="middle">等待</text>
+  <text class="chip" x="570" y="568" text-anchor="middle">不预取</text>
+  <text class="label" x="745" y="557" text-anchor="middle">worker 领取任务</text>
+  <text class="label" x="642.5" y="710" text-anchor="middle">启动心跳</text>
+  <text class="chip" x="642.5" y="732" text-anchor="middle">持续续约</text>
+  <text class="label" x="642.5" y="874" text-anchor="middle">校验归属</text>
+  <text class="chip" x="642.5" y="896" text-anchor="middle">领取任务</text>
+  <text class="label" x="1077.5" y="219" text-anchor="middle">任务当前状态</text>
+  <text class="label" x="965" y="367" text-anchor="middle">直接确认</text>
+  <text class="chip" x="965" y="389" text-anchor="middle">丢弃消息</text>
+  <text class="label" x="1182.5" y="367" text-anchor="middle">判定重复投递</text>
+  <text class="chip" x="1182.5" y="389" text-anchor="middle">重新校验 run 身份</text>
+  <text class="label" x="1077.5" y="505" text-anchor="middle">进入执行</text>
+  <text class="label" x="1077.5" y="622" text-anchor="middle">整图执行解析管线</text>
+  <text class="label" x="1077.5" y="738" text-anchor="middle">版式理解</text>
+  <text class="chip" x="1077.5" y="760" text-anchor="middle">→ 结构化正文</text>
+  <text class="label" x="1077.5" y="875" text-anchor="middle">语义切分</text>
+  <text class="chip" x="1077.5" y="897" text-anchor="middle">→ chunk 集合</text>
+  <text class="label" x="1512.5" y="186" text-anchor="middle">富化</text>
+  <text class="chip" x="1512.5" y="208" text-anchor="middle">关键词 / 问题 / 摘要 / 向量</text>
+  <text class="label" x="1512.5" y="345" text-anchor="middle">写入检索引擎</text>
+  <text class="label" x="1512.5" y="483" text-anchor="middle">清理该任务的临时缓存</text>
+  <text class="label" x="1512.5" y="621" text-anchor="middle">收尾：更新状态 + 写终态日志</text>
+  <text class="label" x="1512.5" y="759" text-anchor="middle">发布完成事件</text>
+  <text class="label" x="1512.5" y="897" text-anchor="middle">知识编译调度</text>
+
+  <!-- 5. edge labels / headings -->
+  <text class="small" x="582" y="470" text-anchor="start">否</text>
+  <text class="small" x="724" y="470" text-anchor="start">是</text>
+  <text class="small" x="955" y="306" text-anchor="end">已终态</text>
+  <text class="small" x="1192.5" y="306" text-anchor="start">运行中</text>
+  <text class="small" x="1087.5" y="320" text-anchor="start">待执行</text>
+  <text class="title" x="20" y="42">摄取链路端到端全景</text>
+  <text class="small" x="20" y="68">受理即成功；排队不预取；同一任务重复投递是常态</text>
+</svg>

@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1014" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>解析策略：能信文件就不信模型</title>
+  <desc>RAGFlow 单页解析策略流程图：一页内容先渲染成位图,同时抽取原生字符层;以字符层是否可信作为唯一判据,可信时只用检测框把字符归拢成行,乱码、扫描页或无字符时才做整页检测与识别;两路都汇入区域检测与分类,再判断是否存在表格区域,表格区域额外做单元格结构识别与重建;最后统一做分栏串联、去页眉页脚与合段的版面后处理,输出带类型与坐标的正文块、表格、图与大纲。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.chip { font-size: 12.5px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.risk { fill: var(--risk); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-arrow { marker-end: url(#arrow); }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+  </style>
+  <rect x="0" y="0" width="1200" height="1014" fill="var(--bg)"/>
+
+  <!-- 标题 -->
+  <text class="title" x="600" y="42" text-anchor="middle">解析策略：能信文件就不信模型</text>
+  <text class="small" x="600" y="66" text-anchor="middle">判据是字符层可信度,不是文件类型;模型只用在文件本身没有信息的地方</text>
+
+  <!-- 1. connectors -->
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 160 V 176"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 264 V 280"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 470 324 H 330 V 384"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 730 324 H 870 V 384"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 330 472 V 480 H 520 V 488"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 870 472 V 480 H 680 V 488"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 576 V 592"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 480 636 H 330 V 696"/>
+  <path class="edge-dashed" fill="none" marker-end="url(#arrow)" d="M 720 636 H 1030 V 844 H 780"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 330 784 V 792 H 520 V 800"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 888 V 904"/>
+
+  <!-- 2. edge labels -->
+  <text class="chip" x="400" y="314" text-anchor="middle">可信</text>
+  <text class="chip" x="800" y="314" text-anchor="middle">乱码 / 扫描页 / 无字符</text>
+  <text class="chip" x="405" y="610" text-anchor="middle">是</text>
+  <text class="chip" x="405" y="628" text-anchor="middle">至少有一个表格区域</text>
+  <text class="chip" x="860" y="628" text-anchor="middle">否</text>
+
+  <!-- 3. nodes -->
+  <rect class="node input" x="500" y="92" width="200" height="68" rx="8"/>
+  <text class="label" x="600" y="131" text-anchor="middle">一页内容</text>
+  <rect class="node process" x="450" y="176" width="300" height="88" rx="8"/>
+  <text class="label" x="600" y="213" text-anchor="middle">渲染成位图</text>
+  <text class="label" x="600" y="235" text-anchor="middle">同时抽取原生字符层</text>
+  <polygon class="node neutral" points="600,280 730,324 600,368 470,324"/>
+  <text class="label" x="600" y="329" text-anchor="middle">字符层可信吗</text>
+  <rect class="node process" x="200" y="384" width="260" height="88" rx="8"/>
+  <text class="label" x="330" y="421" text-anchor="middle">检测框只用于</text>
+  <text class="label" x="330" y="443" text-anchor="middle">把字符归拢成行</text>
+  <rect class="node process" x="740" y="384" width="260" height="88" rx="8"/>
+  <text class="label" x="870" y="433" text-anchor="middle">整页检测 + 识别</text>
+  <rect class="node process" x="410" y="488" width="380" height="88" rx="8"/>
+  <text class="label" x="600" y="525" text-anchor="middle">区域检测与分类</text>
+  <text class="label" x="600" y="547" text-anchor="middle">标题 / 正文 / 图 / 表格 / 页眉页脚</text>
+  <polygon class="node neutral" points="600,592 720,636 600,680 480,636"/>
+  <text class="label" x="600" y="641" text-anchor="middle">是表格区域吗</text>
+  <rect class="node process" x="190" y="696" width="280" height="88" rx="8"/>
+  <text class="label" x="330" y="733" text-anchor="middle">单元格结构识别</text>
+  <text class="label" x="330" y="755" text-anchor="middle">文字归属 + 重建成表</text>
+  <rect class="node process" x="420" y="800" width="360" height="88" rx="8"/>
+  <text class="label" x="600" y="837" text-anchor="middle">版面后处理</text>
+  <text class="label" x="600" y="859" text-anchor="middle">分栏串联 / 去页眉页脚 / 合段</text>
+  <rect class="node storage" x="430" y="904" width="340" height="88" rx="8"/>
+  <text class="label" x="600" y="941" text-anchor="middle">正文块（带类型与坐标）</text>
+  <text class="label" x="600" y="963" text-anchor="middle">表格 / 图 / 大纲</text>
+</svg>

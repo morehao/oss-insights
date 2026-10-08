@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1054" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>引用修复：让每句话都能指回原文</title>
+  <desc>RAGFlow 引用修复流程图：模型开始流式生成后,若提示词要求按编号标注出处,就在生成过程中持续解析答案里的引用标记;模型没有写标记时,按句子相似度回补引用作为兜底;随后一路向下做归一引用格式、校验引用编号有效性并丢弃悬空标记、修复插槽式引用泄漏、展开区间引用、按块组装引用明细,最终输出答案与逐句出处。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.chip { font-size: 12.5px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.risk { fill: var(--risk); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-arrow { marker-end: url(#arrow); }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+  </style>
+  <rect x="0" y="0" width="1200" height="1054" fill="var(--bg)"/>
+
+  <!-- 标题 -->
+  <text class="title" x="600" y="42" text-anchor="middle">引用修复：让每句话都能指回原文</text>
+  <text class="small" x="600" y="66" text-anchor="middle">不是格式转换,而是一串防御性处理：回补 / 归一 / 校验 / 清理 / 展开</text>
+
+  <!-- 1. connectors -->
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 160 V 176"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 280 V 296"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 384 V 400"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 488 V 504"/>
+  <path class="edge-dashed" fill="none" marker-end="url(#arrow)" d="M 460 444 H 220 V 504"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 360 548 H 430"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 592 V 608"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 696 V 712"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 780 V 796"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 864 V 880"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 600 948 V 964"/>
+
+  <!-- 2. edge labels -->
+  <text class="chip" x="642" y="498" text-anchor="middle">是</text>
+  <text class="chip" x="340" y="436" text-anchor="middle">否</text>
+
+  <!-- 3. nodes -->
+  <rect class="node input" x="460" y="92" width="280" height="68" rx="8"/>
+  <text class="label" x="600" y="131" text-anchor="middle">模型开始流式生成</text>
+  <polygon class="node neutral" points="600,176 790,228 600,280 410,228"/>
+  <text class="label" x="600" y="221" text-anchor="middle">提示词里要求模型</text>
+  <text class="label" x="600" y="243" text-anchor="middle">按编号标注出处</text>
+  <rect class="node process" x="450" y="296" width="300" height="88" rx="8"/>
+  <text class="label" x="600" y="333" text-anchor="middle">生成过程中持续解析</text>
+  <text class="label" x="600" y="355" text-anchor="middle">答案里的引用标记</text>
+  <polygon class="node neutral" points="600,400 740,444 600,488 460,444"/>
+  <text class="label" x="600" y="449" text-anchor="middle">模型写了标记吗</text>
+  <rect class="node risk" x="80" y="504" width="280" height="88" rx="8"/>
+  <text class="label" x="220" y="541" text-anchor="middle">按句子相似度</text>
+  <text class="label" x="220" y="563" text-anchor="middle">回补引用</text>
+  <rect class="node process" x="430" y="504" width="340" height="88" rx="8"/>
+  <text class="label" x="600" y="553" text-anchor="middle">归一引用格式</text>
+  <rect class="node process" x="440" y="608" width="320" height="88" rx="8"/>
+  <text class="label" x="600" y="645" text-anchor="middle">校验引用编号有效性</text>
+  <text class="label" x="600" y="667" text-anchor="middle">丢弃悬空标记</text>
+  <rect class="node process" x="450" y="712" width="300" height="68" rx="8"/>
+  <text class="label" x="600" y="751" text-anchor="middle">修复插槽式引用泄漏</text>
+  <rect class="node process" x="470" y="796" width="260" height="68" rx="8"/>
+  <text class="label" x="600" y="835" text-anchor="middle">展开区间引用</text>
+  <rect class="node process" x="450" y="880" width="300" height="68" rx="8"/>
+  <text class="label" x="600" y="919" text-anchor="middle">按块组装引用明细</text>
+  <rect class="node storage" x="440" y="964" width="320" height="68" rx="8"/>
+  <text class="label" x="600" y="1003" text-anchor="middle">输出：答案 + 逐句出处</text>
+</svg>

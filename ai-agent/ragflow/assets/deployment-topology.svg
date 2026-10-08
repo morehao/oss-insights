@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 880" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>部署形态:进程与外部依赖</title>
+  <desc>RAGFlow 部署拓扑图。上方虚线框是容器编排域：nginx 网关、Go 主二进制(按模式启动为 api、admin、ingestor、syncer)、Web 前端静态资源,以及按需启用的沙箱执行器容器,它负责隔离不可信代码;网关以业务路径和管理路径两条边指向主二进制,并直接服务前端。下方虚线框是中间件域,六个外部依赖排成一行：MySQL、Elasticsearch 或 Infinity、Kvrocks 或 Redis、NATS JetStream、MinIO 与可选的 ClickHouse。主二进制以实线连接五个必备中间件,以虚线按需连接分析型存储与沙箱。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+    <marker id="arrow-dashed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.chip { font-size: 12.5px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.risk { fill: var(--risk); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-arrow { marker-end: url(#arrow); }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow-dashed); }
+.zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.85; }
+  </style>
+  <rect x="0" y="0" width="1320" height="880" fill="var(--bg)"/>
+
+  <text class="title" x="40" y="44">部署形态:进程与外部依赖</text>
+  <text class="small" x="40" y="70">一个二进制按模式启动;中间件全部为外部依赖,其中分析型存储与沙箱按需启用。</text>
+
+  <!-- ============ 1. connectors (paths first, so arrows sit behind the boxes) ============ -->
+  <!-- nginx -> Go 主二进制,两条可区分的纵向边：业务路径 / 管理路径 -->
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 590 222 V 306"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 730 222 V 306"/>
+  <!-- nginx -> Web 前端静态资源 -->
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 540 187 H 185 V 306"/>
+  <!-- Go 主二进制 -> 五个必备中间件(实线):各自独立横向走线,垂直落入圆柱顶面,互不交叉 -->
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 470 418 V 486 H 138 V 660"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 520 418 V 540 H 347 V 660"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 570 418 V 558 H 556 V 660"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 620 418 V 522 H 765 V 660"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 670 418 V 504 H 974 V 660"/>
+  <!-- Go 主二进制 -.-> ClickHouse(按需,虚线) -->
+  <path class="edge-dashed" fill="none" stroke-dasharray="6 5" marker-end="url(#arrow-dashed)" d="M 720 418 V 478 H 1183 V 660"/>
+  <!-- Go 主二进制 -.-> 沙箱执行器容器(按需,虚线) -->
+  <path class="edge-dashed" fill="none" stroke-dasharray="6 5" marker-end="url(#arrow-dashed)" d="M 870 362 H 960"/>
+
+  <!-- connector labels -->
+  <text class="small" x="582" y="266" text-anchor="end">业务路径</text>
+  <text class="small" x="738" y="266" text-anchor="start">管理路径</text>
+  <text class="small" x="915" y="350" text-anchor="middle">按需</text>
+  <text class="small" x="1170" y="600" text-anchor="end">按需</text>
+
+  <!-- ============ 2. zone frames ============ -->
+  <rect class="zone" x="40" y="104" width="1240" height="362" rx="10"/>
+  <text class="label" x="60" y="132">容器编排</text>
+  <rect class="zone" x="40" y="578" width="1240" height="264" rx="10"/>
+  <text class="label" x="60" y="606">中间件</text>
+
+  <!-- ============ 3. nodes: 容器编排 ============ -->
+  <!-- nginx 网关 -->
+  <rect class="node input" x="540" y="156" width="240" height="66" rx="10"/>
+  <text class="label" x="660" y="194" text-anchor="middle">nginx 网关</text>
+
+  <!-- Web 前端(静态资源) -->
+  <rect class="node neutral" x="80" y="306" width="210" height="112" rx="10"/>
+  <text class="label" x="185" y="354" text-anchor="middle">Web 前端</text>
+  <text class="chip" x="185" y="376" text-anchor="middle">(静态资源)</text>
+
+  <!-- Go 主二进制,按模式启动 -->
+  <rect class="node process" x="450" y="306" width="420" height="112" rx="10"/>
+  <text class="label" x="660" y="341" text-anchor="middle">Go 主二进制</text>
+  <text class="chip" x="660" y="363" text-anchor="middle">按模式启动为 api / admin</text>
+  <text class="chip" x="660" y="385" text-anchor="middle">ingestor / syncer</text>
+
+  <!-- 沙箱执行器容器：按需启用,隔离不可信代码 -->
+  <rect class="node risk" x="960" y="306" width="280" height="112" rx="10"/>
+  <text class="label" x="1100" y="341" text-anchor="middle">沙箱执行器容器</text>
+  <text class="chip" x="1100" y="363" text-anchor="middle">按需启用</text>
+  <text class="chip" x="1100" y="385" text-anchor="middle">不可信代码隔离</text>
+
+  <!-- ============ 3. nodes: 中间件(圆柱感：圆角柱体 + 顶部椭圆) ============ -->
+  <!-- MySQL -->
+  <path class="node external" d="M 41 674 A 97 14 0 0 1 235 674 V 758 A 97 14 0 0 1 41 758 Z"/>
+  <ellipse class="node external" cx="138" cy="674" rx="97" ry="14"/>
+  <text class="label" x="138" y="735" text-anchor="middle">MySQL</text>
+
+  <!-- Elasticsearch 或 Infinity -->
+  <path class="node external" d="M 250 674 A 97 14 0 0 1 444 674 V 758 A 97 14 0 0 1 250 758 Z"/>
+  <ellipse class="node external" cx="347" cy="674" rx="97" ry="14"/>
+  <text class="label" x="347" y="722" text-anchor="middle">Elasticsearch</text>
+  <text class="chip" x="347" y="744" text-anchor="middle">或 Infinity</text>
+
+  <!-- Kvrocks / Redis -->
+  <path class="node external" d="M 459 674 A 97 14 0 0 1 653 674 V 758 A 97 14 0 0 1 459 758 Z"/>
+  <ellipse class="node external" cx="556" cy="674" rx="97" ry="14"/>
+  <text class="label" x="556" y="735" text-anchor="middle">Kvrocks / Redis</text>
+
+  <!-- NATS JetStream -->
+  <path class="node external" d="M 668 674 A 97 14 0 0 1 862 674 V 758 A 97 14 0 0 1 668 758 Z"/>
+  <ellipse class="node external" cx="765" cy="674" rx="97" ry="14"/>
+  <text class="label" x="765" y="735" text-anchor="middle">NATS JetStream</text>
+
+  <!-- MinIO -->
+  <path class="node external" d="M 877 674 A 97 14 0 0 1 1071 674 V 758 A 97 14 0 0 1 877 758 Z"/>
+  <ellipse class="node external" cx="974" cy="674" rx="97" ry="14"/>
+  <text class="label" x="974" y="735" text-anchor="middle">MinIO</text>
+
+  <!-- ClickHouse(可选) -->
+  <path class="node external" d="M 1086 674 A 97 14 0 0 1 1280 674 V 758 A 97 14 0 0 1 1086 758 Z"/>
+  <ellipse class="node external" cx="1183" cy="674" rx="97" ry="14"/>
+  <text class="label" x="1183" y="722" text-anchor="middle">ClickHouse</text>
+  <text class="chip" x="1183" y="744" text-anchor="middle">(可选)</text>
+</svg>

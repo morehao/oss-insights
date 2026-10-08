@@ -55,17 +55,17 @@ svg { background: var(--bg); }
   <path class="edge edge-arrow" d="M 765 464 V 580 H 225 V 254"/>
 
   <!-- 3. nodes -->
-  <circle cx="70" cy="210" r="9" class="neutral" stroke="var(--line)" stroke-width="1.5"/>
+  <circle cx="70" cy="210" r="9" class="node neutral" stroke="var(--line)" stroke-width="1.5"/>
   <rect class="node process" x="140" y="166" width="170" height="88" rx="8"/>
   <rect class="node process" x="410" y="166" width="170" height="88" rx="8"/>
   <rect class="node process" x="680" y="166" width="170" height="88" rx="8"/>
   <rect class="node process" x="950" y="166" width="170" height="88" rx="8"/>
-  <circle cx="1210" cy="210" r="13" class="neutral" stroke="var(--line)" stroke-width="1.5"/>
-  <circle cx="1210" cy="210" r="7" class="neutral" stroke="var(--line)" stroke-width="1.5"/>
+  <circle cx="1210" cy="210" r="13" class="node neutral" stroke="var(--line)" stroke-width="1.5"/>
+  <circle cx="1210" cy="210" r="7" class="node neutral" stroke="var(--line)" stroke-width="1.5"/>
   <rect class="node risk" x="680" y="376" width="170" height="88" rx="8"/>
   <rect class="node neutral" x="950" y="376" width="170" height="88" rx="8"/>
-  <circle cx="1035" cy="545" r="13" class="neutral" stroke="var(--line)" stroke-width="1.5"/>
-  <circle cx="1035" cy="545" r="7" class="neutral" stroke="var(--line)" stroke-width="1.5"/>
+  <circle cx="1035" cy="545" r="13" class="node neutral" stroke="var(--line)" stroke-width="1.5"/>
+  <circle cx="1035" cy="545" r="7" class="node neutral" stroke="var(--line)" stroke-width="1.5"/>
   <rect class="node neutral" x="60" y="640" width="460" height="90" rx="8"/>
 
   <!-- 4. titles / labels -->

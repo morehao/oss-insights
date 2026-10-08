@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1360 1040" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>读取链路：一次问答的运行时路径</title>
+  <desc>RAGFlow 读取链路的运行时路径。客户端提问经网关进入 api 进程完成鉴权与租户作用域，读写关系库中的会话与历史后进行查询处理：改写、扩展与关键词抽取。查询处理并行分叉出文本匹配召回与查询向量化两条支路，向量召回与文本召回在引擎内融合，再做引擎外重排；若配置了重排模型则额外走模型重排，随后按令牌预算组装上下文、流式生成，最后修复引用并同时流式返回答案与把引用明细落关系库。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.chip { font-size: 12.5px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.risk { fill: var(--risk); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-arrow { marker-end: url(#arrow); }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+.zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.85; }
+  </style>
+  <rect x="0" y="0" width="1360" height="1040" fill="var(--bg)"/>
+
+  <!-- 1. connectors -->
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 630 138 V 156"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 630 196 V 214"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 630 262 V 280"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 630 328 V 370"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 570 418 V 428 H 400 V 436"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 690 418 V 428 H 860 V 440"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 400 484 V 502"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 860 480 V 545 H 660 V 560"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 400 542 V 580 H 530"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 630 600 V 618"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 630 666 V 684"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 775 710 H 800"/>
+  <path class="edge-dashed" fill="none" marker-end="url(#arrow)" d="M 630 736 V 746 H 455 V 802 H 515"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 885 732 V 810 H 745"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 630 826 V 844"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 630 892 V 910"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 560 958 V 966 H 415 V 976"/>
+  <path class="edge edge-arrow" fill="none" marker-end="url(#arrow)" d="M 700 958 V 966 H 845 V 976"/>
+
+  <!-- 2. nodes -->
+  <rect class="node input" x="540" y="98" width="180" height="40" rx="6"/>
+  <rect class="node process" x="540" y="156" width="180" height="40" rx="6"/>
+  <rect class="node process" x="515" y="214" width="230" height="48" rx="6"/>
+  <rect class="node storage" x="515" y="280" width="230" height="48" rx="6"/>
+  <rect class="node process" x="505" y="370" width="250" height="48" rx="6"/>
+  <rect class="node external" x="300" y="436" width="200" height="48" rx="6"/>
+  <rect class="node process" x="760" y="440" width="200" height="40" rx="6"/>
+  <rect class="node process" x="300" y="502" width="200" height="40" rx="6"/>
+  <rect class="node process" x="530" y="560" width="200" height="40" rx="6"/>
+  <rect class="node process" x="515" y="618" width="230" height="48" rx="6"/>
+  <polygon class="node neutral" points="630,684 775,710 630,736 485,710"/>
+  <rect class="node process" x="800" y="688" width="170" height="44" rx="6"/>
+  <rect class="node process" x="515" y="778" width="230" height="48" rx="6"/>
+  <rect class="node external" x="515" y="844" width="230" height="48" rx="6"/>
+  <rect class="node process" x="515" y="910" width="230" height="48" rx="6"/>
+  <rect class="node storage" x="300" y="976" width="230" height="48" rx="6"/>
+  <rect class="node storage" x="730" y="976" width="230" height="48" rx="6"/>
+
+  <!-- 3. zone frames -->
+  <rect class="zone" x="380" y="72" width="500" height="264" rx="10"/>
+  <rect class="zone" x="210" y="344" width="840" height="400" rx="10"/>
+  <rect class="zone" x="210" y="752" width="840" height="280" rx="10"/>
+
+  <!-- 4. titles and labels -->
+  <text class="title" x="40" y="34">读取链路：一次问答的运行时路径</text>
+  <text class="small" x="40" y="58">同步链路必须在一次请求内走完；可选的模型重排与 Agentic 多轮检索决定这次请求花多少钱、多少时间</text>
+
+  <text class="small" x="400" y="90">接入与会话</text>
+  <text class="small" x="230" y="362">检索与重排</text>
+  <text class="small" x="230" y="770">生成与溯源</text>
+
+  <text class="label" x="630" y="123" text-anchor="middle">客户端提问</text>
+
+  <text class="label" x="630" y="181" text-anchor="middle">网关</text>
+
+  <text class="label" x="630" y="233" text-anchor="middle">api 进程</text>
+  <text class="chip" x="630" y="252" text-anchor="middle">鉴权与租户作用域</text>
+
+  <text class="label" x="630" y="299" text-anchor="middle">会话与历史</text>
+  <text class="chip" x="630" y="318" text-anchor="middle">读写关系库</text>
+
+  <text class="label" x="630" y="389" text-anchor="middle">查询处理</text>
+  <text class="chip" x="630" y="408" text-anchor="middle">改写 / 扩展 / 抽取关键词</text>
+
+  <text class="label" x="400" y="455" text-anchor="middle">查询向量化</text>
+  <text class="chip" x="400" y="474" text-anchor="middle">外部模型服务</text>
+
+  <text class="label" x="860" y="465" text-anchor="middle">文本匹配召回</text>
+
+  <text class="label" x="400" y="527" text-anchor="middle">向量召回</text>
+
+  <text class="label" x="630" y="585" text-anchor="middle">引擎内融合</text>
+
+  <text class="label" x="630" y="637" text-anchor="middle">引擎外重排</text>
+  <text class="chip" x="630" y="656" text-anchor="middle">词面分 + 语义分</text>
+
+  <text class="label" x="630" y="715" text-anchor="middle">配置了重排模型吗</text>
+
+  <text class="label" x="885" y="715" text-anchor="middle">模型重排</text>
+
+  <text class="label" x="630" y="797" text-anchor="middle">上下文组装</text>
+  <text class="chip" x="630" y="816" text-anchor="middle">按令牌预算裁剪</text>
+
+  <text class="label" x="630" y="863" text-anchor="middle">流式生成</text>
+  <text class="chip" x="630" y="882" text-anchor="middle">外部模型服务</text>
+
+  <text class="label" x="630" y="929" text-anchor="middle">引用修复</text>
+  <text class="chip" x="630" y="948" text-anchor="middle">校验 / 回补 / 清理</text>
+
+  <text class="label" x="415" y="995" text-anchor="middle">流式返回</text>
+  <text class="chip" x="415" y="1014" text-anchor="middle">答案 + 逐句出处</text>
+
+  <text class="label" x="845" y="995" text-anchor="middle">引用明细与消息</text>
+  <text class="chip" x="845" y="1014" text-anchor="middle">落关系库</text>
+
+  <text class="small" x="787" y="700" text-anchor="middle">是</text>
+  <text class="small" x="447" y="772" text-anchor="end">否</text>
+</svg>

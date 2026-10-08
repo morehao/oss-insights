@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1360 900">
+  <title>系统边界与总体视图：边界内是一体化自托管进程，边界外是模型、外部服务与数据源</title>
+  <desc>RAGFlow 总体架构上下文图。边界外上方是三类入口：终端用户与业务系统、IM 渠道、外部数据源；边界内自上而下依次是网关、六种进程角色（api/admin/ingestor/syncer/deepdoc/migrate）、领域模块（知识库与文档、摄取与任务调度、解析与切分、检索与问答、Agent 与记忆、知识编译）、引擎适配层（检索引擎、缓存与检查点、消息、对象存储、解析后端）；底部基础设施为 MySQL、检索引擎、对象存储、键值存储与消息中间件。右侧边界外是外部模型服务、可选外部解析服务、外部 MCP 服务，以及唯一跨出主进程的沙箱执行器容器。依赖方向只允许自上而下：接入到服务、服务到领域、领域到适配、适配到资源。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+    <marker id="arrow-external" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--external-line)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+  --external-line: #b45309;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+    --external-line: #fbbf24;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.chip { font-size: 12.5px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.mono { font-size: 11.5px; fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-arrow { marker-end: url(#arrow); }
+.edge-out { stroke: var(--external-line); stroke-width: 1.5; fill: none; marker-end: url(#arrow-external); }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+.zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.85; }
+  </style>
+  <rect x="0" y="0" width="1360" height="900" fill="var(--bg)"/>
+
+  <text class="title" x="40" y="44">系统边界与总体视图</text>
+  <text class="small" x="40" y="70">边界内是一体化自托管进程：同步请求从网关进入，重活经消息异步处理；边界外是模型、外部服务与数据源。</text>
+
+  <!-- 1. connectors -->
+  <path class="edge edge-arrow" d="M 190 164 V 221"/>
+  <path class="edge edge-arrow" d="M 510 164 V 221"/>
+  <path class="edge edge-arrow" d="M 860 164 V 221"/>
+  <path class="edge edge-arrow" d="M 540 277 V 293"/>
+  <path class="edge edge-arrow" d="M 540 395 V 413"/>
+  <path class="edge edge-arrow" d="M 540 505 V 523"/>
+  <path class="edge-dashed" d="M 175 615 V 730 H 330 V 786"/>
+  <path class="edge-dashed" d="M 355 615 V 745 H 730 V 786"/>
+  <path class="edge-dashed" d="M 535 615 V 760 H 930 V 786"/>
+  <path class="edge-dashed" d="M 715 615 V 715 H 530 V 786"/>
+  <path class="edge-out" d="M 1010 450 H 1030 V 272 H 1080"/>
+  <path class="edge-out" d="M 895 615 V 700 H 1046 V 372 H 1080"/>
+  <path class="edge-out" d="M 1010 350 H 1050 V 572 H 1080"/>
+
+  <!-- 2. zones -->
+  <rect class="zone" x="40" y="190" width="1000" height="560" rx="12"/>
+  <text class="small" x="56" y="214">RAGFlow 系统边界（自托管、单二进制多模式）</text>
+  <rect class="zone" x="1064" y="190" width="260" height="560" rx="12"/>
+  <text class="small" x="1080" y="214">边界外：外部依赖</text>
+
+  <!-- 3. inputs -->
+  <rect class="node input" x="40" y="110" width="300" height="54" rx="8"/>
+  <text class="label" x="190" y="134" text-anchor="middle">终端用户 / 业务系统</text>
+  <text class="small" x="190" y="152" text-anchor="middle">同步请求：问答、检索、管理</text>
+  <rect class="node input" x="360" y="110" width="300" height="54" rx="8"/>
+  <text class="label" x="510" y="134" text-anchor="middle">IM 渠道</text>
+  <text class="small" x="510" y="152" text-anchor="middle">消息归一化后进入对话</text>
+  <rect class="node input" x="680" y="110" width="360" height="54" rx="8"/>
+  <text class="label" x="860" y="134" text-anchor="middle">外部数据源（周期同步）</text>
+  <text class="small" x="860" y="152" text-anchor="middle">连接器拉取变更后走同一摄取链路</text>
+
+  <!-- 4. inside boundary -->
+  <rect class="node neutral" x="70" y="225" width="940" height="52" rx="8"/>
+  <text class="label" x="540" y="256" text-anchor="middle">网关：路径分流与请求整形（管理路径 / 业务路径）</text>
+
+  <rect class="node neutral" x="70" y="293" width="940" height="102" rx="8"/>
+  <text class="small" x="84" y="314">进程角色：按模式装配，同一份代码的六种启动形态</text>
+  <rect class="node process" x="90" y="328" width="140" height="44" rx="8"/>
+  <text class="chip" x="160" y="355" text-anchor="middle">api</text>
+  <rect class="node process" x="245" y="328" width="140" height="44" rx="8"/>
+  <text class="chip" x="315" y="355" text-anchor="middle">admin</text>
+  <rect class="node process" x="400" y="328" width="140" height="44" rx="8"/>
+  <text class="chip" x="470" y="355" text-anchor="middle">ingestor</text>
+  <rect class="node process" x="555" y="328" width="140" height="44" rx="8"/>
+  <text class="chip" x="625" y="355" text-anchor="middle">syncer</text>
+  <rect class="node process" x="710" y="328" width="140" height="44" rx="8"/>
+  <text class="chip" x="780" y="355" text-anchor="middle">deepdoc</text>
+  <rect class="node process" x="865" y="328" width="140" height="44" rx="8"/>
+  <text class="chip" x="935" y="355" text-anchor="middle">migrate</text>
+
+  <rect class="node neutral" x="70" y="413" width="940" height="92" rx="8"/>
+  <text class="small" x="84" y="434">领域模块：平级协作，通过共享数据模型与接口约定配合</text>
+  <rect class="node process" x="90" y="446" width="140" height="44" rx="8"/>
+  <text class="chip" x="160" y="473" text-anchor="middle">知识库与文档</text>
+  <rect class="node process" x="245" y="446" width="140" height="44" rx="8"/>
+  <text class="chip" x="315" y="473" text-anchor="middle">摄取与调度</text>
+  <rect class="node process" x="400" y="446" width="140" height="44" rx="8"/>
+  <text class="chip" x="470" y="473" text-anchor="middle">解析与切分</text>
+  <rect class="node process" x="555" y="446" width="140" height="44" rx="8"/>
+  <text class="chip" x="625" y="473" text-anchor="middle">检索与问答</text>
+  <rect class="node process" x="710" y="446" width="140" height="44" rx="8"/>
+  <text class="chip" x="780" y="473" text-anchor="middle">Agent 与记忆</text>
+  <rect class="node process" x="865" y="446" width="140" height="44" rx="8"/>
+  <text class="chip" x="935" y="473" text-anchor="middle">知识编译</text>
+
+  <rect class="node neutral" x="70" y="523" width="940" height="92" rx="8"/>
+  <text class="small" x="84" y="544">引擎适配层：把可替换的后端差异收在一处</text>
+  <rect class="node storage" x="90" y="556" width="170" height="44" rx="8"/>
+  <text class="chip" x="175" y="583" text-anchor="middle">检索引擎适配</text>
+  <rect class="node storage" x="270" y="556" width="170" height="44" rx="8"/>
+  <text class="chip" x="355" y="583" text-anchor="middle">缓存与检查点</text>
+  <rect class="node storage" x="450" y="556" width="170" height="44" rx="8"/>
+  <text class="chip" x="535" y="583" text-anchor="middle">消息</text>
+  <rect class="node storage" x="630" y="556" width="170" height="44" rx="8"/>
+  <text class="chip" x="715" y="583" text-anchor="middle">对象存储</text>
+  <rect class="node storage" x="810" y="556" width="170" height="44" rx="8"/>
+  <text class="chip" x="895" y="583" text-anchor="middle">解析后端</text>
+
+  <rect class="node neutral" x="70" y="645" width="940" height="86" rx="8"/>
+  <text class="small" x="84" y="668">依赖方向只允许自上而下：接入 → 服务 → 领域 → 适配 → 资源；反向依赖与跨层调用都视为腐化。</text>
+  <text class="small" x="84" y="690">模式之间不互相调用：跨模式协作只有两种形式——共享数据库与消息；关系库是所有重要状态的真源，由各模块直接读写。</text>
+  <text class="small" x="84" y="712">适配层之上不允许出现"某个引擎特有"的语义；适配层之下不允许出现业务判断。</text>
+
+  <!-- 5. infrastructure -->
+  <rect class="node storage" x="40" y="790" width="180" height="66" rx="8"/>
+  <text class="label" x="130" y="818" text-anchor="middle">MySQL</text>
+  <text class="small" x="130" y="838" text-anchor="middle">状态真源</text>
+  <rect class="node storage" x="240" y="790" width="180" height="66" rx="8"/>
+  <text class="label" x="330" y="818" text-anchor="middle">检索引擎</text>
+  <text class="small" x="330" y="838" text-anchor="middle">chunk 与向量（可重建）</text>
+  <rect class="node storage" x="440" y="790" width="180" height="66" rx="8"/>
+  <text class="label" x="530" y="818" text-anchor="middle">对象存储</text>
+  <text class="small" x="530" y="838" text-anchor="middle">原文与抽取的图</text>
+  <rect class="node storage" x="640" y="790" width="180" height="66" rx="8"/>
+  <text class="label" x="730" y="818" text-anchor="middle">键值存储</text>
+  <text class="small" x="730" y="838" text-anchor="middle">缓存与执行检查点</text>
+  <rect class="node storage" x="840" y="790" width="180" height="66" rx="8"/>
+  <text class="label" x="930" y="818" text-anchor="middle">消息中间件</text>
+  <text class="small" x="930" y="838" text-anchor="middle">任务与事件（纯唤醒）</text>
+
+  <!-- 6. outside dependencies -->
+  <rect class="node external" x="1084" y="240" width="220" height="64" rx="8"/>
+  <text class="label" x="1194" y="266" text-anchor="middle">外部模型服务</text>
+  <text class="small" x="1194" y="286" text-anchor="middle">生成、向量化、重排</text>
+  <rect class="node external" x="1084" y="340" width="220" height="64" rx="8"/>
+  <text class="label" x="1194" y="366" text-anchor="middle">外部解析服务（可选）</text>
+  <text class="small" x="1194" y="386" text-anchor="middle">内置解析不足时才接</text>
+  <rect class="node external" x="1084" y="440" width="220" height="64" rx="8"/>
+  <text class="label" x="1194" y="466" text-anchor="middle">外部 MCP 服务</text>
+  <text class="small" x="1194" y="486" text-anchor="middle">需校验与超时约束</text>
+  <rect class="node external" x="1084" y="540" width="220" height="64" rx="8"/>
+  <text class="label" x="1194" y="566" text-anchor="middle">沙箱执行器</text>
+  <text class="small" x="1194" y="586" text-anchor="middle">独立容器，不可信代码隔离</text>
+  <text class="small" x="1080" y="644">边界外的可用性、配额与合规</text>
+  <text class="small" x="1080" y="664">不由本系统保证——这是外部风险，</text>
+  <text class="small" x="1080" y="684">也是"内置解析优先"这条策略的由来。</text>
+  <text class="small" x="1080" y="708">沙箱是唯一跨出主进程的执行形态。</text>
+</svg>

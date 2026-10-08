@@ -21,7 +21,7 @@ tags: [ragflow, rag, ai-agent, deepdoc, hybrid-retrieval, go, python, kvrocks, n
 
 ## 子文档索引
 
-- [architecture-design.md](architecture-design.md) — **架构设计说明（建议先读）**：分层与边界、六种运行模式、文档摄取与任务调度、版式理解与切分解耦、检索与引用修复、Agent 执行、五类存储真源划分、关键取舍与已知边界
+- [architecture-design.md](architecture-design.md) — **架构设计说明（建议先读）**：按七步骨架组织——背景与定位（为什么做/解决什么问题）、设计输入（约束/非目标/技术选型）、总体架构（边界/分层/六种运行形态）、核心模块与职责、写入链路（文档生命周期与任务调度，含"调度正确 ≠ 解析正确"）、文档处理策略（解析六主张 + 切分策略与父子块）、读取链路（多路召回/四级重排/引用修复）、Agent 执行、状态与持久化、关键决策与代价（含备选方案与复审触发条件）、部署形态、容量与性能口径（解析吞吐模型/读取延迟预算/档位示例）、已知边界、验收标准与开放问题
 - [architecture.md](architecture.md) — 架构总览：Go 单栈、六 mode 单二进制、启动与请求链路、in-process native DeepDoc
 - [data-model.md](data-model.md) — 数据模型：MySQL(GORM) 元数据 + ES/Infinity 检索引擎的双引擎骨架与 54 表演进
 - [ingestion-deepdoc.md](ingestion-deepdoc.md) — 数据摄取与文档解析：Deep Doc Understanding 的解析/切分管线

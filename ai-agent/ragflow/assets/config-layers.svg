@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 550">
+  <title>配置的三级结构与生效覆盖</title>
+  <desc>配置按环境相关程度分三层，从左到右依次覆盖：① 环境变量文件提供部署级开关（选哪个检索引擎、用什么设备），② 服务配置文件提供端口、连接串、中间件地址等服务级参数，③ 运行时环境变量覆盖做容器级微调，统一前缀注入；三者合并后得到最终生效配置。下方为编排 profile 门控提示：沙箱、ClickHouse 等可选组件在未启用对应 profile 时完全不启动容器。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.mono { font-size: 11.5px; fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.risk { fill: var(--risk); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; }
+.edge-arrow { marker-end: url(#arrow); }
+.zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.8; }
+  </style>
+  <rect x="0" y="0" width="1180" height="550" fill="var(--bg)"/>
+
+  <!-- 2. connectors -->
+  <path class="edge edge-arrow" d="M 270 192 H 330"/>
+  <path class="edge edge-arrow" d="M 560 192 H 620"/>
+  <path class="edge edge-arrow" d="M 850 192 H 910"/>
+  <text class="small" x="300" y="182" text-anchor="middle">覆盖</text>
+  <text class="small" x="590" y="182" text-anchor="middle">覆盖</text>
+  <text class="small" x="880" y="182" text-anchor="middle">覆盖</text>
+
+  <!-- 3. nodes -->
+  <rect class="node process" x="40" y="112" width="230" height="160" rx="6"/>
+  <rect class="node process" x="330" y="112" width="230" height="160" rx="6"/>
+  <rect class="node process" x="620" y="112" width="230" height="160" rx="6"/>
+  <rect class="node input" x="910" y="112" width="230" height="160" rx="6" style="stroke-width:2.5"/>
+  <rect class="node external" x="40" y="340" width="1100" height="130" rx="6" stroke-dasharray="5 4"/>
+
+  <!-- 4. titles / labels -->
+  <text class="title" x="40" y="40">配置的三级结构与生效覆盖</text>
+  <text class="small" x="40" y="64">从外到内覆盖：后一层的同名配置覆盖前一层，最终合并为一份生效配置</text>
+
+  <text class="label" x="64" y="158">① 环境变量文件</text>
+  <text class="small" x="64" y="184">部署级开关</text>
+  <text class="small" x="64" y="210">选哪个检索引擎</text>
+  <text class="small" x="64" y="236">用什么设备（CPU / GPU）</text>
+
+  <text class="label" x="354" y="158">② 服务配置文件</text>
+  <text class="small" x="354" y="184">服务级参数</text>
+  <text class="small" x="354" y="210">端口 / 连接串</text>
+  <text class="small" x="354" y="236">中间件地址</text>
+
+  <text class="label" x="644" y="158">③ 运行时环境变量覆盖</text>
+  <text class="small" x="644" y="184">容器级微调</text>
+  <text class="small" x="644" y="210">统一前缀注入</text>
+  <text class="small" x="644" y="236">同名变量覆盖前两层</text>
+
+  <text class="label" x="934" y="158">生效配置</text>
+  <text class="small" x="934" y="184">三层合并后的最终值</text>
+  <text class="small" x="934" y="210">优先级：③ &gt; ② &gt; ①</text>
+  <text class="small" x="934" y="236">供各服务启动时读取</text>
+
+  <text class="label" x="64" y="385">编排 profile 门控：按需启用的组件</text>
+  <text class="small" x="64" y="411">沙箱 / ClickHouse 等可选组件，不启用对应 profile 时不启动容器</text>
+  <text class="small" x="64" y="437">让默认部署保持轻量：可选依赖不参与启动</text>
+
+  <text class="small" x="40" y="516">环境差异集中在第一层：换检索引擎、切 CPU/GPU、改数据库类型都只动 ①</text>
+</svg>

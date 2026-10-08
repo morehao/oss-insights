@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 660">
+  <title>画布与运行时：前端编排，后场执行</title>
+  <desc>Agent 执行模型的两个分区：编排区里，画布以节点与连线的方式让用户可视化编排工作流；执行区里，运行时把图定义编译为可执行流程，读写外置的执行状态（运行元数据与 checkpoint），并按节点需要调用工具层（内置工具 / MCP / 代码沙箱 / 检索）。运行时通过流式事件把执行进展回流给画布。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.mono { font-size: 11.5px; fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.risk { fill: var(--risk); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; }
+.edge-arrow { marker-end: url(#arrow); }
+.zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.8; }
+  </style>
+  <rect x="0" y="0" width="1200" height="660" fill="var(--bg)"/>
+
+  <!-- 1. zones -->
+  <rect class="zone" x="40" y="150" width="300" height="420" rx="10"/>
+  <text class="small" x="56" y="142">编排：面向用户的前端</text>
+  <rect class="zone" x="480" y="150" width="680" height="420" rx="10"/>
+  <text class="small" x="496" y="142">执行：后场运行时</text>
+
+  <!-- 2. connectors -->
+  <path class="edge edge-arrow" d="M 310 340 H 460 V 260 H 520"/>
+  <path class="edge edge-arrow" d="M 800 260 H 930" marker-start="url(#arrow)"/>
+  <path class="edge edge-arrow" d="M 660 330 V 410"/>
+  <path class="edge-dashed edge-arrow" d="M 740 200 V 118 H 190 V 270"/>
+
+  <!-- 3. nodes -->
+  <rect class="node process" x="70" y="270" width="240" height="140" rx="6"/>
+  <rect class="node process" x="520" y="200" width="280" height="130" rx="6"/>
+  <rect class="node storage" x="930" y="200" width="190" height="130" rx="6"/>
+  <rect class="node process" x="520" y="410" width="600" height="130" rx="6"/>
+
+  <!-- 4. titles / labels -->
+  <text class="title" x="40" y="40">画布与运行时：前端编排，后场执行</text>
+  <text class="small" x="40" y="64">画布产出图定义，运行时编译执行；执行状态外置，流式事件回流画布</text>
+
+  <text class="label" x="190" y="319" text-anchor="middle">画布</text>
+  <text class="small" x="190" y="345" text-anchor="middle">节点 + 连线</text>
+  <text class="small" x="190" y="371" text-anchor="middle">可视化编排工作流</text>
+
+  <text class="label" x="660" y="244" text-anchor="middle">运行时</text>
+  <text class="small" x="660" y="270" text-anchor="middle">把图编译为可执行流程</text>
+  <text class="small" x="660" y="296" text-anchor="middle">无状态 · 可多实例</text>
+
+  <text class="label" x="1025" y="244" text-anchor="middle">执行状态</text>
+  <text class="small" x="1025" y="270" text-anchor="middle">运行元数据</text>
+  <text class="small" x="1025" y="296" text-anchor="middle">+ checkpoint</text>
+
+  <text class="label" x="820" y="467" text-anchor="middle">工具层</text>
+  <text class="small" x="820" y="493" text-anchor="middle">内置工具 / MCP / 代码沙箱 / 检索</text>
+
+  <text class="small" x="70" y="215">面向用户的编排面</text>
+  <text class="small" x="70" y="460">编排产物 = 一张图定义</text>
+  <text class="small" x="70" y="486">交给运行时变成真实执行</text>
+
+  <text class="small" x="390" y="330" text-anchor="middle">保存为图定义</text>
+  <text class="small" x="865" y="250" text-anchor="middle">读写执行状态</text>
+  <text class="small" x="672" y="372">按节点需要调用</text>
+  <text class="small" x="430" y="108" text-anchor="middle">流式事件</text>
+
+  <text class="small" x="40" y="600">执行状态外置：运行元数据与检查点跨请求、跨进程存活，运行时保持无状态</text>
+  <text class="small" x="40" y="624">好处：支持多实例部署，重启后可从 checkpoint 恢复</text>
+</svg>

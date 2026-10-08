@@ -2,6 +2,89 @@
 
 > 本解读对 RAGFlow（infiniflow/ragflow）的跨版本变更汇总；按版本倒序。描述清楚相关变动即可：若上游有官方 changelog，参照它并结合代码变动生成；没有则基于代码变动（git diff / release notes / 代码快照比对）生成。
 
+## [v1.0.0-rc1]（预发布 tag）
+
+> 依据：`v1.0.0-rc1`@`14bb02ee`（上一版依据 `v0.27.2`@`a024bea0`，区间 **578 commits、2939 文件、+203029 / −481683 行**，其中 **1225 个文件删除**）。上游有官方 release notes（`docs/release_notes.md`），本版参照它并结合代码变动生成。
+>
+> **基线性质声明**：`v1.0.0-rc1` 是**用户显式指定的预发布 tag，非稳定基线**。skill 的基线优先级为「稳定 tag > 稳定分支 > main/master」，预发布 tag 不在其列，故本档案所有结论均标注此前提，引用与数值以该 tag 工作树为准。
+
+**交付形态置换：Python 服务栈删除，收敛为 Go 单栈（本版最大变更）**
+- 官方 release notes 首条即声明 “comprehensive rewrite of RAGFlow in Go”（`docs/release_notes.md:16-18`），消息队列 Redis→NATS、缓存与 checkpoint 统一落 Kvrocks。
+- **删除范围**（1225 文件，按顶层目录）：`test/` 521、`rag/` 192、`api/` 142、`common/` 109、`agent/` 71、`deepdoc/` 65、`internal/` 52、`helm/` 19、`admin/` 19、`memory/` 13、`web/` 7、`tools/` 5、`mcp/` 3、`docker/` 3。**`deepdoc/`、`memory/`、`mcp/` 顶层、`admin/` 顶层、`helm/` 已完全删除**。
+- **删除由 9 个提交分阶段完成**：`562e0218`（Remove python source code，23 文件）→ `670e6887`（part2，505 文件，−205285）→ `efbb8007`（−81356）→ `53c4f55f`（part2，−97830）→ `adf2e0c0`（移除 py 测试用例，166 文件）→ `e111e1f9`（移除 Python Dockerfile/compose）→ `c2f17b77`（重写 entrypoint，4 文件）→ `a9c73040`（移除死掉的 deepdoc_oss 服务）→ `d64b84c7`（web 侧移除 python/hybrid 代理配置）。顺序即**源码 → 测试 → 交付脚本 → 前端配置**，每步保持仓库可构建。
+- **交付文件收敛**：`docker/entrypoint.sh`、`Dockerfile_go`、`Dockerfile_deepdoc_oss`、`docker/docker-compose-go.yml`、`docker/.env-go` 全部删除；`docker/entrypoint-go.sh` 成唯一 entrypoint，**全文 0 次出现 `API_PROXY_SCHEME`**（`docker/entrypoint-go.sh:137-140` 硬编码 `cp -f ragflow.conf.golang`）；仓库根 `Dockerfile` 即原 `Dockerfile_go`（stage 名 `go-builder`，`:270` `ENTRYPOINT ["./entrypoint-go.sh"]`）；`docker/.env:263-265` 默认值翻转为 `API_PROXY_SCHEME=go`、`python` 被注释。
+- **Python 余量分类**（全仓 186 个 `.py`）：资产约 24（`rag/prompts`、`rag/res`、`api/db/init_data/compilation_templates`，由 Go 读取）；**服务 42（`agent/sandbox/`，独立容器 `sandbox-executor-manager`，`profiles: [sandbox]`，绑 `127.0.0.1:9385`，挂 docker.sock）**；工具与客户端约 106（`test/` 77、`tools/` 24、`sdk/` 19、`example/` 5、`scripts/` 2 等）。`sdk/python/` 保留并升到 `1.0.0-rc1`。
+- 影响文档：`architecture.md`、`go-rewrite-migration.md`（新建）、`README.md`
+
+**存储层换血：NATS JetStream + Kvrocks**
+- 队列唯一后端为 `nats`：`ParseQueueEngineConfig` 只识别 `case "nats"`，其余报错（`internal/server/config/queue_engine_config.go:35-46`）；服务模板 ingestor 的 `mq_type` 写死 `'nats'`（`docker/service_conf.yaml.template:115-116`）；compose 以 `-js -sd /data` 启动（`docker/docker-compose-base.yml:357-366`）。
+- cache 后端固定 Kvrocks，理由是不受内存 `maxmemory` 上限约束（`internal/server/config/cache_engine_config.go:27-31`）；配置层把 `"redis"` 与 `"kvrocks"` **映射到同一实现**，`redis` 仅为兼容共享模板残留（`:47-52`）。go.mod 无专用 Kvrocks 客户端，全走 `go-redis/v9`（协议兼容）。
+- **checkpoint 三个落点分工**：图执行 → NATS KV（`internal/harness/graph/checkpoint/nats.go`，bucket `checkpoints`，History=3 + `MaxGraphIdle`/`GCInterval` 双层 GC）；canvas → Kvrocks `agent:cp:`（`internal/agent/canvas/checkpoint_store.go:34-36`，`RedisCheckPointStore`→`KvrocksCheckPointStore`）；摄取 per-chunk → Kvrocks（与 RunTracker 同对齐 7 天 TTL）。
+- Valkey 服务**就地替换**为 `apache/kvrocks:2.16.0`（`docker/docker-compose-base.yml:298-307`），容器数净减一；但 compose 仍留**孤儿卷** `redis_data`，且 `docker/migration.sh` **逐字节未变**、卷清单缺 `kvrocks_data`/`nats_data`/`clickhouse_data`（`docker/migration.sh:15-16`、`:59-63`）——**用官方脚本备份后再升级存在丢 Kvrocks 数据的风险**。
+- MySQL 调优：`innodb_flush_log_at_trx_commit`/`sync_binlog` 放宽、buffer pool 4G→1G（`:246-250`、`:259`），实测摄取吞吐 **23 → ~56 docs/min**（`:232`）。
+- 影响文档：`architecture.md`、`go-rewrite-migration.md`、`deployment-admin.md`
+
+**检索管线实质变更**
+- **非 Infinity 融合权重改变**：`"0.05,0.95"` → `const esFusionWeights = "0.001,1"`（`internal/service/nlp/retrieval.go:636-639`），注释说明留极小词面权重只为避开"零权重被拒"的引擎限制；首轮召回因此变成**纯向量 pass**，精排统一交下游 `RerankWithKNN`。Infinity 分支保持 `vector_similarity_weight`（默认 0.3）动态权重（`:608-614`）。遗留：`FusionExpr` 注释仍写旧值 `0.05,0.95`（`internal/engine/types/types.go:131-135`）。
+- **citation 加厚为三段式**：`internal/service/citation.go` 从约 360 行涨到 **669 行**，新增 `RepairBadCitationFormats`/`RepairSlotCitations`/`ExpandRangeCitations`/`ResolveCitationMarkers` 四个修复器（`ResolveCitationMarkers` 见 `:531-532`）；`CitationPrompt` 新增"禁止把逐个引用合并成 `[ID:i-j]`"的硬约束（`internal/rag/prompts/generator.go:119-120`）。Deep Researcher 有独立 `kbPrompt`（`internal/service/deep_researcher.go:716-717`）与调用点（`internal/service/ask_service.go:277`）。
+- **`RERANK_TOKEN_LIMIT_MODE` 简化**：Go 侧不再对 `ErrRerankTokenLimitPolicy` 做 `errors.Is` 特判上抛，改由 `RerankByModel` 原样透传（`internal/service/nlp/reranker.go:168-170`）。三态解析仍在 `internal/entity/models/types.go:388-402`，哨兵 `:15-18`，默认 `defaultMaxRerankTokens = 8196`。
+- **`parser_config` 反转**：`graphrag`/`raptor` 由上一版的"被剥离"改为**显式允许**（`internal/service/dataset/helpers.go:206-208`），并新增结构化校验（`:289-290`：`use_graphrag` 须 bool、`entity_types` 须字符串列表、`method ∈ light|general|ner`）；`validIndexTypes = ["graph","raptor","mindmap"]`（`:53-54`）。
+- 三条检索 API 全部 Go 路由，前两条共用同一 handler（`internal/router/router.go:334`、`:373-374`）；Python `chunk_api.py` 删除，hybrid nginx 不再回路由 Python（`docker/nginx/ragflow.conf.hybrid:63-64`）。
+- **`use_kg` 变为"三通一堵"**：chat（`chat_pipeline.go:986-987`）、Dify（`dify_retrieval_handler.go:293-294`，本版新增）、deep researcher（`deep_researcher.go:394-395`）已打通；REST `/datasets/search` 仍 warn-and-skip（`dataset/search.go:325-327`）；canvas 工具与 NLP adapter 仍拒绝且文案过期（"请使用 Python Canvas"，而 Python Canvas 已不存在）（`agent/tool/retrieval.go:36-38`、`retrieval_nlp.go:204-205`）。
+- 影响文档：`rag-pipeline.md`、`data-model.md`
+
+**Agent 平台与能力面**
+- **Agentic RAG 换家**：`internal/agent/harness/`（34 文件）删除，迁至**新增的顶层包 `internal/rag/`**（79 个 `.go` / 约 +55,929 行）；研究图 7 节点、会话图 3 节点双层 eino 图，预算集中 `internal/rag/agentic-rag/policy.go:53-55`。
+- **顶层 `internal/harness/` 不是本版新增**：v0.27.2 已存在同构的 264 个 `.go`，本区间**仅改 2 个文件**（`README.md` +1/−1、`events/nats.go` +19/−9）；全仓**零生产 import**，属未接线框架。此项纠正了上一版解读把 Agentic RAG 归因于它的错误。
+- **记忆重做为持久化状态机 + 租约抢占**：新增 `memory_task` 表（`pending→extracted→stored→completed/failed`，含 `next_retry_at`/`attempt_count`/`lease_owner`/`lease_expires_at`/`last_error`，`internal/entity/memory_task.go:24-28`），`MemoryTaskDAO.Claim` 用 CAS 取代 Redis stream 消费者竞争；NATS `tasks.RAGFLOW` 载荷退化为 `{task_id, task_type}` 唤醒信号（`internal/common/task.go:24-37`）。记忆分层澄清为 **raw/semantic/episodic/procedural 四类位掩码**（非上一版的"语义+程序"两分）。
+- **MCP 内→外原地重写**为官方 `github.com/modelcontextprotocol/go-sdk v1.8.0`，声明 4 个协议版本；`types.go`（225 行）删除，新增 `http.go`（138 行，`Options{SSE,StreamableHTTP,JSONResponse}`）与 `tools.json`（schema 外置 `//go:embed`）。仍是 3 工具（retrieval/list_datasets/list_chats），**无 resources/prompts**。外→内仍自研 `internal/utility/mcp_client.go`，仅 `sse`/`streamable-http`，**无 stdio**。新增 Agent 组件级绑定 `buildAgentMCPTools`（`internal/agent/component/agent_mcp.go:21-23`）。
+- **Skill 为独立新子系统且与 Agent 零耦合**：`skill_spaces` 表（三态 active/deleted/deleting）、`SKILL.md`(YAML frontmatter)、ES/Infinity 独立索引（`conf/skill_es_mapping.json`，7 档 `q_*_vec` 向量）、`SkillSearchService.hybridSearch` 混合检索、`/v1/skills/*` REST、CLI 从 `local|github|clawhub|skillssh` 安装并安全扫描。**但 `grep -rni "skill" --include=*.go internal/agent/` 命中 0**——Skill 不是 Agent 组件/工具，无系统提示注入；唯一"Skill→系统上下文"实现位于未接线的 `harness/core/middlewares/skill/`。另存在同名的第二概念（知识编译产出的 skill 页面，`/datasets/:id/skills`，底层 `compile_kwd = skill/skill_all`）。
+- **两处功能回退**：①渠道**不能再绑定 Agent**——Go `ChatChannel` 无 `agent_id` 列（`internal/entity/chat_channel.go:20-29`），`HandleIncomingMessage` 只认 `chat_id`（`internal/service/chat_channel.go:296-298`），而 v0.27.2 的 Python `chat_channel` 表有该列并有 `validate_agent_target`；②**无 ACP / Agent Client Protocol / agent server**（全仓 grep 0 命中），`internal/cli/` 只是 HTTP 管理客户端。
+- 沙箱：Go 侧仍是客户端抽象，7 provider 顺序含 `local`（`internal/agent/sandbox/catalog.go:16-18`），新增 **Tenki 云沙箱**（`go.mod:14`，`github.com/LuxorLabs/tenki-sdk-go/sandbox v0.7.0`）、`catalog.go`(397 行)/`probe.go`(107 行)/`testdata/admin_contract.json`(653 行) 三份新文件；执行体仍在 Python `agent/sandbox/`（Go 从未重写沙箱运行体）。
+- `internal/agent/canvas/stream.go`+`stream_test.go`（253 行）删除，SSE 帧格式化下沉到 `internal/service/bot_completion.go:201`。
+- 影响文档：`agent-platform.md`、`rag-pipeline.md`
+
+**Schema 与数据演进**
+- 实体 **49 → 54 表：仅新增 5 张，零删除**：`conversation_message`、`conversation_reference`、`api_4_conversation_message`、`api_4_conversation_reference`、`memory_task`。
+- 会话历史拆子表：`ChatSession` 通过 `gorm:"-"` 排除 `message`/`reference`（`internal/entity/chat.go:66-74`）；`conversation_message` 用 `(conversation_id, position)` 复合主键 + CASCADE（`internal/entity/conversation_history.go:34-39`）。
+- **迁移顺序反转**：`RunMigrations` 先于 `AutoMigrate`（`internal/dao/database.go:249-254`），保护 `tenant_model.model_type` 不被强转 text→int。
+- **无 `migration_version` 表**：版本存 `system_settings` 的 `mysql_migration.database.version`（`internal/dao/migration_version.go:36-39`）。
+- 新增 3 个迁移文件：`parser_config_migration.go`（TokenChunker:SixApplesFall → GeneralChunker:SixApplesFall，仅 `parser_id ∈ {general,naive}` 且 `pipeline_id` 为空，批次 256）、`conversation_history_migration.go`（目标 `v1.0.0-rc1`，批次 100，可断点续跑）、`model_migration.go`（1556 行，移植 `tools/scripts/mysql_migration.py`，把模型 id 改写为 `<model>@default@<provider>`）。
+- `document.run` 列已从 Go 实体移除但仍以 `HasColumn` 兜底引用（幽灵列）；`internal/dao/database.go:405-416` 在非 migrate 模式自动建 **7** 张 Go 专属运行时表。
+- 索引映射：8 个文件在 `conf/`，其中 `os_mapping.json` 与 `message_infinity_mapping.json` 是**孤儿**（零引用）；引擎派发仅 elasticsearch/infinity/oceanbase+seekdb/serenedb，**无 opensearch**（`internal/engine/global.go:53-65`）。`*_with_weight` 模板语义改变：`text + index:"false"` → `keyword + index:true + ignore_above:10000 + similarity:boolean`，模式加宽为 `^.*_(with_weight|list)$`（`conf/mapping.json:132-140`）。
+- 影响文档：`data-model.md`、`go-rewrite-migration.md`、`deployment-admin.md`
+
+**摄取与解析**
+- **断点续传语义重写**：eino 图级 checkpoint **整体移除**，`Pipeline.Run` 声明 "always runs the full graph from the entry node"、"Resume-from-checkpoint is intentionally not supported"（`internal/ingestion/pipeline/pipeline.go:182-185`）；续传等价物改为 per-chunk 缓存（`internal/ingestion/pipeline/cleanup.go:11-13` 明说 checkpoint store 已移除，重跑从冷 chunk cache 开始）。`defaultCheckpointTTL` → `defaultTrackerTTL`(7d)，仅用于 RunTracker 状态 hash（`:180`）。
+- **run identity 成为一等概念**：`ensureRunIdentity` 是唯一创建路径，发布消息**之前**由 API 侧调用，document 行锁串行分配 `MAX(run_count)+1` 并绑定新建 `pipeline_operation_log` 行（`internal/service/ingestion_task_service.go:760-762`）——取代已删除的 `IncrementRunCount`/`ClearComponentProgress`。
+- `processMessage` 删除，状态路由收敛进 `handleAndExecute`（`internal/ingestion/service/ingestion_service.go:447-449`）；`supersedeAndRetryTask`/`forceTerminalTask`/`ownsTaskRun` 全部消失，新增启动恢复 `ScheduleCreatedTasks`（`internal/service/ingestion_task_service.go:690-692`）。
+- **`general` 模板切分组件从 `TokenChunker` 换成新增的 `GeneralChunker`**（`chunker/general.go`，1203 行，v0.27.2 无此文件），chunker 变体 4 → **10**（`wire.go` 注释仍写 4，属漂移）。
+- 连接器 **40 处/39 类 → 42 处/41 类**（新增 `feishu_wiki`、`zotero`；`google-drive`/`google_drive` 为同一实现别名），`RegisterBuiltIns` 见 `internal/syncer/connector/builtin.go:25-32`。
+- 新增推理并发预算 `RAGFLOW_DEEPDOC_INFERENCE_CONCURRENCY`（CLI > env > config > 默认 4，`internal/common/environments.go:259-263`），新文件 `internal/deepdoc/native/inference_limit.go`。权重仍是 FlatBuffer `.ort` 五件（`internal/common/environments.go:282-288`），构建期静态链接 ORT（`build.sh:40-47`）。
+- `internal/ingestion/compilation/extractor/`（Python `rag/graphrag/ner` 的 Go 移植）**当前是死代码**：全仓 0 处 import，且仅 `//go:build cgo_thincner` 下编译。
+- 影响文档：`ingestion-deepdoc.md`、`rag-pipeline.md`、`go-rewrite-migration.md`
+
+**部署与 Admin**
+- 主 compose **只剩 `ragflow-cpu`**（58 行，`ragflow-gpu` 删除），端口仅 80/443/9380/9381；MCP 改为 9380 进程内（`docker/docker-compose.yml:21`）；`command: --enable-adminserver --init-superuser`，`--init-model-provider-tables` 被注释（`:24-27`）。
+- **`kvrocks` 就地替换 `redis`/valkey**，profile `ragflow-go`，镜像 `apache/kvrocks:2.16.0`，自渲染 entrypoint `docker/kvrocks-entrypoint.sh`（新增）；`COMPOSE_PROFILES` 追加硬编码 `ragflow-go,clickhouse`（`docker/.env:52`）。
+- 端口收敛：nginx→admin **9381**（原 9383）、nginx→API **9380**（原 9384）；`GO_HTTP_PORT`/`GO_ADMIN_PORT` 从 `.env` 删除。
+- **Admin 远程 shutdown 在 OSS 未实现**：`ShutdownService`/`StartService`/`RestartService` 返回 "shutdown service not implemented"（`internal/admin/service.go:1152-1159`），`ShutdownIngestor` 调用被注释（`internal/admin/handler.go:1148-1155`），`case <-ShutdownCh` 分支不可达（`internal/ingestion/service/ingestion_service.go:1336-1339`、`internal/syncer/syncer.go:146-153`）；`CleanupStaleStatuses` 是死代码（`internal/admin/state.go:103-113`）；`state.go:43-64` 只认三种 `ServerType`，故 `deepdoc` 无法注册。
+- `/healthz` 聚合 5 项，JSON 键仍字面 `"redis"`（`internal/service/system.go:72-80`），ClickHouse 未纳入。心跳间隔为配置 `general.heartbeat_interval` 默认 **3s**，存活窗口 **45s**（`internal/admin/service.go:927`），但 `:926` 注释仍写 "less than 5 seconds"——**不一致持续存在**。
+- `runDeepDoc` 是 OSS no-op（`cmd/deepdoc_server_ee.go:24-27`）；`server.StartServer/ShutdownServer` 是 EE stub（`internal/server/server_ee.go:40-53`）。
+- `DEEPDOC_URL` 整体移除，in-process native 是唯一生产后端（`docker/entrypoint-go.sh` 不再起 deepdoc 容器）。
+- 影响文档：`deployment-admin.md`、`go-rewrite-migration.md`
+
+**API 与 CLI**
+- **兼容层整段删除**：`api/apps/backward_compat.py` 随 `api/apps/` 整体删除，Go 路由**无 remap/redirect 中间件**；19 个已移除别名在 `docs/references/http_api_reference.md:68-86` 列表化。唯一双栈可观测手段是响应头 `X-API-Source: go`（`internal/router/router.go:143-147`）。
+- 一处文档/代码边界模糊：alias 表称 `/v1/file/*` 不由 Go 后端注册，但 `/v1/file/root_folder|parent_folder|all_parent_folder` 仍注册在非 `/api` group（`internal/router/router.go:445-452`），同族能力同时存在 `/api/v1/files/*`（`:430-433`）两套路径；`internal/handler/file.go:137` 的 swagger 注释仍写已废弃路径。
+- **CLI 100% 重写**：`admin/client/ragflow_cli.py` 删除，Go 实现 `internal/cli/`（41 文件，含 `filesystem/` 虚拟文件系统与 `skill_hub/`）+ 入口 `cmd/ragflow-cli.go`（带 `//go:build ignore`，由 `build.sh` 显式构建）。默认 API base `http://<host>:<port>/api/<version>`（`internal/cli/http_client.go:65`）。命令面比 Python 版更宽。
+- 影响文档：`go-rewrite-migration.md`、`agent-platform.md`
+
+**已知问题（官方声明 vs 代码核实）**
+- 官方三条 known issues（`docs/release_notes.md:33-36`）经逐条核实：**DeepDoc 仅 CPU 成立**（`build.sh:284-286`）；**本地 sandbox 仅文档口径成立**（`internal/agent/sandbox/local.go` 是完整实现、`catalog.go:16-18` 以 `"local"` 打头，实际变化是 compose `profiles: [sandbox]` 默认不启动）；**Team/Me 在代码层面不成立**（`internal/entity/dataset.go:37-41`、`internal/service/team_permission.go:9-12`、`internal/service/dataset/update.go:97-102`、`internal/service/agent.go:1096-1100`、`internal/router/router.go:275-281` 五端点 1:1 对应 Python）。
+- 上游自身留有多处未同步文本：`AGENTS.md:14`、`pyproject.toml` 的 `[tool.setuptools] packages`、`docker/README.md:3`、`docker/launch_backend_service.sh` 的 Python 分支（调用已删除的 `tools/scripts/run_migrations.sh`）、compose 里指向 `entrypoint-go.sh` 的死挂载、`ADMIN_DEFAULT_PASSWORD`（无 Go 代码读取，Go 读 `DEFAULT_SUPERUSER_PASSWORD` 而 `InitDefaultAdmin` 直接硬编码 `admin`，`internal/admin/service.go:1475-1479`）、`admin_bootstrap_password.txt`（仅存在于注释）、`serverArgs.adminHost/adminPort`（解析后无读取点，`cmd/ragflow_server.go:85-86`）。
+- `internal/rag/agentic-rag/harness/` **目录不存在**，但 `internal/agent/chat/message_fit.go:32` 仍有指向它的注释——失效注释。
+
 ## [v0.27.2]（2026-09-17 增量）
 
 > 依据：`v0.27.2`@`a024bea0`（上一版依据 `dev-20260902`=`4168b3f`，区间 197 commits）。上游有官方 release notes（`docs/release_notes.md` 的 v0.27.2 段），本版参照它并结合代码变动生成；同时把「解读基线」从 dev 快照切到最近稳定 tag。

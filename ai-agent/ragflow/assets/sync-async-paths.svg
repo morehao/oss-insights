@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 620">
+  <title>同步路径与异步路径：轻活直连、重活入队</title>
+  <desc>左区同步路径：客户端经 HTTP 请求 api，api 直连读写 MySQL 元数据与检索引擎索引，然后同步返回客户端。右区异步路径：api 只把任务消息发布到 NATS，NATS 投递给 ingestor worker，worker 解析切分后把状态与结果写回 MySQL、把 chunk 写入检索引擎，并发布完成事件。消息边为虚线，数据读写为实线；两区结构左右对齐。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.mono { font-size: 11.5px; fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.risk { fill: var(--risk); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; }
+.edge-arrow { marker-end: url(#arrow); }
+.zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.8; }
+  </style>
+  <rect x="0" y="0" width="1320" height="620" fill="var(--bg)"/>
+
+  <!-- 1. zones -->
+  <rect class="zone" x="60" y="136" width="580" height="430" rx="10"/>
+  <rect class="zone" x="680" y="136" width="580" height="430" rx="10"/>
+
+  <!-- 2. connectors -->
+  <path class="edge edge-arrow" d="M 310 208 H 390"/>
+  <path class="edge edge-arrow" d="M 390 236 H 310"/>
+  <path class="edge edge-arrow" d="M 460 272 V 348 H 205 V 444"/>
+  <path class="edge edge-arrow" d="M 505 272 V 444"/>
+  <path class="edge-dashed edge-arrow" d="M 1010 208 H 930"/>
+  <path class="edge-dashed edge-arrow" d="M 790 272 V 312"/>
+  <path class="edge-dashed edge-arrow" d="M 870 312 V 272"/>
+  <path class="edge edge-arrow" d="M 825 404 V 444"/>
+  <path class="edge edge-arrow" d="M 1115 404 V 444"/>
+
+  <!-- 3. nodes -->
+  <rect class="node input" x="100" y="180" width="210" height="92" rx="6"/>
+  <rect class="node process" x="390" y="180" width="210" height="92" rx="6"/>
+  <rect class="node storage" x="100" y="444" width="210" height="92" rx="6"/>
+  <rect class="node storage" x="390" y="444" width="210" height="92" rx="6"/>
+  <rect class="node storage" x="720" y="180" width="210" height="92" rx="6"/>
+  <rect class="node process" x="1010" y="180" width="210" height="92" rx="6"/>
+  <rect class="node process" x="720" y="312" width="500" height="92" rx="6"/>
+  <rect class="node storage" x="720" y="444" width="210" height="92" rx="6"/>
+  <rect class="node storage" x="1010" y="444" width="210" height="92" rx="6"/>
+
+  <!-- 4. titles / labels -->
+  <text class="title" x="40" y="44">同步路径与异步路径</text>
+  <text class="small" x="40" y="68">轻活直连同步返回；重活发一条消息后立刻返回受理结果</text>
+
+  <text class="small" x="76" y="158">同步路径 · 轻活直连</text>
+  <text class="small" x="696" y="158">异步路径 · 重活入队</text>
+
+  <text class="label" x="205" y="219" text-anchor="middle">客户端</text>
+  <text class="small" x="205" y="245" text-anchor="middle">HTTP 请求</text>
+
+  <text class="label" x="495" y="219" text-anchor="middle">api</text>
+  <text class="small" x="495" y="245" text-anchor="middle">REST 接口 / 会话 / 检索</text>
+
+  <text class="label" x="205" y="483" text-anchor="middle">MySQL</text>
+  <text class="small" x="205" y="509" text-anchor="middle">元数据 / 任务状态</text>
+
+  <text class="label" x="495" y="483" text-anchor="middle">检索引擎</text>
+  <text class="small" x="495" y="509" text-anchor="middle">向量 / 全文索引</text>
+
+  <text class="label" x="825" y="220" text-anchor="middle">NATS</text>
+  <text class="small" x="825" y="245" text-anchor="middle">任务主题 / 完成事件</text>
+
+  <text class="label" x="1115" y="219" text-anchor="middle">api</text>
+  <text class="small" x="1115" y="245" text-anchor="middle">只发布，不等待</text>
+
+  <text class="label" x="970" y="351" text-anchor="middle">ingestor worker</text>
+  <text class="small" x="970" y="377" text-anchor="middle">解析 / 切分 / 向量化 / 知识编译</text>
+
+  <text class="label" x="825" y="483" text-anchor="middle">MySQL</text>
+  <text class="small" x="825" y="509" text-anchor="middle">写状态与结果</text>
+
+  <text class="label" x="1115" y="483" text-anchor="middle">检索引擎</text>
+  <text class="small" x="1115" y="509" text-anchor="middle">写 chunk</text>
+
+  <text class="small" x="350" y="200" text-anchor="middle">HTTP</text>
+  <text class="small" x="350" y="252" text-anchor="middle">返回</text>
+  <text class="small" x="350" y="306" text-anchor="middle">轻活：元数据与检索直连</text>
+  <text class="small" x="330" y="340">读元数据</text>
+  <text class="small" x="517" y="330">查索引</text>
+
+  <text class="small" x="970" y="200" text-anchor="middle">发布任务消息</text>
+  <text class="small" x="754" y="300">投递</text>
+  <text class="small" x="886" y="300">发布完成事件</text>
+  <text class="small" x="837" y="428">写状态与结果</text>
+  <text class="small" x="1127" y="428">写 chunk</text>
+
+  <text class="small" x="60" y="594">两区的 MySQL / 检索引擎 为同一实例；api 是同一个进程，图中左右重复绘制以便对齐</text>
+</svg>

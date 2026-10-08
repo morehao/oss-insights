@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 780">
+  <title>五层架构与边界：接入层 / 服务层 / 领域层 / 引擎适配层 / 资源层</title>
+  <desc>RAGFlow 纵向五层分层栈。接入层负责路径分流与请求响应整形，服务层是六种可独立部署的进程模式，领域层是库内平级的业务模块，引擎适配层把检索引擎、缓存、消息、对象存储与解析后端抽象为可替换实现，资源层提供持久化与消息投递。层间依赖只允许自上而下一路向下，每层同时标注不做什么的禁区。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)"/>
+    </marker>
+  </defs>
+  <style>
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc; --fg: #172033; --muted: #5b6475; --line: #64748b;
+  --neutral: #e2e8f0; --input: #bfdbfe; --process: #c7d2fe;
+  --storage: #99f6e4; --external: #fde68a; --risk: #fecaca;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a; --fg: #e5e7eb; --muted: #a3adbd; --line: #94a3b8;
+    --neutral: #334155; --input: #1d4ed8; --process: #4338ca;
+    --storage: #0f766e; --external: #92400e; --risk: #991b1b;
+  }
+}
+svg { background: var(--bg); }
+.title { font-size: 20px; font-weight: 650; fill: var(--fg); }
+.label { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.small { font-size: 12px; fill: var(--muted); }
+.mono { font-size: 11.5px; fill: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.node { stroke: var(--line); stroke-width: 1; }
+.neutral { fill: var(--neutral); }
+.input { fill: var(--input); }
+.process { fill: var(--process); }
+.storage { fill: var(--storage); }
+.external { fill: var(--external); }
+.risk { fill: var(--risk); }
+.edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.edge-dashed { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; }
+.edge-arrow { marker-end: url(#arrow); }
+.zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.8; }
+  </style>
+  <rect x="0" y="0" width="1280" height="780" fill="var(--bg)"/>
+
+  <!-- 2. connectors: one single vertical arrow chain in the gaps -->
+  <path class="edge edge-arrow" d="M 640 196 V 230"/>
+  <path class="edge edge-arrow" d="M 640 326 V 360"/>
+  <path class="edge edge-arrow" d="M 640 456 V 490"/>
+  <path class="edge edge-arrow" d="M 640 586 V 620"/>
+
+  <!-- 3. nodes: five bands -->
+  <rect class="node input" x="80" y="100" width="1120" height="96" rx="6"/>
+  <rect class="node process" x="80" y="230" width="1120" height="96" rx="6"/>
+  <rect class="node process" x="80" y="360" width="1120" height="96" rx="6"/>
+  <rect class="node external" x="80" y="490" width="1120" height="96" rx="6"/>
+  <rect class="node storage" x="80" y="620" width="1120" height="96" rx="6"/>
+
+  <!-- 4. titles / labels -->
+  <text class="title" x="40" y="44">五层架构与边界</text>
+  <text class="small" x="40" y="68">边界模糊是架构腐化的起点：每一层都要说得清"不做什么"</text>
+
+  <text class="label" x="104" y="138">接入层</text>
+  <text class="small" x="104" y="169">nginx 网关（路径分流）｜REST 接口与统一响应封装｜IM 渠道适配</text>
+  <text class="small" x="948" y="138">禁区｜不含业务判断，不知道任务如何执行</text>
+
+  <text class="label" x="104" y="268">服务层（可独立部署的进程模式）</text>
+  <text class="small" x="104" y="299">api｜admin｜ingestor｜syncer｜deepdoc｜migrate（一次性）</text>
+  <text class="small" x="936" y="268">禁区｜不实现领域逻辑，模式之间不互相调用</text>
+
+  <text class="label" x="104" y="398">领域层（库内平级）</text>
+  <text class="small" x="104" y="429">知识库与文档｜解析与切分｜检索与生成｜Agent 与画布｜记忆｜知识编译</text>
+  <text class="small" x="936" y="398">禁区｜不直接依赖存储产品，不感知部署形态</text>
+
+  <text class="label" x="104" y="528">引擎适配层</text>
+  <text class="small" x="104" y="559">检索引擎抽象（ES / Infinity）｜缓存与 checkpoint｜消息｜对象存储｜解析后端抽象</text>
+  <text class="small" x="972" y="528">禁区｜不做业务决策，不跨适配器编排</text>
+
+  <text class="label" x="104" y="658">资源层</text>
+  <text class="small" x="104" y="689">MySQL｜ES / Infinity｜MinIO｜Kvrocks｜NATS</text>
+  <text class="small" x="1020" y="658">职责｜只做持久化与消息投递</text>
+
+  <text class="small" x="656" y="217">编译期依赖：只允许自上而下</text>
+  <text class="small" x="40" y="752">层间依赖单向向下；反向依赖与跨层调用都视为架构腐化</text>
+</svg>

@@ -1,0 +1,194 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 900" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>WorkDSH 分层架构：Electron 载体、不可变运行时、可写 Profile 与自有插件</title>
+  <desc>这张图自上而下展示 WorkDSH 的七层结构：最左侧是 Electron 载体，负责入口、窗口与进程生命周期、管理员部署配置、企业回环桥与成员空间隔离；右上方并排的是安装包内的不可变 runtime（bundled Node 与安装锚点）与每个账号一份的可写 Profile（bundles 选择与 cordis patch 层）；中间是未经修改的官方 DSH 0.2.0-rc.2 运行时，包含 Loader 插件树、Session 与 Agent loop、官方 Web Client；其下是 WorkDSH 自有功能插件（bundle、专家/技能/连接器、资料库/项目/Office、access 与 audit、identity 提供方二选一）；再往下是 per-record 的自有域存储；最底部是企业后台、模型供应商与第三方目录三个外部服务。箭头表达的是组合与调用方向：载体物化可写 Profile 并拉起官方 Host，安装锚点向 Profile 供应默认依赖，Loader 按 bundles 与 patch 层装载自有插件，插件读写域表，模型调用出网、成员身份经回环桥转发到企业后台。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line)" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg { background: var(--bg); }
+    .title { font-size: 19px; font-weight: 650; fill: var(--fg); }
+    .label { font-size: 13px; font-weight: 600; fill: var(--fg); }
+    .small { font-size: 11px; fill: var(--muted); }
+    .node { stroke: var(--line); stroke-width: 1; }
+    .neutral { fill: var(--neutral); }
+    .input { fill: var(--input); }
+    .process { fill: var(--process); }
+    .storage { fill: var(--storage); }
+    .external { fill: var(--external); }
+    .risk { fill: var(--risk); }
+    .edge { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-linejoin: round; }
+    .edge-arrow { marker-end: url(#arrow); }
+    .zone { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; opacity: 0.75; }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="900" fill="var(--bg)" />
+
+  <text class="title" x="30" y="30">WorkDSH 分层架构：载体只做窗口与组合，官方 DSH 运行时不被修改</text>
+  <text class="small" x="30" y="52">个人与企业共用同一官方 DSH 0.2.0-rc.2 版本族；差别只在 profile 的插件选择与企业身份提供方</text>
+
+  <!-- ============ connectors（先画，节点覆盖其上） ============ -->
+
+  <!-- 载体 → 可写 Profile：物化 -->
+  <path class="edge edge-arrow" d="M 260 224 V 86 H 900 V 130" />
+  <!-- 载体 → 不可变 runtime 的官方 host 启动器 -->
+  <path class="edge edge-arrow" d="M 200 224 V 74 H 560 V 130" />
+  <!-- 安装锚点 → 可写 Profile 供应默认依赖 -->
+  <path class="edge edge-arrow" d="M 756 216 H 780 V 154 H 804" />
+  <!-- 可写 Profile → Loader：bundles -->
+  <path class="edge edge-arrow" d="M 1196 154 H 1220 V 282 H 500 V 322" />
+  <!-- 可写 Profile → Loader：cordis.patch.yml 分层 -->
+  <path class="edge edge-arrow" d="M 840 240 V 292 H 470 V 322" />
+  <!-- Loader → 自有插件（patch insert） -->
+  <path class="edge edge-arrow" d="M 499 418 V 452 H 444 V 492" />
+  <path class="edge edge-arrow" d="M 499 418 V 452 H 614 V 492" />
+  <path class="edge edge-arrow" d="M 499 418 V 452 H 784 V 492" />
+  <path class="edge edge-arrow" d="M 499 418 V 452 H 954 V 492" />
+  <path class="edge edge-arrow" d="M 499 418 V 452 H 1120 V 492" />
+  <!-- 自有插件 → 域存储 -->
+  <path class="edge edge-arrow" d="M 614 604 V 672" />
+  <path class="edge edge-arrow" d="M 784 604 V 672" />
+  <path class="edge edge-arrow" d="M 954 604 V 672" />
+  <!-- 官方 Web Client → 官方 Host API -->
+  <path class="edge edge-arrow" d="M 1050 418 V 430 H 790 V 418" />
+  <!-- 载体窗口 → 官方 Web Client（本机 token URL） -->
+  <path class="edge edge-arrow" d="M 316 266 H 344 V 443 H 1060 V 418" />
+  <!-- 企业身份提供方 → 载体回环桥 -->
+  <path class="edge edge-arrow" d="M 1100 492 V 448 H 316" />
+  <!-- 回环桥 → 企业后台 -->
+  <path class="edge edge-arrow" d="M 44 462 H 15 V 813 H 46" />
+  <!-- 官方 Host → 模型供应商 -->
+  <path class="edge edge-arrow" d="M 656 370 H 342 V 744 H 619 V 786" />
+
+  <!-- ============ ① Electron 载体 ============ -->
+  <rect class="zone" x="30" y="96" width="300" height="540" rx="12" />
+  <text class="small" x="44" y="116">① Electron 载体（Main 进程）</text>
+  <rect class="node input" x="44" y="126" width="272" height="84" rx="10" />
+  <text class="label" x="180" y="160" text-anchor="middle">入口页 / 企业登录页</text>
+  <text class="small" x="180" y="182" text-anchor="middle">workdsh:// 导航 · 个人｜企业</text>
+  <rect class="node input" x="44" y="224" width="272" height="84" rx="10" />
+  <text class="label" x="180" y="258" text-anchor="middle">窗口与进程生命周期</text>
+  <text class="small" x="180" y="280" text-anchor="middle">单实例锁 · 进程树清理</text>
+  <rect class="node input" x="44" y="322" width="272" height="84" rx="10" />
+  <text class="label" x="180" y="356" text-anchor="middle">管理员部署配置</text>
+  <text class="small" x="180" y="378" text-anchor="middle">workdsh-config.json 固定后台</text>
+  <rect class="node input" x="44" y="420" width="272" height="84" rx="10" />
+  <text class="label" x="180" y="454" text-anchor="middle">企业回环桥</text>
+  <text class="small" x="180" y="476" text-anchor="middle">capability key + 白名单路由</text>
+  <rect class="node input" x="44" y="518" width="272" height="84" rx="10" />
+  <text class="label" x="180" y="552" text-anchor="middle">企业本机空间</text>
+  <text class="small" x="180" y="574" text-anchor="middle">按后台 / 组织 / 成员隔离目录</text>
+
+  <!-- ============ ② 不可变 runtime / ③ 可写 Profile ============ -->
+  <rect class="zone" x="350" y="96" width="420" height="172" rx="12" />
+  <text class="small" x="364" y="116">② 安装包不可变 runtime</text>
+  <rect class="node neutral" x="364" y="130" width="392" height="48" rx="10" />
+  <text class="label" x="560" y="152" text-anchor="middle">bundled Node / pnpm / Python</text>
+  <text class="small" x="560" y="170" text-anchor="middle">primary-runtime，随安装包不可变</text>
+  <rect class="node neutral" x="364" y="192" width="392" height="48" rx="10" />
+  <text class="label" x="560" y="214" text-anchor="middle">profile-installation.json 安装锚点</text>
+  <text class="small" x="560" y="232" text-anchor="middle">默认组合与共同只读依赖</text>
+
+  <rect class="zone" x="790" y="96" width="420" height="172" rx="12" />
+  <text class="small" x="804" y="116">③ 可写 Profile（每个个人 / 成员一份）</text>
+  <rect class="node process" x="804" y="130" width="392" height="48" rx="10" />
+  <text class="label" x="1000" y="152" text-anchor="middle">package.json · dsh.profile.bundles</text>
+  <text class="small" x="1000" y="170" text-anchor="middle">安装包默认值 + 用户显式选择</text>
+  <rect class="node process" x="804" y="192" width="392" height="48" rx="10" />
+  <text class="label" x="1000" y="214" text-anchor="middle">cordis.patch.yml 分层</text>
+  <text class="small" x="1000" y="232" text-anchor="middle">默认组合 + 企业 patch + 用户安装</text>
+
+  <!-- ============ ④ 官方 DSH ============ -->
+  <rect class="zone" x="350" y="288" width="860" height="150" rx="12" />
+  <text class="small" x="364" y="308">④ 官方 DSH 0.2.0-rc.2（未修改的上游运行时）</text>
+  <rect class="node neutral" x="364" y="322" width="270" height="96" rx="10" />
+  <text class="label" x="499" y="362" text-anchor="middle">Loader / Cordis 插件树</text>
+  <text class="small" x="499" y="384" text-anchor="middle">按 bundles + patch 层装配</text>
+  <rect class="node neutral" x="656" y="322" width="250" height="96" rx="10" />
+  <text class="label" x="781" y="356" text-anchor="middle">Session · Agent loop · Tools</text>
+  <text class="small" x="781" y="378" text-anchor="middle">Skill runtime · 模型适配</text>
+  <rect class="node neutral" x="928" y="322" width="268" height="96" rx="10" />
+  <text class="label" x="1062" y="356" text-anchor="middle">官方 Web Client + Slot</text>
+  <text class="small" x="1062" y="378" text-anchor="middle">对话 · 设置 · 侧栏 · 右侧面板</text>
+
+  <!-- ============ ⑤ 自有功能插件 ============ -->
+  <rect class="zone" x="350" y="458" width="860" height="160" rx="12" />
+  <text class="small" x="364" y="478">⑤ WorkDSH 自有功能插件（同一插件树上由 patch insert 装载）</text>
+  <rect class="node process" x="364" y="492" width="160" height="112" rx="10" />
+  <text class="label" x="444" y="540" text-anchor="middle">workdsh-bundle</text>
+  <text class="small" x="444" y="562" text-anchor="middle">导航 / 展示 / 诊断</text>
+  <rect class="node process" x="534" y="492" width="160" height="112" rx="10" />
+  <text class="label" x="614" y="532" text-anchor="middle">experts</text>
+  <text class="label" x="614" y="550" text-anchor="middle">skills · connectors</text>
+  <text class="small" x="614" y="572" text-anchor="middle">能力资产</text>
+  <rect class="node process" x="704" y="492" width="160" height="112" rx="10" />
+  <text class="label" x="784" y="532" text-anchor="middle">library · projects</text>
+  <text class="label" x="784" y="550" text-anchor="middle">office · activity</text>
+  <text class="small" x="784" y="572" text-anchor="middle">资料与交付物</text>
+  <rect class="node risk" x="874" y="492" width="160" height="112" rx="10" />
+  <text class="label" x="954" y="540" text-anchor="middle">access · audit</text>
+  <text class="small" x="954" y="562" text-anchor="middle">会话归属 · 工具闸门</text>
+  <rect class="node input" x="1044" y="492" width="152" height="112" rx="10" />
+  <text class="label" x="1120" y="532" text-anchor="middle">identity-local</text>
+  <text class="label" x="1120" y="550" text-anchor="middle">或 identity-enterprise</text>
+  <text class="small" x="1120" y="572" text-anchor="middle">profile 二选一</text>
+
+  <!-- ============ ⑥ 域存储 ============ -->
+  <rect class="zone" x="350" y="638" width="860" height="96" rx="12" />
+  <text class="small" x="364" y="658">⑥ 自有域存储（dsh-storage-domain · per-record）</text>
+  <rect class="node storage" x="364" y="672" width="832" height="48" rx="10" />
+  <text class="small" x="780" y="692" text-anchor="middle">workdsh_library · workdsh_experts · workdsh_connectors · workdsh_projects · workdsh_access</text>
+  <text class="small" x="780" y="710" text-anchor="middle">workdsh_runtime_binding · workdsh_audit · office content domain</text>
+
+  <!-- ============ ⑦ 外部服务 ============ -->
+  <rect class="zone" x="30" y="752" width="1180" height="100" rx="12" />
+  <text class="small" x="46" y="772">⑦ 外部服务（不在本仓库）</text>
+  <rect class="node external" x="46" y="786" width="370" height="54" rx="10" />
+  <text class="label" x="231" y="808" text-anchor="middle">企业后台 workdsh-admin</text>
+  <text class="small" x="231" y="828" text-anchor="middle">账号 · 组织 · 模型转发 · 正文同步</text>
+  <rect class="node external" x="434" y="786" width="370" height="54" rx="10" />
+  <text class="label" x="619" y="808" text-anchor="middle">模型供应商 API</text>
+  <text class="small" x="619" y="828" text-anchor="middle">推理在供应商或自部署服务执行</text>
+  <rect class="node external" x="822" y="786" width="372" height="54" rx="10" />
+  <text class="label" x="1008" y="808" text-anchor="middle">第三方目录 SkillHub / dsh-market</text>
+  <text class="small" x="1008" y="828" text-anchor="middle">同一 Profile 内按需安装、非预装</text>
+
+  <!-- ============ 边标签 ============ -->
+  <text class="small" x="208" y="68">spawn 官方 host：bundled Node + runProfile</text>
+  <text class="small" x="620" y="82">物化可写 Profile：按 digest 迁移安装包默认值</text>
+  <text class="small" x="700" y="260" text-anchor="end">安装锚点供应默认依赖</text>
+  <text class="small" x="846" y="260">cordis.patch.yml 分层</text>
+  <text class="small" x="1006" y="280">按 bundles 装载</text>
+  <text class="small" x="505" y="434">patch insert：自有 bundle</text>
+  <text class="small" x="900" y="474" text-anchor="end">加载本机 token URL 的官方 Web UI</text>
+  <text class="small" x="1000" y="486" text-anchor="end">成员身份经回环桥验证</text>
+  <text class="small" x="966" y="648">域表读写（CAS 修订）</text>
+</svg>

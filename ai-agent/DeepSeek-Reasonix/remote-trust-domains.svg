@@ -1,0 +1,235 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1320" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>远端工作区的四个信任域与两条方向相反的信道</title>
+  <desc>这张图把 Reasonix 的远端工作区分成四个信任域：域 A 本地宿主进程（Studio/serve 内核、forward.Set 本地监听器、remotehost.Link、remote.Client、remote/bootstrap 自举编排、providerbroker、remotecloud.Host、凭据存储），域 B SSH 通道（x/crypto/ssh 会话、SFTP subsystem、-L/-R 端口转发），域 C 远端主机（自举起来的 detached serve、~/.reasonix/remote 下的 token/port/pid、对端 workspace 文件），域 D Reasonix 中继。所有从本地指向远端的箭头都从域 B 的右半区穿过，表示它们都由同一条 SSH 通道承载；只有加粗的那条是真正的 agent 循环流量。域 D 与域 A 之间是方向相反的第二条信道：remote 由本机拨出，remotecloud 由中继拨入。读者应看出远端跑内核、本地只做传输与转发，以及 token 只走文件、远端 serve 不随链路关闭而停止这三条边界。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="1320" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">远端工作区的四个信任域：远端跑内核，本地只做传输与转发</text>
+
+  <!-- ============ 图例（line，不参与边拓扑） ============ -->
+  <text class="small" x="40" y="82">① remote：本机拨出</text>
+  <line class="edge" x1="176" y1="78" x2="244" y2="78" marker-end="url(#arrow)" />
+  <text class="small" x="252" y="82">→ 远端主机（SSH + 自举 + -L 转发）</text>
+  <text class="small" x="470" y="82">② remotecloud：中继拨入</text>
+  <line class="edge" x1="626" y1="78" x2="694" y2="78" marker-end="url(#arrow)" />
+  <text class="small" x="702" y="82">→ 本机被驱动（WSS，中继不可读）</text>
+  <text class="small" x="40" y="104">两个方向互不共享实现：remote 不含 account，remotecloud 不含 ssh；两套信任模型；加粗线 = 真的 agent 循环流量</text>
+  <text class="small" x="40" y="126">虚线 = known_hosts 的两个来源：系统文件只读，Reasonix 自有的 TOFU 文件可写</text>
+
+  <!-- ============ connectors：先画边，后画节点覆盖 ============ -->
+
+  <!-- E1 remotehost.Link -> remote.Client（组装） -->
+  <path class="edge edge-arrow" d="M 267 476 L 267 500" />
+  <!-- E3 remote.Client -> remote/bootstrap（自举编排） -->
+  <path class="edge edge-arrow" d="M 267 576 L 267 600" />
+  <!-- E2 remote.Client -> 域 B（拨号 / 认证 / host key 校验） -->
+  <path class="edge edge-arrow" d="M 458 528 L 505 528 L 505 400 L 544 400" />
+  <!-- E4 remote/bootstrap -> 域 C serve（安装路由 / upload / npm -> setsid nohup serve） -->
+  <path class="edge edge-arrow" d="M 458 628 L 800 628 L 800 465 L 846 465" />
+  <!-- E6 forward.Set -> 域 C serve（-L：远端 loopback 变成本地 loopback） -->
+  <path class="edge edge-arrow" d="M 458 328 L 776 328 L 776 440 L 846 440" />
+  <!-- E7 providerbroker -> 域 C serve（-R 反向转发，仅 broker 存在时） -->
+  <path class="edge edge-arrow" d="M 458 728 L 808 728 L 808 490 L 846 490" />
+  <!-- E8 加粗：内核 -> 本地 loopback -> SSH 通道 -> 远端 serve（真正的 agent 循环流量） -->
+  <path class="edge edge-arrow" d="M 458 238 L 784 238 L 784 410 L 846 410" style="stroke-width:3.5" />
+  <!-- E5 域 C -> ~/.reasonix/remote（写 token / port / pid） -->
+  <path class="edge edge-arrow" d="M 1000 500 L 1000 570" />
+  <!-- E11 serve -> 对端 workspace 文件（内核读写它，本地不读） -->
+  <path class="edge edge-arrow" d="M 880 500 L 880 805 L 906 805" />
+  <!-- E9 域 D -> remotecloud.Host（WSS） -->
+  <path class="edge edge-arrow" d="M 560 1250 L 500 1250 L 500 828 L 458 828" />
+  <!-- E10 known_hosts：Client -> 凭据存储 -->
+  <path class="edge edge-arrow edge-dashed" d="M 76 550 L 58 550 L 58 938 L 76 938" />
+
+  <!-- ============ 域的边界框（zone 不是节点，不参与边拓扑） ============ -->
+  <rect class="zone" x="40" y="150" width="430" height="900" rx="8" />
+  <text class="band" x="64" y="178">域 A · 本地宿主进程（拨出侧）</text>
+
+  <rect class="zone" x="520" y="300" width="295" height="600" rx="8" />
+  <text class="band" x="540" y="878">域 B · SSH 通道</text>
+
+  <rect class="zone" x="820" y="280" width="380" height="880" rx="8" />
+  <text class="band" x="844" y="308">域 C · 远端主机（内核在这里跑）</text>
+
+  <rect class="zone" x="520" y="1170" width="680" height="130" rx="8" />
+  <text class="band" x="544" y="1206">域 D · Reasonix 中继（只转发，不解密）</text>
+
+  <!-- ============ 域 A 的节点 ============ -->
+  <rect class="node process" x="76" y="200" width="382" height="76" rx="8" />
+  <text class="label" x="100" y="230">Studio / serve 内核</text>
+  <text class="small" x="100" y="254">工作区就是本机；它不持有远端文件系统</text>
+
+  <rect class="node storage" x="76" y="300" width="382" height="76" rx="8" />
+  <text class="label" x="100" y="330">forward.Set（本地监听器）</text>
+  <text class="small" x="100" y="354">跨重连存活；-L 的本地端点在这里</text>
+
+  <rect class="node input" x="76" y="400" width="382" height="76" rx="8" />
+  <text class="label" x="100" y="430">remotehost.Link（host adapter）</text>
+  <text class="small" x="100" y="454">serve 的 RemoteAttacher 实现，全仓唯一</text>
+
+  <rect class="node process" x="76" y="500" width="382" height="76" rx="8" />
+  <text class="label" x="100" y="530">remote.Client（受监督 SSH 连接）</text>
+  <text class="small" x="100" y="554">拨号、认证、host key 校验、端口转发</text>
+
+  <rect class="node input" x="76" y="600" width="382" height="76" rx="8" />
+  <text class="label" x="100" y="630">remote/bootstrap（自举编排）</text>
+  <text class="small" x="100" y="654">安装路由 / upload / npm → setsid nohup serve</text>
+
+  <rect class="node process" x="76" y="700" width="382" height="76" rx="8" />
+  <text class="label" x="100" y="730">providerbroker（本机模型解析）</text>
+  <text class="small" x="100" y="754">loopback 监听 + token；-R 发布给远端</text>
+
+  <rect class="node external" x="76" y="800" width="382" height="76" rx="8" />
+  <text class="label" x="100" y="830">remotecloud.Host（被拨入侧）</text>
+  <text class="small" x="100" y="854">WSS 客户端；X25519+HKDF+AES-GCM</text>
+
+  <rect class="node storage" x="76" y="900" width="382" height="76" rx="8" />
+  <text class="label" x="100" y="930">凭据存储（identity / known_hosts）</text>
+  <text class="small" x="100" y="954">REASONIX_REMOTE_DEVICE_IDENTITY 在这里</text>
+
+  <!-- ============ 域 B 的节点 ============ -->
+  <rect class="node neutral" x="544" y="360" width="202" height="80" rx="8" />
+  <text class="label" x="568" y="392">x/crypto/ssh 会话</text>
+  <text class="small" x="568" y="416">含 jump 链（ProxyJump）</text>
+
+  <rect class="node neutral" x="544" y="480" width="202" height="80" rx="8" />
+  <text class="label" x="568" y="512">SFTP subsystem</text>
+  <text class="small" x="568" y="536">列目录 / 上传，不承载循环</text>
+
+  <rect class="node neutral" x="544" y="760" width="202" height="80" rx="8" />
+  <text class="label" x="568" y="792">-L / -R 端口转发</text>
+  <text class="small" x="568" y="816">本机发起的 forwarding</text>
+
+  <text class="small" x="544" y="700">本地→远端流量都从这一列穿过</text>
+
+  <!-- ============ 域 C 的节点 ============ -->
+  <rect class="node process" x="846" y="390" width="330" height="110" rx="8" />
+  <text class="label" x="870" y="424">被自举起的 detached serve</text>
+  <text class="small" x="870" y="448">setsid nohup · 不随链路关闭而停止</text>
+  <text class="small" x="870" y="470">远端内核在这里跑 agent 循环</text>
+
+  <rect class="node storage" x="906" y="570" width="270" height="90" rx="8" />
+  <text class="label" x="930" y="602">~/.reasonix/remote/{token,port,pid}</text>
+  <text class="small" x="930" y="626">0600 · token 只走文件，ps 里看不到</text>
+
+  <rect class="node storage" x="906" y="760" width="270" height="90" rx="8" />
+  <text class="label" x="930" y="792">对端 workspace 文件</text>
+  <text class="small" x="930" y="816">内核读写它；本地不读它</text>
+
+  <!-- ============ 域 D 的节点 ============ -->
+  <rect class="node external" x="560" y="1216" width="600" height="72" rx="8" />
+  <text class="label" x="584" y="1246">wss://remote.reasonix.io（消息中继）</text>
+  <text class="small" x="584" y="1270">只见路由身份、能力 scope 与密文</text>
+
+  <!-- ============ 边上与结论性标注 ============ -->
+  <text class="small" x="276" y="494">组装</text>
+  <text class="small" x="276" y="594">自举编排</text>
+  <text class="small" x="512" y="462">拨号 / 认证 / host key 校验</text>
+  <text class="small" x="470" y="264">内核 → 本地 loopback → SSH 通道 → 远端 serve</text>
+  <text class="small" x="470" y="318">-L：把远端 loopback 暴露成本地 loopback</text>
+  <text class="small" x="470" y="654">bootstrap：安装路由 → 启动 serve</text>
+  <text class="small" x="510" y="990">WSS · E2E 加密（X25519+HKDF+AES-GCM）</text>
+  <text class="small" x="510" y="1012">中继只见路由身份与密文，读不到内容</text>
+  <text class="small" x="1008" y="540">写 token / port / pid</text>
+
+  <text class="small" x="48" y="1180">① 远端跑内核，本地不读远端文件</text>
+  <text class="small" x="48" y="1204">② token 只走文件，ps 里看不到</text>
+  <text class="small" x="48" y="1228">③ 远端 serve 不随链路关闭而停止</text>
+</svg>

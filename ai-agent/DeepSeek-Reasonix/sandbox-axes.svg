@@ -1,0 +1,248 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1120" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>沙箱三维正交保护结构：Integrity、Confidentiality、Authority 与独立的网络传输轴</title>
+  <desc>这张图表达 Reasonix 沙箱的宿主侧规格 sandbox.Spec 如何分成三条互相正交的保护维度——Integrity（写根）、Confidentiality（禁读根）、Authority（宿主服务授权），并另有一条与 Authority 并列且不重叠的网络传输轴（Network + Egress）。三种边被刻意画成不同形状：细实线是投影边，表示 Spec 字段落到某个维度的表达类型；粗实线是强制边，表示维度压到后端的内核原语；虚线是探测边，表示声明只在能力函数回答为真时才成立。ReadOnly 被画成挂在 Integrity 轴上的虚线旁挂节点，仅属于该维度。下方两条后端实现带（macOS 的 sandbox-exec -p SBPL 与 Linux 的 bwrap）接收四个维度并汇聚到实际 argv，Windows 单独成节点且三维皆不强制。读者应看出一处红色虚线的跨维度泄漏：Confidentiality 的强制手段若不补偿写拒绝，会反过来削弱 Integrity。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="1120" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">沙箱三维正交保护结构：声明只在探测为真时存在</text>
+
+  <!-- ============ 图例（样例为 line，不参与边拓扑） ============ -->
+  <line class="edge" x1="40" y1="78" x2="90" y2="78" marker-end="url(#arrow)" />
+  <text class="small" x="100" y="82">投影：Spec 字段 → 维度类型</text>
+  <line class="edge" x1="330" y1="78" x2="380" y2="78" style="stroke-width:3.5" marker-end="url(#arrow)" />
+  <text class="small" x="390" y="82">强制：维度 → 后端原语</text>
+  <line class="edge edge-dashed" x1="660" y1="78" x2="710" y2="78" marker-end="url(#arrow)" />
+  <text class="small" x="720" y="82">探测：能力函数回答是否真强制</text>
+  <line class="edge edge-dashed" x1="990" y1="78" x2="1040" y2="78" style="stroke:var(--risk)" marker-end="url(#arrow)" />
+  <text class="small" x="1050" y="82">跨维度泄漏（红虚线）</text>
+  <text class="small" x="40" y="106">立场：判断读结构（AST / 类型 / 契约），不读措辞；证据为仓库相对路径，短名均指 internal/safety/sandbox/</text>
+
+  <!-- ============ connectors：先画边，后画节点覆盖 ============ -->
+
+  <!-- 投影边：Spec → 四条轴 -->
+  <path class="edge edge-arrow" d="M 430 224 L 377 266" />
+  <path class="edge edge-arrow" d="M 612 224 L 612 266" />
+  <path class="edge edge-arrow" d="M 840 180 L 847 266" />
+  <path class="edge edge-arrow" d="M 840 210 L 1082 266" />
+  <text class="small" x="630" y="216">投影</text>
+
+  <!-- 跨维度泄漏：Confidentiality → Integrity（红色虚线 + ! 标记） -->
+  <path class="edge edge-dashed" d="M 600 266 L 600 232 L 380 232 L 380 266" style="stroke:var(--risk);stroke-width:2" marker-end="url(#arrow)" />
+  <text class="small" x="40" y="202">跨维度泄漏：Confidentiality 的强制手段</text>
+  <text class="small" x="40" y="222">会削弱 Integrity（macOS 补 deny file-write* (subpath …)）</text>
+
+  <!-- 探测边（虚线，指向能力函数） -->
+  <path class="edge edge-dashed edge-arrow" d="M 350 350 L 350 430" />
+  <path class="edge edge-dashed edge-arrow" d="M 830 350 L 830 430" />
+  <path class="edge edge-dashed edge-arrow" d="M 1060 350 L 1060 430" />
+  <text class="small" x="360" y="400">探测</text>
+
+  <!-- ReadOnly 旁挂（虚线边） -->
+  <path class="edge edge-dashed edge-arrow" d="M 270 296 L 210 296" />
+
+  <!-- 强制边（粗实线）：四个维度 → macOS 带 / Linux 带 -->
+  <path class="edge edge-arrow" d="M 478 350 L 478 526 L 140 526 L 140 600" style="stroke-width:3.5" />
+  <path class="edge edge-arrow" d="M 478 350 L 478 534 L 720 534 L 720 600" style="stroke-width:3.5" />
+  <path class="edge edge-arrow" d="M 700 350 L 700 542 L 300 542 L 300 600" style="stroke-width:3.5" />
+  <path class="edge edge-arrow" d="M 700 350 L 700 550 L 860 550 L 860 600" style="stroke-width:3.5" />
+  <path class="edge edge-arrow" d="M 948 350 L 948 582 L 460 582 L 460 600" style="stroke-width:3.5" />
+  <path class="edge edge-arrow" d="M 948 350 L 948 558 L 1020 558 L 1020 600" style="stroke-width:3.5" />
+  <path class="edge edge-arrow" d="M 1183 350 L 1183 566 L 560 566 L 560 600" style="stroke-width:3.5" />
+  <path class="edge edge-arrow" d="M 1183 350 L 1183 574 L 1160 574 L 1160 600" style="stroke-width:3.5" />
+  <text class="small" x="486" y="384">强制</text>
+
+  <!-- 汇聚：两条后端带 → 实际 argv -->
+  <path class="edge edge-arrow" d="M 520 820 L 520 900" style="stroke-width:3.5" />
+  <path class="edge edge-arrow" d="M 720 820 L 720 900" style="stroke-width:3.5" />
+
+  <!-- Windows：同一出口但不包裹 -->
+  <path class="edge edge-dashed edge-arrow" d="M 800 938 L 900 938" />
+  <text class="small" x="850" y="930" text-anchor="middle">wrapped=false</text>
+
+  <!-- ============ 节点 ============ -->
+
+  <!-- 顶层规格 -->
+  <rect class="node storage" x="400" y="124" width="440" height="100" rx="8" />
+  <text class="label" x="424" y="156">sandbox.Spec —— 三维宿主侧表达 + 一条正交轴</text>
+  <text class="small" x="424" y="182">WriteRoots · ForbidReadRoots · HostAuthorities · Network</text>
+  <text class="small" x="424" y="204">证据 internal/safety/sandbox/sandbox.go:24</text>
+
+  <!-- ReadOnly 虚线旁挂节点 -->
+  <rect class="node neutral" x="40" y="266" width="170" height="104" rx="8" style="stroke-dasharray:6 5" />
+  <text class="label" x="64" y="296">ReadOnly</text>
+  <text class="small" x="64" y="318">仅属于 Integrity</text>
+  <text class="small" x="64" y="338">维度，不是独立轴</text>
+  <text class="small" x="64" y="358">REASONIX.md:447</text>
+
+  <!-- 四条轴 -->
+  <rect class="node process" x="270" y="266" width="215" height="84" rx="8" />
+  <text class="label" x="294" y="296">Integrity 轴</text>
+  <text class="small" x="294" y="318">WriteRoots + Pins</text>
+  <text class="small" x="294" y="338">write_roots.go:33</text>
+
+  <rect class="node process" x="505" y="266" width="215" height="84" rx="8" />
+  <text class="label" x="529" y="296">Confidentiality 轴</text>
+  <text class="small" x="529" y="318">ForbidReadRoots</text>
+  <text class="small" x="529" y="338">sandbox.go:47</text>
+
+  <rect class="node process" x="740" y="266" width="215" height="84" rx="8" />
+  <text class="label" x="764" y="296">Authority 轴</text>
+  <text class="small" x="764" y="318">HostAuthorities 具名集合</text>
+  <text class="small" x="764" y="338">authority.go:18-21</text>
+
+  <rect class="node process" x="975" y="266" width="215" height="84" rx="8" />
+  <text class="label" x="999" y="296">网络传输轴（正交）</text>
+  <text class="small" x="999" y="318">Network + Egress</text>
+  <text class="small" x="999" y="338">sandbox.go:52-57</text>
+
+  <!-- 能力函数：探测边的落点 -->
+  <rect class="node external" x="270" y="430" width="200" height="80" rx="8" />
+  <text class="label" x="294" y="460">IntegrityEnforced()</text>
+  <text class="small" x="294" y="482">只回答写是否被强制</text>
+  <text class="small" x="294" y="500">protects.go:16-23</text>
+
+  <text class="small" x="505" y="460">能力探测随 Integrity</text>
+  <text class="small" x="505" y="482">（本维度无独立探测函数）</text>
+
+  <rect class="node external" x="740" y="430" width="200" height="80" rx="8" />
+  <text class="label" x="764" y="460">GovernedAuthorities</text>
+  <text class="small" x="764" y="482">只治理三个 endpoint</text>
+  <text class="small" x="764" y="500">authority.go:23-27</text>
+
+  <rect class="node external" x="975" y="430" width="200" height="80" rx="8" />
+  <text class="label" x="999" y="460">EgressSupported()</text>
+  <text class="small" x="999" y="482">出网是否可被约束</text>
+  <text class="small" x="999" y="500">seatbelt_darwin.go:222</text>
+
+  <!-- 后端实现带 -->
+  <rect class="node input" x="40" y="600" width="560" height="220" rx="8" />
+  <text class="band" x="64" y="626">macOS 后端 · sandbox-exec -p &lt;SBPL&gt;</text>
+  <text class="small" x="64" y="654">Integrity: (deny file-write*) + (allow file-write* (subpath …))</text>
+  <text class="small" x="64" y="678">Confidentiality: (deny file-read* (subpath …)) + 同名写拒绝</text>
+  <text class="small" x="64" y="702">Authority: (deny network-outbound (literal sock)) / (allow …)</text>
+  <text class="small" x="64" y="726">Network: (deny network*)；仅放行 loopback + 代理端口</text>
+  <text class="small" x="64" y="756">证据 seatbelt_darwin.go:20-25 · 119-127 · 102-110</text>
+
+  <rect class="node input" x="680" y="600" width="520" height="220" rx="8" />
+  <text class="band" x="704" y="626">Linux 后端 · bwrap</text>
+  <text class="small" x="704" y="654">Integrity: --ro-bind / / + 逐个 --bind root root</text>
+  <text class="small" x="704" y="678">Confidentiality: 目录 --tmpfs，文件 --ro-bind /dev/null</text>
+  <text class="small" x="704" y="702">Authority: --ro-bind /dev/null socket（所有 mount 之后）</text>
+  <text class="small" x="704" y="726">Network: --unshare-net；egress proxy 挡地址类别</text>
+  <text class="small" x="704" y="756">证据 seatbelt_other.go:47-62 · 136-142 · 26-40</text>
+
+  <!-- 实际 argv 与 Windows 出口 -->
+  <rect class="node storage" x="440" y="900" width="360" height="76" rx="8" />
+  <text class="label" x="464" y="930">实际 argv</text>
+  <text class="small" x="464" y="954">sandbox-exec -p &lt;SBPL&gt; / bwrap …</text>
+
+  <rect class="node neutral" x="900" y="900" width="300" height="96" rx="8" />
+  <text class="label" x="924" y="930">Windows：三维皆不强制</text>
+  <text class="small" x="924" y="952">BashModeForGOOS → "off"</text>
+  <text class="small" x="924" y="974">Available()/EgressSupported() = false</text>
+
+  <!-- 跨维度泄漏的 ! 标记（画在节点层，压住泄漏边） -->
+  <rect class="node risk" x="475" y="240" width="24" height="24" rx="4" />
+  <text class="label" x="487" y="257" text-anchor="middle">!</text>
+
+  <!-- 底部落点 -->
+  <text class="small" x="40" y="1040">裁决只在叶子发生：Deny 规则先于一切档位，ReadOnly 是最强 Deny，档位只改 Mode 而不改规则表</text>
+  <text class="small" x="40" y="1062">强制声明只在后端有真实原语时存在：后端不可用时 Command 返回 unwrapped 且调用方不执行（fail-closed）</text>
+</svg>

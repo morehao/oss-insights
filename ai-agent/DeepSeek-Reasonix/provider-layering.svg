@@ -1,0 +1,288 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1420 1300" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>Reasonix Provider 层分层与「谁允许知道差异」</title>
+  <desc>这张图表达 Reasonix Provider 层的分层与允许知识差异的位置。自上而下是宿主进程（两个 main 只用空导入注册 kind）、装配层 internal/assembly/boot（配置到条目到 kind 到工厂的唯一链路）、内核层 internal/runtime/agent 与 coordinator（只 import 契约层的 Provider 与三个窄接口）、契约层 internal/contract/provider 及其三个可选窄接口、构造期的 provider.New(kind) 分发条、四个并列适配器（model/openai、model/anthropic、model/responses、model/providerbroker）、旁路的 model/catalog 与叶子小岛 model/billing 加 model/visionimage，以及凭据框 internal/contract/config 与出网框 netclient 加 endpointclient 加 redirectguard。右侧两条长虚线是这张图的重点：灰色虚线标注「内核到适配器」这条 import 边在代码里不存在、靠约定维持；红色虚线加叉标注被 repolint layer-order 拒绝的反方向（适配器不得 import 内核）。适配器框内注明「内部仍有模型名分支」，说明抹平差异不等于适配器内部没有模型知识。读者应看出：差异被关在适配器内，内核只认识契约，而守住内核的是接口设计与纪律，不是门禁。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+    .edge-deny {
+      stroke: #dc2626;
+      stroke-width: 2;
+    }
+    .edge-quiet {
+      stroke: var(--muted);
+      stroke-width: 1.5;
+      stroke-dasharray: 3 4;
+      fill: none;
+    }
+    .xmark {
+      stroke: #dc2626;
+      stroke-width: 2.5;
+      fill: none;
+    }
+    .xmark-quiet {
+      stroke: var(--muted);
+      stroke-width: 2;
+      fill: none;
+    }
+    .deny {
+      font-size: 12px;
+      font-weight: 650;
+      fill: #dc2626;
+    }
+    .swatch-deny {
+      stroke: #dc2626;
+      stroke-width: 2;
+      stroke-dasharray: 6 5;
+      fill: none;
+    }
+    .swatch-quiet {
+      stroke: var(--muted);
+      stroke-width: 1.5;
+      stroke-dasharray: 3 4;
+      fill: none;
+    }
+  </style>
+  <rect x="0" y="0" width="1420" height="1300" fill="var(--bg)" />
+
+  <text class="title" x="60" y="46">Provider 层分层与「谁允许知道差异」</text>
+  <text class="small" x="60" y="70">位置即论据：差异住在适配器框内，契约层只放 transport 无关的类型</text>
+
+  <!-- ============ edges first (arrows sit behind boxes) ============ -->
+  <!-- 宿主 -> 装配：空导入触发 init() 注册 kind -->
+  <path class="edge edge-arrow" d="M 430 152 V 196" />
+  <path class="edge edge-arrow" d="M 840 152 V 196" />
+  <text class="small" x="352" y="180">空导入触发 init() 自注册</text>
+
+  <!-- 装配 -> 构造条 provider.New(kind) -->
+  <path class="edge edge-arrow" d="M 1020 236 H 1200 V 612" />
+
+  <!-- 构造条 -> 四个适配器 -->
+  <path class="edge edge-arrow" d="M 355 652 V 684" />
+  <path class="edge edge-arrow" d="M 605 652 V 684" />
+  <path class="edge edge-arrow" d="M 855 652 V 684" />
+  <path class="edge edge-arrow" d="M 1105 652 V 684" />
+
+  <!-- 内核 -> 契约层 Provider 接口（允许） -->
+  <path class="edge edge-arrow" d="M 380 420 V 464" />
+  <!-- 内核 -> 三个窄接口（允许，内核侧唯一的探测点） -->
+  <path class="edge edge-arrow" d="M 500 420 V 440 H 1055 V 464" />
+
+  <!-- 适配器 -> 契约层（允许）：走左侧回环 -->
+  <path class="edge edge-arrow" d="M 240 754 H 210 V 524 H 240" />
+
+  <!-- 适配器 -> 出网构造器（允许）：从旁路行的走廊穿到出网框 -->
+  <path class="edge edge-arrow" d="M 300 824 V 840 H 595 V 1040 H 610" />
+
+  <!-- providerbroker -> 远端内核：SSH 隧道，只过 Descriptor 与 chunk -->
+  <path class="edge edge-dashed edge-arrow" d="M 1105 824 V 868" />
+  <text class="small" x="1118" y="852">SSH 隧道</text>
+
+  <!-- 灰色虚线：内核 ⇢ 适配器，这条 import 边不存在（靠约定） -->
+  <path class="edge-quiet" d="M 760 350 H 1355 V 728 H 1220" />
+  <path class="xmark-quiet" d="M 1345 550 L 1365 570" />
+  <path class="xmark-quiet" d="M 1365 550 L 1345 570" />
+
+  <!-- 红色虚线：适配器 -> 内核，被 repolint layer-order 拒绝的方向 -->
+  <path class="edge edge-dashed edge-deny" d="M 1220 780 H 1305 V 370 H 760" />
+  <path class="xmark" d="M 1295 550 L 1315 570" />
+  <path class="xmark" d="M 1315 550 L 1295 570" />
+
+  <!-- 边缘说明文字（放在内核行的右侧空区，避开所有连线） -->
+  <text class="deny" x="782" y="300">红叉虚线 = 被门禁拒绝的方向</text>
+  <text class="small" x="782" y="318">适配器（model 秩 3）不得 import 内核（runtime 秩 6）</text>
+  <text class="small" x="782" y="334">repolint layer-order 拒绝</text>
+  <text class="small" x="782" y="398">灰色虚线 = 这条 import 边在代码里不存在</text>
+  <text class="small" x="782" y="416">内核 ⇢ 适配器：非测试代码零引用</text>
+  <text class="small" x="782" y="432">靠约定维持，门禁并未看着这一侧</text>
+
+  <!-- ============ nodes ============ -->
+  <text class="band" x="60" y="124">宿主进程</text>
+  <rect class="node neutral" x="240" y="88" width="380" height="64" rx="8" />
+  <text class="label" x="266" y="126">cmd/reasonix</text>
+  <rect class="node neutral" x="650" y="88" width="380" height="64" rx="8" />
+  <text class="label" x="676" y="126">cmd/reasonix-studio-host</text>
+  <text class="small" x="1058" y="116">仅空导入</text>
+  <text class="small" x="1058" y="132">注册 kind</text>
+
+  <text class="band" x="60" y="240">装配层</text>
+  <rect class="node process" x="240" y="196" width="780" height="80" rx="8" />
+  <text class="label" x="266" y="234">internal/assembly/boot</text>
+  <text class="small" x="266" y="256">entry → kind → factory：配置、模型引用、条目、工厂的唯一链路</text>
+
+  <text class="band" x="60" y="374">内核层</text>
+  <rect class="node process" x="240" y="320" width="520" height="100" rx="8" />
+  <text class="label" x="266" y="358">internal/runtime/agent + coordinator</text>
+  <text class="small" x="266" y="380">只认识 Provider 接口与三个窄接口</text>
+  <text class="small" x="266" y="400">零 import 任何一家对话适配器</text>
+
+  <text class="band" x="60" y="528">契约层</text>
+  <rect class="node external" x="240" y="464" width="620" height="120" rx="8" />
+  <text class="label" x="266" y="502">internal/contract/provider</text>
+  <text class="small" x="266" y="524">Message / Request / Chunk / Usage / 错误类型闭集</text>
+  <text class="small" x="266" y="544">SendWithRetry · 消息投影 · schema 规范化</text>
+  <text class="small" x="266" y="564">不含任何一家的字段名与 SSE 方言</text>
+  <rect class="node external" x="890" y="464" width="280" height="120" rx="8" />
+  <text class="label" x="916" y="502">三个窄接口</text>
+  <text class="small" x="916" y="524">OutputBudget / SharedWindow</text>
+  <text class="small" x="916" y="544">SharedWindowInputPolicy</text>
+  <text class="small" x="916" y="564">按能力问，不问「是哪一家」</text>
+
+  <text class="band" x="60" y="636">构造期</text>
+  <rect class="node neutral" x="240" y="612" width="990" height="40" rx="8" />
+  <text class="label" x="266" y="638">provider.New(kind) → 工厂 → 适配器实例（全仓仅 4 个 kind）</text>
+
+  <text class="band" x="60" y="758">适配器层</text>
+  <rect class="node input" x="240" y="684" width="230" height="140" rx="8" />
+  <text class="label" x="266" y="722">model/openai</text>
+  <text class="small" x="266" y="746">OpenAI 兼容</text>
+  <text class="small" x="266" y="766">chat/completions</text>
+  <text class="small" x="266" y="790">内部仍有模型名分支</text>
+  <rect class="node input" x="490" y="684" width="230" height="140" rx="8" />
+  <text class="label" x="516" y="722">model/anthropic</text>
+  <text class="small" x="516" y="746">Anthropic Messages</text>
+  <text class="small" x="516" y="766">stop_reason 归一化</text>
+  <text class="small" x="516" y="790">内部仍有模型名分支</text>
+  <rect class="node input" x="740" y="684" width="230" height="140" rx="8" />
+  <text class="label" x="766" y="722">model/responses</text>
+  <text class="small" x="766" y="746">两个 kind 一个工厂</text>
+  <text class="small" x="766" y="766">vendorCapabilities 表</text>
+  <text class="small" x="766" y="790">内部仍有模型名分支</text>
+  <rect class="node input" x="990" y="684" width="230" height="140" rx="8" />
+  <text class="label" x="1016" y="722">model/providerbroker</text>
+  <text class="small" x="1016" y="746">本机 resolver 转给远端</text>
+  <text class="small" x="1016" y="766">只过 Descriptor 与 chunk</text>
+  <text class="small" x="1016" y="790">自带 http.Client</text>
+
+  <text class="band" x="60" y="922">旁路与叶子</text>
+  <rect class="zone" x="222" y="856" width="1016" height="124" rx="10" />
+  <rect class="node neutral" x="240" y="868" width="340" height="100" rx="8" />
+  <text class="label" x="266" y="906">model/catalog</text>
+  <text class="small" x="266" y="928">端点自省：问地址提供什么</text>
+  <text class="small" x="266" y="948">无运行时状态，不参与路由</text>
+  <rect class="node storage" x="610" y="868" width="400" height="100" rx="8" />
+  <text class="label" x="636" y="906">model/billing + model/visionimage</text>
+  <text class="small" x="636" y="928">叶子：不得 import 非叶子</text>
+  <text class="small" x="636" y="948">与 contract/pricing 互不依赖</text>
+  <rect class="node neutral" x="1040" y="868" width="180" height="100" rx="8" />
+  <text class="label" x="1066" y="906">远端内核</text>
+  <text class="small" x="1066" y="928">另一台机器</text>
+
+  <text class="band" x="60" y="1076">凭据与出网</text>
+  <rect class="node external" x="240" y="1012" width="340" height="120" rx="8" />
+  <text class="label" x="266" y="1050">internal/contract/config</text>
+  <text class="small" x="266" y="1072">全局 $REASONIX_HOME/.env</text>
+  <text class="small" x="266" y="1092">唯一凭据来源</text>
+  <text class="small" x="266" y="1112">进程环境不参与解析</text>
+  <rect class="node process" x="610" y="1012" width="610" height="120" rx="8" />
+  <text class="label" x="636" y="1050">base/netclient + safety/endpointclient + safety/redirectguard</text>
+  <text class="small" x="636" y="1072">带凭据的重定向被锁定在原 origin</text>
+  <text class="small" x="636" y="1092">直连主机在任何代理模式下都绕过代理</text>
+
+  <text class="small" x="1240" y="1054">带凭据的请求</text>
+  <text class="small" x="1240" y="1070">被锁在原 origin</text>
+
+  <!-- ============ legend ============ -->
+  <text class="label" x="60" y="1188">图例</text>
+  <path class="swatch-deny" d="M 62 1218 H 102" />
+  <path class="xmark" d="M 72 1208 L 92 1228" />
+  <path class="xmark" d="M 92 1208 L 72 1228" />
+  <text class="small" x="118" y="1222">红色虚线加叉：被 repolint layer-order 拒绝的方向（适配器不得 import 内核）</text>
+  <path class="swatch-quiet" d="M 62 1250 H 102" />
+  <path class="xmark-quiet" d="M 72 1240 L 92 1260" />
+  <path class="xmark-quiet" d="M 92 1240 L 72 1260" />
+  <text class="small" x="118" y="1254">灰色虚线加叉：这条 import 边在代码里不存在，靠约定维持</text>
+  <text class="small" x="60" y="1284">本图未画 safety/egress：它只服务沙箱里的 bash 子进程，与 provider 的出网路径没有交集。</text>
+</svg>

@@ -1,0 +1,221 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 800" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>扩展体系的四层能力边界：沙箱横切 MCP 与 Extension，不是第四个盒子</title>
+  <desc>这张图把 Reasonix 扩展体系的四种能力机制放在同一组坐标里对照：MCP 面向外部进程与协议边界，Extension Protocol v2 是进程外的代码拦截层，Plugin Package 负责分发与不可变，Skill 是受前缀预算约束的指令资产。图的上方是一条缓存稳定前缀带，下方是一条回合尾部带，四个能力块分别标出声明形态、生效位置、权限等级与是否变更缓存前缀。最关键的一处是中间那条虚线命令沙箱边界：它横切 MCP 与 Extension Protocol 两个块，把每块分成沙箱之内与沙箱之外两半，并画出各自沙箱之外的那部分。读者应从中看出：沙箱不是与四层并列的第五个盒子，而是一条穿过两个盒子的线，所以扩展体系里没有块级的沙箱答案。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="800" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">扩展体系的四层能力边界：沙箱横切 MCP 与 Extension，不是第四个盒子</text>
+  <text class="small" x="40" y="70">四条互相冲突的约束：进程边界 · 裁决时机 · 分发不可变 · 前缀预算</text>
+
+  <!-- ============ connectors: 先画边，再画节点覆盖 ============ -->
+
+  <!-- E1 MCP → 缓存稳定前缀：tools 数组本身就是前缀的一部分 -->
+  <path class="edge edge-arrow" d="M 177 176 L 177 152" />
+  <!-- E2 Extension Protocol → 缓存稳定前缀：只有 slot 所有者才可能触及 -->
+  <path class="edge edge-arrow edge-dashed" d="M 472 176 L 472 152" />
+  <!-- E3 Skill → 回合尾部：目录骑在回合上 -->
+  <path class="edge edge-arrow" d="M 1062 456 L 1062 676" />
+
+  <!-- 缓存稳定前缀带 -->
+  <rect class="node zone" x="40" y="100" width="1160" height="48" rx="8" />
+  <!-- 回合尾部带 -->
+  <rect class="node zone" x="40" y="680" width="1160" height="48" rx="8" />
+
+  <!-- 四个能力块 -->
+  <rect class="node external" x="40" y="176" width="275" height="420" rx="8" />
+  <rect class="node process" x="335" y="176" width="275" height="420" rx="8" />
+  <rect class="node storage" x="630" y="176" width="275" height="280" rx="8" />
+  <rect class="node input" x="925" y="176" width="275" height="280" rx="8" />
+
+  <!-- 命令沙箱边界：横切 MCP 与 Extension 两块，不是第四个盒子 -->
+  <path class="zone" d="M 40 480 H 610" />
+  <!-- 沙箱之外：MCP（host 模式 stdio MCP 与 sidecar 都不在命令沙箱内） -->
+  <path class="node risk" d="M 40 480 H 315 V 588 A 8 8 0 0 1 307 596 H 48 A 8 8 0 0 1 40 588 Z" />
+  <path class="node risk" d="M 335 480 H 610 V 588 A 8 8 0 0 1 602 596 H 343 A 8 8 0 0 1 335 588 Z" />
+
+  <!-- ============ nodes: 文字压在盒子之上 ============ -->
+
+  <text class="band" x="60" y="129">缓存稳定前缀（系统提示 + 规范化工具 schema）：只有已声明的前缀配置可以移动它</text>
+  <text class="band" x="60" y="709">回合尾部（用户回合内的宿主块）：available-skills / hook-context / memory-update 等骑在这里</text>
+
+  <!-- MCP -->
+  <text class="label" x="64" y="212">MCP Server</text>
+  <text class="small" x="64" y="230">外部工具与资源（进程边界）</text>
+  <text class="small" x="64" y="252">声明形态</text>
+  <text class="small" x="64" y="270">插件包 manifest 的 mcpServers</text>
+  <text class="small" x="64" y="288">生效位置</text>
+  <text class="small" x="64" y="306">外部进程：host 模式不继承沙箱</text>
+  <text class="small" x="64" y="324">权限等级</text>
+  <text class="small" x="64" y="342">声明式信任 + 逐条启动授权</text>
+  <text class="small" x="64" y="360">是否动前缀</text>
+  <text class="small" x="64" y="378">动：tools 数组是前缀的一部分</text>
+  <text class="small" x="64" y="396">身份锚</text>
+  <text class="small" x="64" y="414">工具定义摘要（tool pin 扣留）</text>
+  <text class="small" x="64" y="432">失败语义：调用失败回注回合尾部</text>
+  <text class="small" x="64" y="458">沙箱之内</text>
+  <text class="small" x="64" y="508">沙箱之外</text>
+  <text class="small" x="64" y="526">host 模式 stdio MCP 作为受信宿主进程</text>
+  <text class="small" x="64" y="544">不继承 agent 的命令沙箱</text>
+  <text class="small" x="64" y="562">且永不自动回落到 confined</text>
+
+  <!-- Extension Protocol v2 -->
+  <text class="label" x="359" y="212">Extension Protocol v2</text>
+  <text class="small" x="359" y="230">进程外代码拦截（裁决时机）</text>
+  <text class="small" x="359" y="252">声明形态</text>
+  <text class="small" x="359" y="270">插件包 manifest 的 runtime 块</text>
+  <text class="small" x="359" y="288">生效位置</text>
+  <text class="small" x="359" y="306">sidecar 子进程（语言无关）</text>
+  <text class="small" x="359" y="324">权限等级</text>
+  <text class="small" x="359" y="342">代码级：可替换决定与内容</text>
+  <text class="small" x="359" y="360">是否动前缀</text>
+  <text class="small" x="359" y="378">不动：只有 slot 所有者才可能触及</text>
+  <text class="small" x="359" y="396">拦截点</text>
+  <text class="small" x="359" y="414">17 个 hook point（阻塞 / 观察两类）</text>
+  <text class="small" x="359" y="432">失败语义：有界证据 + 保守截断</text>
+  <text class="small" x="359" y="458">沙箱之内</text>
+  <text class="small" x="359" y="508">沙箱之外</text>
+  <text class="small" x="359" y="526">sidecar 子进程继承未过滤环境</text>
+  <text class="small" x="359" y="544">从第一次启动尝试起被标记</text>
+  <text class="small" x="359" y="562">只靠三条外围约束兜</text>
+
+  <!-- Plugin Package -->
+  <text class="label" x="654" y="212">Plugin Package v2</text>
+  <text class="small" x="654" y="230">分发与不可变性的落点</text>
+  <text class="small" x="654" y="252">声明形态</text>
+  <text class="small" x="654" y="270">reasonix-plugin.json 严格解码</text>
+  <text class="small" x="654" y="288">生效位置</text>
+  <text class="small" x="654" y="306">磁盘：plugins 目录 + 状态文件</text>
+  <text class="small" x="654" y="324">权限等级</text>
+  <text class="small" x="654" y="342">安装期不跑第三方脚本</text>
+  <text class="small" x="654" y="360">是否动前缀</text>
+  <text class="small" x="654" y="378">不动：只声明，不注入</text>
+  <text class="small" x="654" y="396">分发不变量</text>
+  <text class="small" x="654" y="414">apiVersion 精确匹配 + 受管目录迁移</text>
+
+  <!-- Skill -->
+  <text class="label" x="949" y="212">Skill</text>
+  <text class="small" x="949" y="230">指令资产（前缀预算）</text>
+  <text class="small" x="949" y="252">声明形态</text>
+  <text class="small" x="949" y="270">&lt;name&gt;/SKILL.md 目录约定</text>
+  <text class="small" x="949" y="288">生效位置</text>
+  <text class="small" x="949" y="306">回合尾部：available-skills 块</text>
+  <text class="small" x="949" y="324">权限等级</text>
+  <text class="small" x="949" y="342">指令资产：allowed-tools 只收窄</text>
+  <text class="small" x="949" y="360">是否动前缀</text>
+  <text class="small" x="949" y="378">不动：owedCatalog 欠账投递</text>
+  <text class="small" x="949" y="396">命中判据</text>
+  <text class="small" x="949" y="414">paths / 触发词 / runAs</text>
+
+  <!-- 边界说明 -->
+  <text class="small" x="620" y="462">命令沙箱边界：横切 MCP 与 Extension 两块，</text>
+  <text class="small" x="620" y="480">不是并列的第四个盒子；插件包与 Skill 无进程可横切</text>
+
+  <text class="small" x="1054" y="500" text-anchor="end">目录骑回合</text>
+  <text class="small" x="1054" y="516" text-anchor="end">（available-skills）</text>
+  <text class="small" x="185" y="170">tools 数组进前缀</text>
+  <text class="small" x="480" y="170">只有 slot 所有者才可能触及</text>
+
+  <!-- 图例 -->
+  <rect class="node risk" x="40" y="750" width="14" height="14" />
+  <text class="small" x="62" y="761">沙箱之外：不在命令沙箱内的进程</text>
+  <rect class="node zone" x="290" y="750" width="14" height="14" />
+  <text class="small" x="312" y="761">虚线边界：横切 / 仅可能触及</text>
+  <text class="small" x="500" y="761">配色：黄 = MCP 外部信任域 · 紫 = Extension 执行体 · 青 = 插件包持久边界 · 蓝 = 指令资产</text>
+</svg>

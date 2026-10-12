@@ -1,0 +1,216 @@
+<svg viewBox="0 0 1240 1120" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif">
+  <title>记忆的两条通路：稳定前缀与回合的边界，以及被移除的 MEMORY.md 索引边</title>
+  <desc>这张图按位置把 Reasonix 的记忆面切成两栏：左栏是 cache-stable 稳定前缀（每会话付一次、必须逐字节稳定），右栏是回合（每次请求可重放）。底部贯穿全宽的是磁盘上的 canonical 状态，是两栏的共同上游。全图只有五种线型承载语义：实线粗边是唯一被声明允许进入前缀的边（用户显式 pin 的事实正文）；虚线是宿主每回合投递的块，全部不跨越中间那条竖分隔线；点线是模型主动调用 memory 与 history 工具后拿到的结果，宿主不自动注入。另有一条被红叉划掉的旧边——MEMORY.md 索引曾经折进前缀，一次 remember 就会让它之后的每个字节重发。读者应看出稳定性来自把两条通路的读写位置写死，而不是把东西都塞进前缀。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+  <rect x="0" y="0" width="1240" height="1120" fill="var(--bg)" />
+
+  <rect class="zone" x="40" y="100" width="440" height="680" />
+  <rect class="zone" x="620" y="100" width="580" height="680" />
+  <rect class="zone" x="40" y="820" width="1160" height="140" />
+  <line x1="555" y1="96" x2="555" y2="784" stroke="var(--line)" stroke-width="2" stroke-dasharray="10 6" />
+
+  <text class="title" x="40" y="44">记忆的两条通路：稳定前缀与回合的边界</text>
+  <text class="small" x="40" y="68">DeepSeek-Reasonix v2.37.0 · 只有用户显式 pin 是声明允许进入 cache-stable 前缀的记忆操作</text>
+  <text class="band" x="56" y="124">稳定前缀（每会话付一次，必须逐字节稳定）</text>
+  <text class="band" x="636" y="124">回合（每次请求可重放，允许变化）</text>
+  <text class="band" x="130" y="844">canonical 状态（磁盘，真源）＝两条通路的共同上游</text>
+
+  <path class="edge edge-arrow" style="stroke-dasharray:2 5;stroke-width:2" d="M 1060 850 V 700 H 700 V 580" />
+  <path class="edge edge-dashed edge-arrow" style="stroke-width:2" d="M 700 850 V 800 H 642 V 450 H 660" />
+  <path class="edge edge-arrow" style="stroke-dasharray:2 5;stroke-width:2" d="M 480 850 V 750 H 1070 V 580" />
+  <path class="edge edge-arrow" style="stroke-dasharray:2 5;stroke-width:2" d="M 170 946 V 953 H 1130 V 580" />
+  <path class="edge edge-arrow" style="stroke-width:3" d="M 435 850 V 396" />
+  <path class="edge edge-arrow" style="stroke-width:3" d="M 260 320 V 246" />
+  <path class="edge edge-dashed" style="stroke:#dc2626;stroke-width:2" d="M 110 850 V 805 H 520 V 210 H 460" />
+  <path class="edge edge-dashed edge-arrow" d="M 770 412 V 396" />
+  <path class="edge edge-dashed edge-arrow" d="M 880 358 H 900 V 226 H 1050 V 212" />
+  <path class="edge edge-dashed edge-arrow" d="M 880 266 H 920 V 181 H 960" />
+  <path class="edge edge-dashed edge-arrow" d="M 880 191 H 935 V 358 H 960" />
+  <path class="edge edge-arrow" style="stroke-dasharray:2 5" d="M 880 542 H 960" />
+  <path class="edge edge-dashed edge-arrow" d="M 260 170 C 260 104, 300 88, 370 88 L 954 88 C 1030 88, 1070 96, 1070 136" />
+  <line x1="483" y1="203" x2="497" y2="217" stroke="#dc2626" stroke-width="2.5" />
+  <line x1="497" y1="203" x2="483" y2="217" stroke="#dc2626" stroke-width="2.5" />
+
+  <rect class="node input" x="60" y="170" width="400" height="76" rx="8" />
+  <text class="label" x="80" y="200">系统前缀其余部分</text>
+  <text class="small" x="80" y="224">BASE + 环境段 + skills + memoryProtocol</text>
+
+  <rect class="node storage" x="60" y="320" width="400" height="76" rx="8" />
+  <text class="label" x="80" y="350">pinned bodies</text>
+  <text class="small" x="80" y="374">用户显式 pin 的正文（声明例外）</text>
+
+  <rect class="node process" x="660" y="136" width="220" height="76" rx="8" />
+  <text class="label" x="680" y="166">RecallIndex 快照</text>
+  <text class="small" x="680" y="190">AutoRecall 打分 / 预算</text>
+
+  <rect class="node process" x="660" y="228" width="220" height="76" rx="8" />
+  <text class="label" x="680" y="258">pending notes</text>
+  <text class="small" x="680" y="282">#note / 面板编辑</text>
+
+  <rect class="node process" x="660" y="320" width="220" height="76" rx="8" />
+  <text class="label" x="680" y="350">projectionDebt</text>
+  <text class="small" x="680" y="374">指令欠账（比较版本）</text>
+
+  <rect class="node process" x="660" y="412" width="220" height="76" rx="8" />
+  <text class="label" x="680" y="442">instruction.Resolve</text>
+  <text class="small" x="680" y="466">枚举 · 按正文去重 · @path</text>
+
+  <rect class="node process" x="660" y="504" width="220" height="76" rx="8" />
+  <text class="label" x="680" y="534">historycatalog</text>
+  <text class="small" x="680" y="558">projectiondb · FTS5 投影</text>
+
+  <rect class="node neutral" x="960" y="136" width="220" height="76" rx="8" />
+  <text class="label" x="980" y="166">回合块（用户文本之前）</text>
+  <text class="small" x="980" y="190">instructions + update</text>
+
+  <rect class="node neutral" x="960" y="320" width="220" height="76" rx="8" />
+  <text class="label" x="980" y="350">尾块：memory-recall</text>
+  <text class="small" x="980" y="374">唯一跟在用户文本之后</text>
+
+  <rect class="node neutral" x="960" y="504" width="220" height="76" rx="8" />
+  <text class="label" x="980" y="534">工具结果（模型自取）</text>
+  <text class="small" x="980" y="558">memory / history</text>
+
+  <rect class="node neutral" x="60" y="850" width="230" height="96" rx="8" />
+  <text class="label" x="80" y="880">MEMORY.md 索引</text>
+  <text class="small" x="80" y="904">人类可见（/memory 面板）</text>
+  <text class="small" x="80" y="928">模型侧只走 memory 工具</text>
+
+  <rect class="node storage" x="310" y="850" width="230" height="96" rx="8" />
+  <text class="label" x="330" y="880">事实文件 &lt;name&gt;.md</text>
+  <text class="small" x="330" y="904">committed 事实的权威副本</text>
+  <text class="small" x="330" y="928">是否进前缀由 pin 决定</text>
+
+  <rect class="node neutral" x="570" y="850" width="300" height="96" rx="8" />
+  <text class="label" x="590" y="880">指令文件组</text>
+  <text class="small" x="590" y="904">REASONIX.md · AGENTS.md · CLAUDE.md</text>
+  <text class="small" x="590" y="928">*.local.md · 祖先目录 · 用户全局</text>
+
+  <rect class="node storage" x="900" y="850" width="280" height="96" rx="8" />
+  <text class="label" x="920" y="880">会话历史（权威）</text>
+  <text class="small" x="920" y="904">session JSONL · event log</text>
+  <text class="small" x="920" y="928">meta · 子代理 transcript</text>
+
+  <text class="small" x="60" y="480">标准指令不在此列：它走回合块</text>
+  <text class="small" x="60" y="502">（project-instructions + memory-update）</text>
+  <text class="small" x="60" y="536">memoryProtocol 不含任何事实，逐字节恒定</text>
+  <text class="small" x="60" y="570">旧边（已划掉）：MEMORY.md 索引曾折进前缀</text>
+  <text class="small" x="60" y="592">一次 remember 就让它之后的字节全部重发</text>
+
+  <text class="small" x="720" y="600">虚线＝宿主投递（每回合可重放）　点线＝模型主动拉取</text>
+  <text class="small" x="720" y="622">两条路都不把事实正文写进稳定前缀</text>
+  <text class="small" x="785" y="660">后台建可丢弃的 FTS5 投影</text>
+  <text class="small" x="664" y="740">memory 工具（模型发起）</text>
+  <text class="small" x="424" y="700" text-anchor="end">pin：唯一被声明的跨界</text>
+  <text class="small" x="70" y="300">唯一进前缀的边</text>
+  <text class="small" x="980" y="250">新会话：重新投影一次</text>
+  <text x="512" y="245" font-size="12" fill="#dc2626" text-anchor="end">已移除</text>
+
+  <rect class="zone" x="40" y="980" width="560" height="120" />
+  <text class="label" x="64" y="1010">权威：位置决定读法</text>
+  <text class="small" x="64" y="1034">稳定前缀 = 必须遵守（模型读作规则）</text>
+  <text class="small" x="64" y="1056">回合块 = 低权威、可能过期；不得覆盖当前请求与标准指令</text>
+  <text class="small" x="64" y="1078">tool result = 模型自取，语义由模型判断</text>
+
+  <rect class="zone" x="640" y="980" width="560" height="120" />
+  <text class="label" x="664" y="1010">预算：默认值（未设置即不设上限）</text>
+  <text class="small" x="664" y="1034">前缀 pinned：pinned_budget_chars 默认 0 = 无上限</text>
+  <text class="small" x="664" y="1056">召回尾块：4 条 / 2400 字符（逐条裁剪 snippet）</text>
+  <text class="small" x="664" y="1078">history 工具：8 条（最大 20）/ 240 字符 snippet</text>
+</svg>

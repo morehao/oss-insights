@@ -1,0 +1,272 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1240" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>安装布局与更新事务状态的对位：每个状态对应磁盘上的哪一组文件</title>
+  <desc>这张图把更新事务的状态链与版本化安装布局的文件一一对位。左侧是 InstallRoot 目录树：cache/updates 存不可变 manifest 与签名、versions 下的 staging 目录与版本三件套、最后才交换的 current.json 指针、旧版让位留下的 replaced 目录、repair 目录里的写前意图 pending-update.json 与配置快照。右侧十一个状态从 idle 经下载、验签、缓存、staging、published 走到指针交换、probationary、awaiting-health、healthy 与 rolledback，另有一个 debris 终态。两侧细虚线表示哪个状态动的是哪份文件，粗虚线表示交换前失败就回 idle、旧版保持不变，实线回边表示交换后失败必走 rollback。底部四个分叉说明替换动作按系统不同。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="1240" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">安装布局 × 更新事务状态：哪个状态动的是哪一份文件</text>
+
+  <!-- ============ 图例（line，不参与边拓扑） ============ -->
+  <text class="small" x="40" y="82">① 指针交换前失败 ⇒ 回 idle</text>
+  <line class="edge edge-dashed" x1="248" y1="78" x2="328" y2="78" style="stroke-width:3" />
+  <text class="small" x="344" y="82">上一个活动版本保持不变，不需要回滚</text>
+  <text class="small" x="640" y="82">② 指针交换后失败 ⇒ 必须走 rollback 事务</text>
+  <line class="edge" x1="930" y1="78" x2="1010" y2="78" style="stroke-width:2.5" />
+  <text class="small" x="1026" y="82">还原备份</text>
+  <text class="small" x="40" y="104">两侧连线 = 状态与磁盘文件的绑定；current.json 的原子 rename 是整条链上唯一的切换动作</text>
+
+  <!-- ============ connectors：先画边，后画节点覆盖 ============ -->
+
+  <!-- 状态链前进边 -->
+  <path class="edge edge-arrow" d="M 800 254 L 800 270" />
+  <path class="edge edge-arrow" d="M 800 324 L 800 340" />
+  <path class="edge edge-arrow" d="M 800 394 L 800 410" />
+  <path class="edge edge-arrow" d="M 800 464 L 800 480" />
+  <path class="edge edge-arrow" d="M 800 534 L 800 550" />
+  <path class="edge edge-arrow" d="M 800 604 L 800 620" />
+  <path class="edge edge-arrow" d="M 800 674 L 800 690" />
+  <path class="edge edge-arrow" d="M 800 744 L 800 760" />
+  <path class="edge edge-arrow" d="M 800 814 L 800 830" />
+
+  <!-- e1 粗虚线：published -> idle（指针交换前失败） -->
+  <path class="edge edge-dashed edge-arrow" d="M 960 577 L 978 577 L 978 213 L 960 213" style="stroke-width:3" />
+  <!-- e2 粗虚线：verifying -> idle（验签失败不落盘） -->
+  <path class="edge edge-dashed edge-arrow" d="M 960 367 L 970 367 L 970 240 L 960 240" style="stroke-width:3" />
+  <!-- e3 细虚线：probationary -> healthy（Acknowledge 只提交那个确切事务） -->
+  <path class="edge edge-dashed edge-arrow" d="M 960 740 L 1000 740 L 1000 857 L 960 857" />
+  <!-- e5 实线回边：probationary -> rolledback（交换后失败必走回滚） -->
+  <path class="edge edge-arrow" d="M 960 700 L 1030 700 L 1030 940 L 960 940" style="stroke-width:2.5" />
+  <!-- e4 实线回边：pointer-swapped -> rolledback -->
+  <path class="edge edge-arrow" d="M 960 647 L 1015 647 L 1015 927 L 960 927" style="stroke-width:2.5" />
+  <!-- e6 虚线：idle -> quarantined(debris)（启动期 Reconcile） -->
+  <path class="edge edge-dashed edge-arrow" d="M 880 200 L 880 170 L 1010 170" />
+  <!-- e7-e10 平台分叉：published（published 之后的替换动作按系统分叉） -->
+  <path class="edge edge-dashed edge-arrow" d="M 960 604 L 1040 604 L 1040 1064 L 120 1064 L 120 1090" />
+  <path class="edge edge-dashed edge-arrow" d="M 960 606 L 1050 606 L 1050 1072 L 300 1072 L 300 1090" />
+  <path class="edge edge-dashed edge-arrow" d="M 960 608 L 1060 608 L 1060 1080 L 480 1080 L 480 1090" />
+  <path class="edge edge-dashed edge-arrow" d="M 960 610 L 1070 610 L 1070 1088 L 660 1088 L 660 1090" />
+  <!-- b1-b8 绑定：状态 -> 文件 -->
+  <path class="edge edge-dashed" d="M 640 297 L 580 218" />
+  <path class="edge edge-dashed" d="M 640 437 L 580 240" />
+  <path class="edge edge-dashed" d="M 640 507 L 580 314" />
+  <path class="edge edge-dashed" d="M 640 577 L 580 410" />
+  <path class="edge edge-dashed" d="M 640 647 L 580 506" />
+  <path class="edge edge-dashed" d="M 640 717 L 580 698" />
+  <path class="edge edge-dashed" d="M 640 857 L 580 722" />
+  <path class="edge edge-dashed" d="M 640 927 L 580 602" />
+
+  <!-- ============ 左侧：InstallRoot 目录树 ============ -->
+  <text class="band" x="60" y="150">InstallRoot（版本化安装布局，v1.20+）</text>
+
+  <rect class="node storage" x="60" y="180" width="520" height="76" rx="8" />
+  <text class="label" x="84" y="212">&lt;cache&gt;/updates/</text>
+  <text class="small" x="84" y="238">目录 + 每版本不可变 manifest + .minisig</text>
+
+  <rect class="node storage" x="90" y="276" width="490" height="76" rx="8" />
+  <text class="label" x="114" y="308">versions/.staging-&lt;v&gt;-&lt;nonce&gt;</text>
+  <text class="small" x="114" y="334">staging 目录：整树先落这里，永不直接发布</text>
+
+  <rect class="node storage" x="90" y="372" width="490" height="76" rx="8" />
+  <text class="label" x="114" y="404">versions/&lt;v&gt;/：desktop / cli / update-helper</text>
+  <text class="small" x="114" y="430">三件套必须在同一次交换里整体就位</text>
+
+  <rect class="node input" x="60" y="468" width="520" height="76" rx="8" />
+  <text class="label" x="84" y="500">current.json</text>
+  <text class="small" x="84" y="526">指针：原子 rename，最后才交换</text>
+
+  <rect class="node storage" x="90" y="564" width="490" height="76" rx="8" />
+  <text class="label" x="114" y="596">versions/&lt;v&gt;.replaced-&lt;nonce&gt;</text>
+  <text class="small" x="114" y="622">旧版改名让位，回滚材料就放在这里</text>
+
+  <rect class="node risk" x="90" y="660" width="490" height="76" rx="8" />
+  <text class="label" x="114" y="692">&lt;home&gt;/repair/pending-update.json</text>
+  <text class="small" x="114" y="718">写前意图：createdAt + transactionID + 每个 backup 的 hash</text>
+
+  <rect class="node storage" x="90" y="756" width="490" height="76" rx="8" />
+  <text class="label" x="114" y="788">&lt;home&gt;/repair/snapshots/</text>
+  <text class="small" x="114" y="814">配置快照，保留 5 份</text>
+
+  <rect class="node storage" x="90" y="852" width="490" height="76" rx="8" />
+  <text class="label" x="114" y="884">&lt;home&gt;/repair/config.toml.last-known-good</text>
+  <text class="small" x="114" y="910">配置修复的兜底，不参与更新事务</text>
+
+  <rect class="node storage" x="60" y="948" width="520" height="76" rx="8" />
+  <text class="label" x="84" y="980">&lt;home&gt;/remote/{token,port,pid}</text>
+  <text class="small" x="84" y="1006">远端工作区状态，与更新无关</text>
+
+  <text class="small" x="60" y="1050">repair/snapshots 与 config.toml.last-known-good 服务于配置修复，不在更新链路上</text>
+
+  <!-- ============ 中列：状态链 ============ -->
+  <text class="band" x="640" y="150">更新事务状态（repair/update）</text>
+
+  <rect class="node neutral" x="640" y="200" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="222">idle</text>
+  <text class="small" x="664" y="242">无标记：pendingUpdateNone</text>
+
+  <rect class="node process" x="640" y="270" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="292">downloading</text>
+  <text class="small" x="664" y="312">目录条目指向不可变 latest.json</text>
+
+  <rect class="node process" x="640" y="340" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="362">verifying</text>
+  <text class="small" x="664" y="382">minisign 验签 → SHA-256；失败不落盘</text>
+
+  <rect class="node storage" x="640" y="410" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="432">cached</text>
+  <text class="small" x="664" y="452">一个槽位的缓存，已校验</text>
+
+  <rect class="node process" x="640" y="480" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="502">staging</text>
+  <text class="small" x="664" y="522">versions/.staging-&lt;v&gt;-&lt;nonce&gt;</text>
+
+  <rect class="node process" x="640" y="550" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="572">published（指针未换）</text>
+  <text class="small" x="664" y="592">整树就位，current.json 还没动</text>
+
+  <rect class="node input" x="640" y="620" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="642">pointer-swapped</text>
+  <text class="small" x="664" y="662">current.json 原子 rename；旧版改名让位</text>
+
+  <rect class="node risk" x="640" y="690" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="712">probationary</text>
+  <text class="small" x="664" y="732">pending-update.json 存在 = 写前意图</text>
+
+  <rect class="node external" x="640" y="760" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="782">awaiting-health（24h 上限）</text>
+  <text class="small" x="664" y="802">createdAt 超时则自动提交</text>
+
+  <rect class="node process" x="640" y="830" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="852">healthy</text>
+  <text class="small" x="664" y="872">booted-from-update 的进程 Acknowledge</text>
+
+  <rect class="node storage" x="640" y="900" width="320" height="54" rx="8" />
+  <text class="label" x="664" y="922">rolledback</text>
+  <text class="small" x="664" y="942">按事务身份还原每个 backup</text>
+
+  <rect class="node risk" x="1010" y="130" width="205" height="80" rx="8" />
+  <text class="label" x="1034" y="162">quarantined（debris）</text>
+  <text class="small" x="1034" y="186">说不清自己是什么 ⇒ 移出原位</text>
+
+  <text class="small" x="648" y="188">启动期 Reconcile 读到不自我描述的标记</text>
+
+  <!-- ============ 底部：平台分叉 ============ -->
+  <rect class="node external" x="40" y="1090" width="160" height="90" rx="8" />
+  <text class="label" x="64" y="1122">darwin</text>
+  <text class="small" x="64" y="1146">脱离子进程持锁</text>
+  <text class="small" x="64" y="1166">rename 整个 .app</text>
+
+  <rect class="node external" x="220" y="1090" width="160" height="90" rx="8" />
+  <text class="label" x="244" y="1122">windows</text>
+  <text class="small" x="244" y="1146">ShellExecute 安装器</text>
+  <text class="small" x="244" y="1166">没有 Line 则拒绝</text>
+
+  <rect class="node external" x="400" y="1090" width="160" height="90" rx="8" />
+  <text class="label" x="424" y="1122">linux</text>
+  <text class="small" x="424" y="1146">pkexec + helper</text>
+  <text class="small" x="424" y="1166">装 .deb 包</text>
+
+  <rect class="node external" x="580" y="1090" width="160" height="90" rx="8" />
+  <text class="label" x="604" y="1122">other</text>
+  <text class="small" x="604" y="1146">显式不支持</text>
+  <text class="small" x="604" y="1166">没有替换路径</text>
+
+  <text class="small" x="760" y="1140">published → 替换动作按系统分叉：</text>
+  <text class="small" x="760" y="1162">同一份 pending-update.json，四套不同的落盘方式</text>
+</svg>

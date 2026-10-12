@@ -1,0 +1,306 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1100" font-family="system-ui, -apple-system, 'Segoe UI', 'Noto Sans CJK SC', 'PingFang SC', sans-serif">
+  <title>Reasonix 实体关系图：本地权威文件实体、本地投影表实体、远端 D1 表实体三张互不连通的子图及其基数</title>
+  <desc>本图把实体分成三张互不连通的子图。左上用胶囊形表示文件实体，说明会话转录、分支账本、事件日志、检查点、记忆与统计之间的约定式关系，它们没有数据库外键。右上用方形表示投影表实体，history 库按 roots 到 sources 到 documents 到 fts 串联，其中只有 sources 到 documents 是真外键，fts 靠 rowid 对齐；usage 库按 files 到 records 串联，两张聚合表是可重算的派生表。下方是远端三个 D1 库，users 派生会话与设备授权，reports 派生两张维度表，论坛按成员与分类派生主题与帖子，跨库只靠 email 字符串引用。三张子图之间没有边。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="1100" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">实体关系：本地权威文件、本地投影表与远端 D1 三张不连通的子图</text>
+  <text class="small" x="40" y="72">胶囊形＝文件实体（无 schema）；方形＝表实体（有 DDL）；三张子图之间没有任何边</text>
+
+  <!-- ===== connectors first ===== -->
+  <!-- A：本地权威（约定式关系，无外键） -->
+  <path class="edge edge-arrow" fill="none" d="M 260 192 L 310 192" />
+  <path class="edge edge-arrow" fill="none" d="M 260 208 L 282 208 L 282 276 L 310 276" />
+  <path class="edge edge-arrow" fill="none" d="M 165 224 L 165 244" />
+  <path class="edge edge-arrow" fill="none" d="M 165 308 L 165 328" />
+  <path class="edge edge-arrow" fill="none" d="M 260 284 L 286 284 L 286 360 L 310 360" />
+  <path class="edge edge-arrow" fill="none" d="M 260 444 L 310 444" />
+  <path class="edge edge-arrow" fill="none" d="M 260 528 L 310 528" />
+  <path class="edge edge-arrow" fill="none" d="M 70 176 L 46 176 L 46 208 L 70 208" />
+  <!-- B：本地投影（唯一条真外键 + rowid 对齐 + 派生聚合） -->
+  <path class="edge edge-arrow" fill="none" d="M 770 224 L 770 244" />
+  <path class="edge edge-arrow" fill="none" d="M 770 308 L 770 328" />
+  <path class="edge edge-arrow" fill="none" d="M 770 392 L 770 412" />
+  <path class="edge edge-arrow" fill="none" d="M 1050 308 L 1050 328" />
+  <path class="edge edge-arrow edge-dashed" fill="none" d="M 950 360 L 900 360 L 900 522 L 870 522" />
+  <path class="edge edge-arrow edge-dashed" fill="none" d="M 1050 392 L 1050 496" />
+  <!-- C：远端 D1（库内 FK + 跨库 email 字符串） -->
+  <path class="edge edge-arrow" fill="none" d="M 175 764 L 175 784" />
+  <path class="edge edge-arrow" fill="none" d="M 250 732 L 264 732 L 264 900 L 250 900" />
+  <path class="edge edge-arrow" fill="none" d="M 250 716 L 365 716 L 365 784" />
+  <path class="edge edge-arrow" fill="none" d="M 290 812 L 250 812" />
+  <path class="edge edge-arrow" fill="none" d="M 580 764 L 580 784" />
+  <path class="edge edge-arrow" fill="none" d="M 680 732 L 696 732 L 696 900 L 680 900" />
+  <path class="edge edge-arrow edge-dashed" fill="none" d="M 840 812 L 846 812 L 846 732 L 870 732" />
+  <path class="edge edge-arrow" fill="none" d="M 1120 764 L 1120 784" />
+  <path class="edge edge-arrow" fill="none" d="M 1050 812 L 1010 812" />
+  <path class="edge edge-arrow" fill="none" d="M 940 764 L 940 784" />
+  <path class="edge edge-arrow" fill="none" d="M 1010 750 L 1015 750 L 1015 950 L 1100 950 L 1100 932" />
+
+  <!-- ===== zones ===== -->
+  <rect class="zone" x="40" y="100" width="560" height="500" rx="8" />
+  <text class="band" x="56" y="124">本地权威：文件实体（胶囊＝无 schema，约束靠约定）</text>
+  <rect class="zone" x="640" y="100" width="560" height="500" rx="8" />
+  <text class="band" x="656" y="124">本地投影：表实体（方形＝有 DDL）</text>
+  <rect class="zone" x="40" y="650" width="1160" height="410" rx="8" />
+  <text class="band" x="56" y="674">远端 D1：三个库，跨库只有 email 字符串，无参照完整性</text>
+
+  <!-- ===== A：文件实体（胶囊） ===== -->
+  <rect class="node storage" x="70" y="160" width="190" height="64" rx="32" />
+  <text class="label" x="94" y="186">Session</text>
+  <text class="small" x="94" y="206">.jsonl 主转录</text>
+
+  <rect class="node storage" x="310" y="160" width="190" height="64" rx="32" />
+  <text class="label" x="334" y="186">BranchMeta</text>
+  <text class="small" x="334" y="206">.meta 分支账本</text>
+
+  <rect class="node storage" x="70" y="244" width="190" height="64" rx="32" />
+  <text class="label" x="94" y="270">Checkpoint</text>
+  <text class="small" x="94" y="290">.ckpt/ 每文件前像</text>
+
+  <rect class="node storage" x="310" y="244" width="190" height="64" rx="32" />
+  <text class="label" x="334" y="270">EventLog</text>
+  <text class="small" x="334" y="290">.events.jsonl</text>
+
+  <rect class="node storage" x="70" y="328" width="190" height="64" rx="32" />
+  <text class="label" x="94" y="354">FileRevision</text>
+  <text class="small" x="94" y="374">after 指纹</text>
+
+  <rect class="node storage" x="310" y="328" width="190" height="64" rx="32" />
+  <text class="label" x="334" y="354">Sidecars</text>
+  <text class="small" x="334" y="374">.context/.wire/…</text>
+
+  <rect class="node storage" x="70" y="412" width="190" height="64" rx="32" />
+  <text class="label" x="94" y="438">MemoryIndex</text>
+  <text class="small" x="94" y="458">MEMORY.md</text>
+
+  <rect class="node storage" x="310" y="412" width="190" height="64" rx="32" />
+  <text class="label" x="334" y="438">MemoryFact</text>
+  <text class="small" x="334" y="458">*.md + frontmatter</text>
+
+  <rect class="node storage" x="70" y="496" width="190" height="64" rx="32" />
+  <text class="label" x="94" y="522">StatsDay</text>
+  <text class="small" x="94" y="542">YYYY-MM-DD.jsonl</text>
+
+  <rect class="node storage" x="310" y="496" width="190" height="64" rx="32" />
+  <text class="label" x="334" y="522">UsageRecord</text>
+  <text class="small" x="334" y="542">一行一条 JSONL 行</text>
+
+  <!-- ===== B：投影表实体（方形） ===== -->
+  <rect class="node process" x="670" y="160" width="200" height="64" rx="8" />
+  <text class="label" x="694" y="184">history_roots</text>
+  <text class="small" x="694" y="206">被索引的目录 + 目录指纹</text>
+
+  <rect class="node process" x="670" y="244" width="200" height="64" rx="8" />
+  <text class="label" x="694" y="268">history_sources</text>
+  <text class="small" x="694" y="290">一个转录一行（新鲜度）</text>
+
+  <rect class="node process" x="670" y="328" width="200" height="64" rx="8" />
+  <text class="label" x="694" y="352">history_documents</text>
+  <text class="small" x="694" y="374">检索单元（消息的一个 part）</text>
+
+  <rect class="node process" x="670" y="412" width="200" height="64" rx="8" />
+  <text class="label" x="694" y="436">history_fts</text>
+  <text class="small" x="694" y="458">contentless，不含正文</text>
+
+  <rect class="node process" x="950" y="160" width="200" height="64" rx="8" />
+  <text class="label" x="974" y="184">history_state</text>
+  <text class="small" x="974" y="206">单行闸门（CHECK id=1）</text>
+
+  <rect class="node process" x="950" y="244" width="200" height="64" rx="8" />
+  <text class="label" x="974" y="268">usage_files</text>
+  <text class="small" x="974" y="290">每日 JSONL 的幂等锚</text>
+
+  <rect class="node process" x="950" y="328" width="200" height="64" rx="8" />
+  <text class="label" x="974" y="352">usage_records</text>
+  <text class="small" x="974" y="374">行级事实：主键即幂等键</text>
+
+  <rect class="node neutral" x="670" y="496" width="200" height="64" rx="8" />
+  <text class="label" x="694" y="520">usage_rollups</text>
+  <text class="small" x="694" y="542">派生聚合，可 DELETE 重算</text>
+
+  <rect class="node neutral" x="950" y="496" width="200" height="64" rx="8" />
+  <text class="label" x="974" y="520">usage_cost</text>
+  <text class="small" x="974" y="542">按视角累加（可重算）</text>
+
+  <!-- ===== C：远端 D1（方形，库内 FK） ===== -->
+  <rect class="node external" x="100" y="700" width="150" height="64" rx="8" />
+  <text class="label" x="124" y="738">users</text>
+
+  <rect class="node external" x="100" y="784" width="150" height="64" rx="8" />
+  <text class="label" x="124" y="822">sessions</text>
+
+  <rect class="node external" x="100" y="868" width="150" height="64" rx="8" />
+  <text class="label" x="124" y="906">email_tokens</text>
+
+  <rect class="node external" x="290" y="784" width="150" height="64" rx="8" />
+  <text class="label" x="314" y="822">device_grants</text>
+
+  <rect class="node external" x="480" y="700" width="200" height="64" rx="8" />
+  <text class="label" x="504" y="738">reports</text>
+
+  <rect class="node external" x="480" y="784" width="200" height="64" rx="8" />
+  <text class="small" x="504" y="822">report_event_dimensions</text>
+
+  <rect class="node external" x="480" y="868" width="200" height="64" rx="8" />
+  <text class="small" x="504" y="906">report_installations</text>
+
+  <rect class="node external" x="710" y="784" width="130" height="64" rx="8" />
+  <text class="label" x="734" y="822">access</text>
+
+  <rect class="node external" x="710" y="868" width="130" height="64" rx="8" />
+  <text class="label" x="734" y="906">audit_log</text>
+
+  <rect class="node external" x="870" y="700" width="140" height="64" rx="8" />
+  <text class="label" x="894" y="738">members</text>
+
+  <rect class="node external" x="1050" y="700" width="140" height="64" rx="8" />
+  <text class="label" x="1074" y="738">categories</text>
+
+  <rect class="node external" x="870" y="784" width="140" height="64" rx="8" />
+  <text class="label" x="894" y="822">posts</text>
+
+  <rect class="node external" x="1050" y="784" width="140" height="64" rx="8" />
+  <text class="label" x="1074" y="822">topics</text>
+
+  <rect class="node external" x="870" y="868" width="140" height="64" rx="8" />
+  <text class="label" x="894" y="906">reactions</text>
+
+  <rect class="node external" x="1050" y="868" width="140" height="64" rx="8" />
+  <text class="label" x="1074" y="906">flags</text>
+
+  <!-- ===== cardinality labels ===== -->
+  <text class="small" x="272" y="184">1:1</text>
+  <text class="small" x="288" y="250">1:N</text>
+  <text class="small" x="174" y="238">1:N</text>
+  <text class="small" x="174" y="322">1:N</text>
+  <text class="small" x="292" y="330">1:N</text>
+  <text class="small" x="272" y="436">1:N</text>
+  <text class="small" x="272" y="520">1:N</text>
+  <text class="small" x="22" y="222">0..1:N</text>
+
+  <text class="small" x="778" y="238">1:N</text>
+  <text class="small" x="778" y="322">1:N</text>
+  <text class="small" x="778" y="406">1:1</text>
+  <text class="small" x="1058" y="322">1:N</text>
+  <text class="small" x="910" y="440">N:1 派生</text>
+  <text class="small" x="1058" y="440">N:1 派生</text>
+
+  <text class="small" x="182" y="778">1:N</text>
+  <text class="small" x="272" y="876">1:N</text>
+  <text class="small" x="300" y="708">1:N</text>
+  <text class="small" x="258" y="806">1:1</text>
+  <text class="small" x="588" y="778">1:N</text>
+  <text class="small" x="702" y="778">1:N</text>
+  <text class="small" x="852" y="778">email</text>
+  <text class="small" x="1128" y="778">1:N</text>
+  <text class="small" x="1022" y="806">1:N</text>
+  <text class="small" x="948" y="778">1:N</text>
+  <text class="small" x="1028" y="942">1:N</text>
+
+  <!-- ===== legend ===== -->
+  <text class="band" x="56" y="980">图例与口径</text>
+  <text class="small" x="56" y="1004">形状：胶囊＝文件实体（无 schema）；方形＝表实体（有 DDL）；虚线边＝逻辑或派生关系</text>
+  <text class="small" x="56" y="1028">基数：1:N 一对多 · 1:1 一对一 · 0..1:N 自反 · N:1 多对一（派生聚合）</text>
+  <text class="small" x="56" y="1052">省略的边：Session 1—0..* Sidecars、1—0..1 ParentSession、members 1—0..* reactions</text>
+  <text class="small" x="700" y="1004">唯一真实外键：history_sources → history_documents（ON DELETE CASCADE）</text>
+  <text class="small" x="700" y="1028">history_fts 用 rowid 与 documents 对齐；usage 两张聚合表可 DELETE 后重算</text>
+  <text class="small" x="700" y="1052">远端 crash 库另有遗留 users/sessions（token 明文主键）/audit_log 等表</text>
+</svg>

@@ -1,0 +1,216 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1140" font-family="Inter, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif">
+  <title>Reasonix 子 Agent 委派的五概念边界与所有权拓扑</title>
+  <desc>这张图讲的是 Reasonix 子 Agent 委派的五个概念为什么必须分开。左侧虚线容器 ProfileExecSpec 里有五个成员框：TaskSpec、WorkerSpec、CapabilityGrant、ContextRequest、SchedulerPolicy，每个框列出自己的字段与生命周期长度。容器外有三类来源与一处去处：Skill store 只向 WorkerSpec 做单向投影，它的 routing 元数据被红叉挡在容器外；调用参数只能收窄 CapabilityGrant，不能扩权；子 Agent 对读侧工具永久隐藏，不允许读兄弟、枚举手足。右上是解析层 ResolveProfileDefinition，它是唯一的收窄点，也是拒绝用户专用 worker 的地方。下方三个守卫框对应 profile_boundary_test.go 的三组断言：冻结字段集、反向投影守卫、routing 元数据留在后面。读者该看出的是：字段住在哪个成员里由「谁决定它的取值」判定，而不是由调用点就近决定。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="1140" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">图 2　子 Agent 委派的五概念边界与所有权拓扑</text>
+  <text class="small" x="40" y="72">容器内的五个成员各管一段生命周期；容器外的来源与去处各有一条被拒绝的边</text>
+
+  <path class="edge edge-arrow" d="M 490 200 L 452 200 L 452 358 L 422 358" />
+  <path class="edge edge-arrow" d="M 490 695 L 470 695 L 470 480 L 422 480" />
+  <path class="edge edge-arrow" d="M 820 530 L 880 530" />
+  <path class="edge edge-arrow" d="M 820 169 L 880 169" />
+  <path class="edge edge-arrow" d="M 170 840 L 170 800" />
+  <path class="edge edge-arrow" d="M 430 840 L 430 800" />
+  <path class="edge edge-arrow" d="M 710 840 L 710 780 L 440 780" />
+
+  <path class="forbidden" d="M 552 234 L 500 300" fill="none" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="6 5" />
+  <path class="forbidden" d="M 490 290 L 510 310" fill="none" stroke="#dc2626" stroke-width="2" />
+  <path class="forbidden" d="M 510 290 L 490 310" fill="none" stroke="#dc2626" stroke-width="2" />
+
+  <rect class="node zone" x="40" y="104" width="400" height="696" rx="10" />
+  <rect class="node neutral" x="58" y="180" width="364" height="112" rx="8" />
+  <rect class="node neutral" x="58" y="302" width="364" height="112" rx="8" />
+  <rect class="node neutral" x="58" y="424" width="364" height="112" rx="8" />
+  <rect class="node neutral" x="58" y="546" width="364" height="112" rx="8" />
+  <rect class="node neutral" x="58" y="668" width="364" height="112" rx="8" />
+  <rect class="node external" x="490" y="104" width="330" height="130" rx="8" />
+  <rect class="node process" x="880" y="104" width="320" height="130" rx="8" />
+  <rect class="node process" x="490" y="470" width="330" height="120" rx="8" />
+  <rect class="node risk" x="880" y="470" width="320" height="120" rx="8" />
+  <rect class="node input" x="490" y="640" width="330" height="110" rx="8" />
+  <rect class="node storage" x="40" y="840" width="260" height="110" rx="8" />
+  <rect class="node storage" x="310" y="840" width="260" height="110" rx="8" />
+  <rect class="node storage" x="580" y="840" width="260" height="110" rx="8" />
+  <rect class="node neutral" x="40" y="980" width="1160" height="130" rx="8" />
+
+  <text class="label" x="64" y="136">ProfileExecSpec</text>
+  <text class="small" x="64" y="158">五个成员各管一段生命周期，调用方只往「决定取值」的成员塞字段</text>
+
+  <text class="label" x="82" y="208">TaskSpec</text>
+  <text class="small" x="82" y="230">Objective · Description</text>
+  <text class="small" x="82" y="248">每次调用由委派方决定</text>
+  <text class="small" x="82" y="266">不承载 worker 身份</text>
+
+  <text class="label" x="82" y="330">WorkerSpec</text>
+  <text class="small" x="82" y="352">Kind · Name · Profile · UseProfilePrompt</text>
+  <text class="small" x="82" y="370">Model · Effort · SystemPrompt</text>
+  <text class="small" x="82" y="388">ReviewReport · ReviewAuthority</text>
+
+  <text class="label" x="82" y="452">CapabilityGrant</text>
+  <text class="small" x="82" y="474">ReadOnly · AllowNoTools · CallTools</text>
+  <text class="small" x="82" y="492">ProfileTools · WritePaths</text>
+  <text class="small" x="82" y="510">整条运行的生命周期，只可收窄</text>
+
+  <text class="label" x="82" y="574">ContextRequest</text>
+  <text class="small" x="82" y="596">ContinueFrom · ForkFrom · Upstream</text>
+  <text class="small" x="82" y="614">Ephemeral · TopLevel</text>
+  <text class="small" x="82" y="632">开跑前一次决定，之后不再变</text>
+
+  <text class="label" x="82" y="696">SchedulerPolicy</text>
+  <text class="small" x="82" y="718">MaxSteps · RunInBackground · Nested</text>
+  <text class="small" x="82" y="736">BackgroundWriter · Priority</text>
+  <text class="small" x="82" y="754">OnStart · OnQueued</text>
+
+  <text class="label" x="514" y="140">Skill store</text>
+  <text class="small" x="514" y="166">frontmatter: ceiling / body / 裁决契约</text>
+  <text class="small" x="514" y="188">routing 元数据：不进容器</text>
+
+  <text class="label" x="904" y="140">ResolveProfileDefinition</text>
+  <text class="small" x="904" y="166">runAs=subagent 才放行</text>
+  <text class="small" x="904" y="188">用户专用 worker 返回错误</text>
+
+  <text class="label" x="514" y="506">子 Agent 独立会话</text>
+  <text class="small" x="514" y="532">同一道权限门 + 同一工作区根</text>
+  <text class="small" x="514" y="554">递归工具按深度摘除</text>
+
+  <text class="label" x="904" y="506">读侧工具</text>
+  <text class="small" x="904" y="532">read_subagent_result</text>
+  <text class="small" x="904" y="554">list_subagents / fleet</text>
+
+  <text class="label" x="514" y="674">调用参数</text>
+  <text class="small" x="514" y="700">只能收窄，不能扩权</text>
+  <text class="small" x="514" y="720">tools / write_paths / max_steps</text>
+
+  <text class="label" x="64" y="876">冻结字段集</text>
+  <text class="small" x="64" y="902">profile_boundary_test.go</text>
+  <text class="small" x="64" y="924">:49-70　逐成员白名单</text>
+
+  <text class="label" x="334" y="876">反向守卫</text>
+  <text class="small" x="334" y="902">profile_boundary_test.go</text>
+  <text class="small" x="334" y="924">:96-122　投影不许丢字段</text>
+
+  <text class="label" x="604" y="876">routing 元数据留在后面</text>
+  <text class="small" x="604" y="902">profile_boundary_test.go</text>
+  <text class="small" x="604" y="924">:72-92　决定何时挑 worker</text>
+
+  <text class="band" x="64" y="1008">图例</text>
+  <text class="small" x="64" y="1036">① Skill store（external）单向投影成 WorkerSpec；routing 元数据被挡在容器外</text>
+  <text class="small" x="64" y="1058">② 调用参数只可收窄 CapabilityGrant；ceiling ∩ request</text>
+  <text class="small" x="64" y="1080">③ 子 Agent 对读侧工具永久隐藏；不读兄弟、不枚举手足</text>
+  <text class="small" x="620" y="1036">④ ResolveProfileDefinition 拒绝 runAs≠subagent 与用户专用 worker</text>
+  <text class="small" x="620" y="1058">✕ 红叉＝被显式拒绝的边，不是漏画</text>
+  <text class="small" x="620" y="1080">色：input 调用方 · process 执行 · neutral 归属 · storage 守卫 · risk 禁止面</text>
+
+  <circle cx="472" cy="178" r="11" fill="#ffffff" stroke="#475569" stroke-width="1" />
+  <text class="small" x="472" y="182" text-anchor="middle" style="fill:#0f172a">1</text>
+  <circle cx="452" cy="672" r="11" fill="#ffffff" stroke="#475569" stroke-width="1" />
+  <text class="small" x="452" y="676" text-anchor="middle" style="fill:#0f172a">2</text>
+  <circle cx="852" cy="506" r="11" fill="#ffffff" stroke="#475569" stroke-width="1" />
+  <text class="small" x="852" y="510" text-anchor="middle" style="fill:#0f172a">3</text>
+  <circle cx="852" cy="145" r="11" fill="#ffffff" stroke="#475569" stroke-width="1" />
+  <text class="small" x="852" y="149" text-anchor="middle" style="fill:#0f172a">4</text>
+
+  <text class="small" x="516" y="296" style="fill:#dc2626">routing 元数据被挡在容器外</text>
+  <text class="small" x="904" y="290">解析层是唯一的收窄点：</text>
+  <text class="small" x="904" y="312">拒绝 runAs≠subagent 的名字，也拒绝</text>
+  <text class="small" x="904" y="334">DisableModelInvocation 的用户专用 worker</text>
+</svg>

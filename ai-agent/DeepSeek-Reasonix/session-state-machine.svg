@@ -1,0 +1,247 @@
+<svg viewBox="0 0 1360 1130" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif">
+  <title>会话状态机：三条泳道、四类边，以及两个双圈终点</title>
+  <desc>这张图是 Reasonix 会话状态机的全景。三条横向泳道分别是会话生命周期（S0–S4）、轮次与变更（T0–T6）与 rewind 事务（R0–R8），每个状态只用编号加中文短名标注。四种线型承载全部语义：灰细实线是正向推进；暖色粗曲线是可反复走的回边，含 R3→T1 的 rewind、R2→R6→R5 的崩溃恢复与 R6 的自环重试；红虚线是只能走一次或跨进程的边，即 R4→R3 的 undo 与 T2→T5 的写者冲突；灰粗实线指向的双圈盒是终点，S4 是拒绝而非降级，R7 是载荷已过期、元数据仍在。回边因此分成可以再走一次与只有一次两类，两条不可逆边都没有返回箭头。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+    .warm {
+      fill: #c2410c;
+    }
+    .hard {
+      fill: #b91c1c;
+    }
+  </style>
+  <defs>
+    <marker id="arrow-back" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ea580c" />
+    </marker>
+    <marker id="arrow-oneshot" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626" />
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1360" height="1130" fill="var(--bg)" />
+
+  <rect x="40" y="110" width="300" height="830" rx="10" fill="var(--neutral)" opacity="0.35" />
+  <rect x="400" y="110" width="300" height="830" rx="10" fill="var(--neutral)" opacity="0.35" />
+  <rect x="740" y="110" width="360" height="830" rx="10" fill="var(--neutral)" opacity="0.35" />
+  <rect x="40" y="960" width="1280" height="140" rx="10" fill="var(--neutral)" opacity="0.25" />
+
+  <text class="title" x="40" y="44">会话状态机：一条正向主线、两类回边与两条不可逆边</text>
+  <text class="small" x="40" y="70">DeepSeek-Reasonix v2.37.0 · 21 个状态 + 1 个派生产物 · 回边分"可反复走"与"只能走一次"两类</text>
+  <text class="band" x="56" y="134">泳道一 · 会话生命周期</text>
+  <text class="band" x="416" y="134">泳道二 · 轮次与变更</text>
+  <text class="band" x="756" y="134">泳道三 · rewind 事务</text>
+
+  <path class="edge edge-arrow" d="M 90 234 L 54 234 L 54 422 L 68 422" />
+  <path class="edge edge-arrow" d="M 290 234 L 324 234 L 324 532 L 308 532" />
+  <path class="edge edge-arrow" d="M 180 500 L 180 454" />
+  <path class="edge edge-arrow" d="M 220 390 L 220 344" />
+  <path class="edge edge-arrow" d="M 140 564 L 140 610" />
+  <path class="edge edge-arrow" d="M 308 436 C 370 436, 370 186, 436 186" />
+  <path class="edge edge-arrow" d="M 500 234 L 500 270" />
+  <path class="edge edge-arrow" d="M 500 334 L 500 370" />
+  <path class="edge edge-arrow" d="M 500 434 L 500 470" />
+  <path class="edge edge-arrow" d="M 500 534 L 500 570" />
+  <path class="edge edge-arrow" d="M 668 586 L 684 586 L 684 202 L 668 202" />
+  <path class="edge edge-arrow" d="M 436 486 L 418 486 L 418 802 L 436 802" />
+  <path class="edge edge-arrow" d="M 668 790 L 684 790 L 684 634 L 640 634" />
+  <path class="edge edge-arrow" d="M 800 230 L 746 230 L 746 370 L 760 370" />
+  <path class="edge edge-arrow" d="M 880 230 L 880 252" />
+  <path class="edge edge-arrow" d="M 920 316 L 920 338" />
+  <path class="edge edge-arrow" d="M 960 402 L 960 424" />
+  <path class="edge edge-arrow" d="M 900 488 L 900 510" />
+  <path class="edge edge-arrow" d="M 1068 886 L 1084 886 L 1084 284 L 1068 284" />
+  <path class="edge edge-arrow" d="M 308 440 L 728 440 L 728 198 L 760 198" />
+  <path class="edge edge-arrow" d="M 980 488 C 1060 488, 1200 350, 1200 234" />
+
+  <path class="edge edge-arrow" style="stroke-width:2.5" d="M 436 218 C 370 218, 370 642, 308 642" />
+  <path class="edge edge-arrow" style="stroke-width:2.5" d="M 760 468 L 716 468 L 716 800 L 760 800" />
+
+  <path class="edge" style="stroke:#ea580c;stroke-width:2.6;marker-end:url(#arrow-back)" d="M 760 450 L 706 450 L 706 302 L 668 302" />
+  <path class="edge" style="stroke:#ea580c;stroke-width:2.6;marker-end:url(#arrow-back)" d="M 1068 354 L 1300 354 L 1300 698 L 1068 698" />
+  <path class="edge" style="stroke:#ea580c;stroke-width:2.6;marker-end:url(#arrow-back)" d="M 960 682 L 960 660" />
+  <path class="edge" style="stroke:#ea580c;stroke-width:2.6;marker-end:url(#arrow-back)" d="M 668 410 C 716 410, 716 628, 760 628" />
+  <path class="edge" style="stroke:#ea580c;stroke-width:2.6;marker-end:url(#arrow-back)" d="M 1068 712 C 1114 700, 1114 738, 1068 726" />
+
+  <path class="edge" style="stroke:#dc2626;stroke-width:2.6;stroke-dasharray:6 5;marker-end:url(#arrow-oneshot)" d="M 1068 526 C 1112 526, 1112 456, 1068 456" />
+  <path class="edge" style="stroke:#dc2626;stroke-width:2.6;stroke-dasharray:6 5;marker-end:url(#arrow-oneshot)" d="M 668 420 C 692 420, 692 690, 668 690" />
+
+  <rect class="node input" x="68" y="170" width="240" height="64" rx="8" />
+  <text class="label" x="92" y="209">S0 会话待建</text>
+  <rect class="node neutral" x="68" y="280" width="240" height="64" rx="8" />
+  <text class="label" x="92" y="319">S1 只读附着</text>
+  <rect class="node storage" x="68" y="390" width="240" height="64" rx="8" />
+  <text class="label" x="92" y="429">S2 会话已拥有</text>
+  <rect class="node external" x="68" y="500" width="240" height="64" rx="8" />
+  <text class="label" x="92" y="539">S3 迁移导入</text>
+  <rect class="node risk" x="68" y="610" width="240" height="64" rx="8" stroke-width="3" />
+  <rect x="73" y="615" width="230" height="54" rx="5" fill="none" stroke="var(--fg)" stroke-width="1" />
+  <text class="label" x="92" y="649">S4 版本闸门拒绝</text>
+
+  <rect class="node neutral" x="436" y="170" width="232" height="64" rx="8" />
+  <text class="label" x="460" y="209">T0 轮次关闭</text>
+  <rect class="node process" x="436" y="270" width="232" height="64" rx="8" />
+  <text class="label" x="460" y="309">T1 检查点已开</text>
+  <rect class="node process" x="436" y="370" width="232" height="64" rx="8" />
+  <text class="label" x="460" y="409">T2 轮次进行中</text>
+  <rect class="node process" x="436" y="470" width="232" height="64" rx="8" />
+  <text class="label" x="460" y="509">T3 变更已捕获</text>
+  <rect class="node storage" x="436" y="570" width="232" height="64" rx="8" />
+  <text class="label" x="460" y="609">T4 快照已提交</text>
+  <rect class="node neutral" x="436" y="670" width="232" height="64" rx="8" />
+  <text class="label" x="460" y="709">T5 冲突分叉</text>
+  <rect class="node risk" x="436" y="770" width="232" height="64" rx="8" />
+  <text class="label" x="460" y="809">T6 覆盖率部分/缺口</text>
+
+  <rect class="node input" x="760" y="166" width="308" height="64" rx="8" />
+  <text class="label" x="784" y="205">R0 计划已生成</text>
+  <rect class="node neutral" x="760" y="252" width="308" height="64" rx="8" />
+  <text class="label" x="784" y="291">R1 需用户确认</text>
+  <rect class="node process" x="760" y="338" width="308" height="64" rx="8" />
+  <text class="label" x="784" y="377">R2 事务提交中</text>
+  <rect class="node storage" x="760" y="424" width="308" height="64" rx="8" />
+  <text class="label" x="784" y="463">R3 已提交可撤销</text>
+  <rect class="node process" x="760" y="510" width="308" height="64" rx="8" />
+  <text class="label" x="784" y="549">R4 已撤销</text>
+  <rect class="node neutral" x="760" y="596" width="308" height="64" rx="8" />
+  <text class="label" x="784" y="635">R5 已补偿/已放弃</text>
+  <rect class="node risk" x="760" y="682" width="308" height="64" rx="8" />
+  <text class="label" x="784" y="721">R6 补偿未完成</text>
+  <rect class="node risk" x="760" y="768" width="308" height="64" rx="8" stroke-width="3" />
+  <rect x="765" y="773" width="298" height="54" rx="5" fill="none" stroke="var(--fg)" stroke-width="1" />
+  <text class="label" x="784" y="807">R7 载荷已过期</text>
+  <rect class="node risk" x="760" y="854" width="308" height="64" rx="8" />
+  <text class="label" x="784" y="893">R8 覆盖冲突未裁决</text>
+
+  <rect class="node neutral" x="1112" y="166" width="180" height="68" rx="8" stroke-dasharray="6 5" />
+  <text class="label" x="1136" y="194">V(superseded)</text>
+  <text class="small" x="1136" y="216">被截掉的对话另存版本</text>
+
+  <text class="small" x="96" y="258">新建会话</text>
+  <text class="small" x="232" y="372">降级只读</text>
+  <text class="small" x="152" y="594">1.x schema 超出 0–3</text>
+  <text class="small" x="336" y="240">会话打开</text>
+  <text class="small" x="600" y="560">轮次关闭</text>
+  <text class="small" x="560" y="462">/rewind 发起</text>
+  <text class="small" x="1094" y="620">待裁决</text>
+  <text class="small" x="1160" y="380">启动扫描未完成事务</text>
+  <text class="small warm" x="1120" y="722">每次启动幂等重试</text>
+  <text class="small" x="975" y="676">补偿成功</text>
+  <text class="small" x="1112" y="500">只能走一次：lastUndo 已消费</text>
+  <text class="small hard" x="768" y="758">信息损失：元数据仍在，payload 不可恢复</text>
+  <text class="small hard" x="232" y="692">拒绝，而非降级</text>
+  <text class="band" x="416" y="856">回边标签</text>
+  <text class="small warm" x="416" y="878">rewind：截断消息日志 +</text>
+  <text class="small warm" x="416" y="898">TruncateFrom + 轮次重编号</text>
+  <text class="small warm" x="416" y="922">T2→R5 轮次级崩溃：in-flight 未提交</text>
+
+  <text class="label" x="64" y="990">图例</text>
+  <path fill="none" stroke="var(--line)" stroke-width="1.5" marker-end="url(#arrow)" d="M 70 1022 L 130 1022" />
+  <text class="small" x="142" y="1026">灰细实线＝正向推进（会话 → 轮次 → 变更 → 事务）</text>
+  <path fill="none" stroke="#ea580c" stroke-width="2.6" marker-end="url(#arrow-back)" d="M 470 1022 C 490 1010, 510 1034, 530 1022" />
+  <text class="small" x="548" y="1026">暖色粗曲线＝回边，可反复走（崩溃恢复 / rewind）</text>
+  <path fill="none" stroke="#dc2626" stroke-width="2.6" stroke-dasharray="6 5" marker-end="url(#arrow-oneshot)" d="M 900 1022 L 960 1022" />
+  <text class="small" x="978" y="1026">红虚线＝只能走一次（undo）或跨进程恢复</text>
+  <rect x="70" y="1054" width="44" height="28" rx="6" fill="var(--risk)" stroke="var(--line)" stroke-width="3" />
+  <rect x="75" y="1059" width="34" height="18" rx="3" fill="none" stroke="var(--fg)" stroke-width="1" />
+  <path fill="none" stroke="var(--line)" stroke-width="2.5" marker-end="url(#arrow)" d="M 122 1068 L 178 1068" />
+  <text class="small" x="196" y="1072">双圈盒 + 灰粗线＝终点 / 不可逆边</text>
+  <rect x="600" y="1054" width="44" height="28" rx="6" fill="var(--neutral)" stroke="var(--line)" stroke-width="1" stroke-dasharray="6 5" />
+  <text class="small" x="660" y="1072">虚线框＝派生产物（superseded 版本），不是状态</text>
+  <text class="small" x="1030" y="1072">深红标签＝不可逆后果；暖色标签＝回边</text>
+</svg>

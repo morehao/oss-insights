@@ -1,0 +1,257 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 900" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>Reasonix 分层架构与允许的依赖方向</title>
+  <desc>这张图表达 Reasonix 的纵向分层与依赖方向：最上方是宿主进程与 Studio 的 Electron 壳，其下是前端层（CLI、TUI、HTTP/SSE 服务端、ACP）与唯一的装配入口 boot；再往下是唯一传输无关的会话驱动 control.Controller，然后依次是运行时策略层、契约层与能力域，最底部是层内闭合的叶层。箭头表示允许的 import 方向，自上而下；反向 import 由 CI 门禁拒绝。读者应从中看出：前端只负责传输，编排只有一处，能力域彼此经契约层解耦，而叶层可被任意层使用。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="900" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">Reasonix 分层架构与允许的依赖方向</text>
+
+  <!-- ============ connectors: 先画边，再画节点覆盖 ============ -->
+
+  <!-- 宿主 → 前端：CLI 入口进 cli 路由 -->
+  <path class="edge edge-arrow" d="M 180 148 L 180 198" />
+  <!-- Studio 宿主进程既自己起服务，也经 boot 装配控制器 -->
+  <path class="edge edge-arrow" d="M 600 148 L 600 198" />
+  <path class="edge edge-arrow" d="M 780 148 L 1060 198" />
+  <!-- Studio 的 Electron 壳经 loopback HTTP/SSE 打到 serve -->
+  <path class="edge edge-arrow edge-dashed" d="M 900 148 L 700 198" />
+  <text class="small" x="812" y="166">loopback HTTP/SSE</text>
+
+  <!-- 前端 → control：五个前端共享同一编排层 -->
+  <path class="edge edge-arrow" d="M 140 262 L 140 312" />
+  <path class="edge edge-arrow" d="M 380 262 L 380 312" />
+  <path class="edge edge-arrow" d="M 620 262 L 620 312" />
+  <path class="edge edge-arrow" d="M 860 262 L 860 312" />
+  <path class="edge edge-arrow" d="M 1100 262 L 1100 312" />
+
+  <!-- control → 运行时 -->
+  <path class="edge edge-arrow" d="M 170 376 L 170 426" />
+  <path class="edge edge-arrow" d="M 470 376 L 470 426" />
+  <path class="edge edge-arrow" d="M 770 376 L 770 426" />
+  <path class="edge edge-arrow" d="M 1070 376 L 1070 426" />
+
+  <!-- 运行时 → 契约 -->
+  <path class="edge edge-arrow" d="M 170 490 L 170 540" />
+  <path class="edge edge-arrow" d="M 470 490 L 470 540" />
+  <path class="edge edge-arrow" d="M 770 490 L 770 540" />
+  <path class="edge edge-arrow" d="M 1070 490 L 1070 540" />
+
+  <!-- 契约 → 能力域 -->
+  <path class="edge edge-arrow" d="M 130 596 L 130 646" />
+  <path class="edge edge-arrow" d="M 326 596 L 326 646" />
+  <path class="edge edge-arrow" d="M 522 596 L 522 646" />
+  <path class="edge edge-arrow" d="M 718 596 L 718 646" />
+  <path class="edge edge-arrow" d="M 914 596 L 914 646" />
+  <path class="edge edge-arrow" d="M 1110 596 L 1110 646" />
+
+  <!-- ============ 宿主进程 ============ -->
+
+  <text class="band" x="40" y="72">宿主进程与交付形态</text>
+
+  <rect class="node input" x="40" y="84" width="340" height="64" rx="8" />
+  <text class="label" x="64" y="110">cmd/reasonix</text>
+  <text class="small" x="64" y="130">CLI 入口 · 崩溃捕获 · 构建信息指纹</text>
+
+  <rect class="node input" x="410" y="84" width="380" height="64" rx="8" />
+  <text class="label" x="434" y="110">cmd/reasonix-studio-host</text>
+  <text class="small" x="434" y="130">Studio 的 Go 宿主进程（loopback 服务）</text>
+
+  <rect class="node input" x="820" y="84" width="380" height="64" rx="8" />
+  <text class="label" x="844" y="110">desktop/（Electron + React）</text>
+  <text class="small" x="844" y="130">Studio 壳：窗口、渲染器、系统集成</text>
+
+  <!-- ============ 前端层 ============ -->
+
+  <text class="band" x="40" y="186">前端层 —— 只有前端与宿主可以 import control</text>
+
+  <rect class="node process" x="40" y="198" width="216" height="64" rx="8" />
+  <text class="label" x="64" y="224">frontend/cli</text>
+  <text class="small" x="64" y="244">子命令路由 · 标志 · 退出码</text>
+
+  <rect class="node process" x="276" y="198" width="216" height="64" rx="8" />
+  <text class="label" x="300" y="224">frontend/tui</text>
+  <text class="small" x="300" y="244">bubbletea 全屏终端界面</text>
+
+  <rect class="node process" x="512" y="198" width="216" height="64" rx="8" />
+  <text class="label" x="536" y="224">frontend/serve</text>
+  <text class="small" x="536" y="244">HTTP/SSE 服务端</text>
+
+  <rect class="node process" x="748" y="198" width="216" height="64" rx="8" />
+  <text class="label" x="772" y="224">frontend/acp</text>
+  <text class="small" x="772" y="244">编辑器宿主接入（ACP）</text>
+
+  <rect class="node process" x="984" y="198" width="216" height="64" rx="8" />
+  <text class="label" x="1008" y="224">assembly/boot</text>
+  <text class="small" x="1008" y="244">配置 → 工具 → 控制器</text>
+
+  <!-- ============ 会话驱动 ============ -->
+
+  <text class="band" x="40" y="300">会话驱动 —— 唯一编排层</text>
+
+  <rect class="node storage" x="40" y="312" width="1160" height="64" rx="8" />
+  <text class="label" x="64" y="338">internal/session/control —— 唯一传输无关的 control.Controller</text>
+  <text class="small" x="64" y="358">Send / Cancel / Approve / Compact / NewSession → 单一 event.Sink　·　行为加在这一层，各前端同时继承</text>
+
+  <!-- ============ 运行时 ============ -->
+
+  <text class="band" x="40" y="414">运行时与策略</text>
+
+  <rect class="node process" x="40" y="426" width="275" height="64" rx="8" />
+  <text class="label" x="64" y="452">runtime/agent</text>
+  <text class="small" x="64" y="472">主循环 · 上下文投影与压缩</text>
+
+  <rect class="node process" x="335" y="426" width="275" height="64" rx="8" />
+  <text class="label" x="359" y="452">runtime/delegation</text>
+  <text class="small" x="359" y="472">子 Agent 委派（五概念边界）</text>
+
+  <rect class="node process" x="630" y="426" width="275" height="64" rx="8" />
+  <text class="label" x="654" y="452">runtime/coordinator</text>
+  <text class="small" x="654" y="472">双模型 executor + planner</text>
+
+  <rect class="node process" x="925" y="426" width="275" height="64" rx="8" />
+  <text class="label" x="949" y="452">runtime/ 其余策略包</text>
+  <text class="small" x="949" y="472">任务契约 · 恢复 · 守门 · 评估</text>
+
+  <!-- ============ 契约层 ============ -->
+
+  <text class="band" x="40" y="528">契约层 —— 接口与类型</text>
+
+  <rect class="node external" x="40" y="540" width="1160" height="56" rx="8" />
+  <text class="label" x="64" y="566">internal/contract/*</text>
+  <text class="small" x="64" y="584">tool · provider · event · config · agentgraph · permrule · pricing · surface · planmode · ablation</text>
+
+  <!-- ============ 能力域 ============ -->
+
+  <text class="band" x="40" y="634">能力域 —— 图中取 6 个高频域；内核共 12 个域包</text>
+
+  <rect class="node neutral" x="40" y="646" width="180" height="76" rx="8" />
+  <text class="label" x="64" y="674">tools/*</text>
+  <text class="small" x="64" y="696">内置工具 · 脚本 · shell</text>
+
+  <rect class="node neutral" x="236" y="646" width="180" height="76" rx="8" />
+  <text class="label" x="260" y="674">ext/*</text>
+  <text class="small" x="260" y="696">扩展协议 · 插件 · MCP</text>
+
+  <rect class="node neutral" x="432" y="646" width="180" height="76" rx="8" />
+  <text class="label" x="456" y="674">model/*</text>
+  <text class="small" x="456" y="696">Provider 适配与目录</text>
+
+  <rect class="node neutral" x="628" y="646" width="180" height="76" rx="8" />
+  <text class="label" x="652" y="674">state/*</text>
+  <text class="small" x="652" y="696">会话 · 检查点 · 记忆</text>
+
+  <rect class="node neutral" x="824" y="646" width="180" height="76" rx="8" />
+  <text class="label" x="848" y="674">safety/*</text>
+  <text class="small" x="848" y="696">权限 · 沙箱 · 出网</text>
+
+  <rect class="node neutral" x="1020" y="646" width="180" height="76" rx="8" />
+  <text class="label" x="1044" y="674">platform/*</text>
+  <text class="small" x="1044" y="696">SSH · LSP · 更新</text>
+
+  <!-- ============ 叶层 ============ -->
+
+  <text class="band" x="40" y="760">utility 叶层 —— 42 个包的闭合集合，跨 7 个域（不是某一层的子树）</text>
+
+  <rect class="node storage" x="40" y="772" width="1160" height="64" rx="8" />
+  <text class="label" x="64" y="798">leaves：base · contract · model · platform · ext · state · safety 下的 42 个 utility 包</text>
+  <text class="small" x="64" y="818">diff · filelock · fileutil · frontmatter · i18n · retrieval · shellparse · tokencount · egress · agentgraph · …　·　成员只 import 成员；任何人可以 import 一个叶子</text>
+
+  <text class="small" x="40" y="868">依赖方向自上而下；反向 import 被拒绝。分层集合声明在 tools/repolint/layers.go，由 CI 门禁强制，不依赖评审记忆。</text>
+</svg>

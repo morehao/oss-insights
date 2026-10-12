@@ -1,0 +1,214 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1000" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>上下文窗口的所有权拓扑：谁在边界内，谁被门禁拒绝</title>
+  <desc>这张图表达 DeepSeek-Reasonix 上下文窗口的所有权拓扑，论据是位置而不是流程。左上 Agent 主循环经 a.window() 工厂节点现构造出中心的 contextWindow；一条回边从左下方回指 Agent，那就是只有 10 个方法的 windowHost 接口，窗口对循环的全部依赖都收在这份清单里。右下 sessionRuntime.win 展开为 windowState，四个字段各有子节点；右侧 ContextManager 是唯一有权发起维护事务的入口，commitSummaryProjection 经四元 CAS 才能安装 compactionState。虚线圆角边界圈住 contextWindow、windowState 与 ContextManager，即 window-state 门禁允许读 sess.win 的四类接收者。边界外一条红色虚线被叉号切断：Agent 之外的任何接收者读 sess.win 都会被 repolint 拒绝。右上角会话控制层另有一套账本，与这套状态之间只有 event.CompactionDone 一条事件边，收到后 forget() 三笔已交付状态——没有共享内存。读者应看出：窗口状态是单所有者，跨过的只有接口与事件。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="1000" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">上下文窗口的所有权拓扑：谁在边界内，谁被门禁拒绝</text>
+
+  <!-- ============ connectors：先画边，节点盒之后覆盖上去 ============ -->
+
+  <!-- Agent → a.window() -->
+  <path class="edge edge-arrow" d="M 320 244 L 350 244" />
+  <!-- a.window() → contextWindow：每次现构造 -->
+  <path class="edge edge-arrow" d="M 510 262 L 600 262" />
+  <!-- contextWindow → windowHost：这是回问依赖那条回边的下半段 -->
+  <path class="edge edge-arrow" d="M 680 300 L 680 412 L 210 412 L 210 364" />
+  <!-- windowHost → Agent：回边收口，控件状态的依赖被接口挡住 -->
+  <path class="edge edge-arrow" d="M 210 300 L 210 282" />
+  <!-- contextWindow → windowState -->
+  <path class="edge edge-arrow" d="M 700 300 L 700 400 L 920 400 L 920 440" />
+  <!-- ContextManager → windowState：唯一有权发起维护事务的入口 -->
+  <path class="edge edge-arrow" d="M 1030 296 L 1030 440" />
+  <!-- windowState → 四个字段子节点（一条梳状线，末端落在 compactionProgress 上） -->
+  <path class="edge" d="M 860 516 L 860 750 L 880 750 M 860 582 L 880 582 M 860 638 L 880 638 M 860 694 L 880 694" />
+  <!-- commitSummaryProjection → compactionState：CAS 提交 -->
+  <path class="edge edge-arrow" d="M 670 700 L 670 810 L 1000 810 L 1000 772" />
+  <!-- 其它任意接收者 → windowState：红色虚线，被 window-state 门禁切断 -->
+  <path class="edge edge-dashed edge-arrow" stroke="var(--risk)" stroke-width="3" d="M 380 758 L 845 758 L 845 458 L 860 458" />
+  <!-- event.CompactionDone → 会话控制层：跨出边界的唯一事件 -->
+  <path class="edge edge-dashed edge-arrow" d="M 800 868 L 1180 868 L 1180 160" />
+
+  <!-- ============ 门禁边界 ============ -->
+
+  <rect class="zone" x="520" y="170" width="690" height="770" rx="16" />
+
+  <!-- ============ 节点 ============ -->
+
+  <rect class="node input" x="60" y="206" width="260" height="76" rx="8" />
+  <rect class="node neutral" x="350" y="232" width="160" height="60" rx="8" />
+  <rect class="node process" x="600" y="224" width="240" height="76" rx="8" />
+  <rect class="node external" x="60" y="300" width="300" height="64" rx="8" />
+  <rect class="node neutral" x="60" y="430" width="340" height="200" rx="8" />
+  <rect class="node process" x="900" y="220" width="260" height="76" rx="8" />
+  <rect class="node storage" x="860" y="440" width="300" height="76" rx="8" />
+  <rect class="node storage" x="880" y="560" width="270" height="44" rx="8" />
+  <rect class="node storage" x="880" y="616" width="270" height="44" rx="8" />
+  <rect class="node storage" x="880" y="672" width="270" height="44" rx="8" />
+  <rect class="node storage" x="880" y="728" width="270" height="44" rx="8" />
+  <rect class="node process" x="520" y="600" width="300" height="100" rx="8" />
+  <rect class="node neutral" x="500" y="830" width="300" height="76" rx="8" />
+  <rect class="node external" x="900" y="84" width="300" height="76" rx="8" />
+  <rect class="node risk" x="60" y="720" width="320" height="76" rx="8" />
+
+  <!-- 叉号徽标：门禁切断处（装饰，非节点） -->
+  <circle cx="520" cy="758" r="11" fill="var(--risk)" stroke="var(--line)" stroke-width="1" />
+  <path d="M 513 751 L 527 765 M 527 751 L 513 765" fill="none" stroke="var(--line)" stroke-width="2" />
+
+  <!-- ============ 文字 ============ -->
+
+  <text class="band" x="544" y="200">window-state 门禁允许读 sess.win 的四类接收者</text>
+
+  <text class="label" x="84" y="234">Agent 主循环</text>
+  <text class="small" x="84" y="256">runtime/agent/agent.go:810</text>
+
+  <text class="label" x="374" y="258">a.window()</text>
+  <text class="small" x="374" y="278">工厂函数</text>
+
+  <text class="label" x="624" y="252">contextWindow</text>
+  <text class="small" x="624" y="274">context_window_host.go:30-40</text>
+
+  <text class="label" x="84" y="326">windowHost 接口 · 10 个方法</text>
+  <text class="small" x="84" y="346">context_window_host.go:15-26</text>
+
+  <text class="label" x="84" y="456">按用途分组</text>
+  <text class="small" x="84" y="484">tail 注入 ×3：todo / 折叠进度 / 宿主上下文</text>
+  <text class="small" x="84" y="510">采样准备：prepareSamplingRequest</text>
+  <text class="small" x="84" y="536">折叠前后拦截 ×2（prepare / complete）</text>
+  <text class="small" x="84" y="562">失败诊断：annotateFailureDiagnostics</text>
+  <text class="small" x="84" y="588">toolFactsFor / providerProjectionMessages</text>
+  <text class="small" x="84" y="614">Session() 取 canonical 转录</text>
+
+  <text class="label" x="924" y="248">ContextManager</text>
+  <text class="small" x="924" y="270">维护事务的唯一入口</text>
+
+  <text class="label" x="884" y="468">windowState</text>
+  <text class="small" x="884" y="490">sess.win · sessionstate.go:22</text>
+
+  <text class="small" x="904" y="588">coveredHash（折叠前缀指纹）</text>
+  <text class="small" x="904" y="644">compactionMu / compactionRunMu</text>
+  <text class="small" x="904" y="700">compaction compactionProgress</text>
+  <text class="small" x="904" y="756">compactionState（CAS 保护）</text>
+
+  <text class="label" x="544" y="630">commitSummaryProjection</text>
+  <text class="small" x="544" y="654">维护事务的提交点</text>
+  <text class="small" x="544" y="678">受 compactionMu 与四元 CAS 保护</text>
+
+  <text class="label" x="524" y="858">event.CompactionDone</text>
+  <text class="small" x="524" y="880">agent 发出，control 消费</text>
+
+  <text class="label" x="924" y="112">会话控制层</text>
+  <text class="small" x="924" y="134">internal/session/control</text>
+
+  <text class="label" x="84" y="748">其它任意接收者</text>
+  <text class="small" x="84" y="770">Agent 之外：第二个所有者</text>
+
+  <text class="small" x="555" y="254" text-anchor="middle">每次现构造</text>
+  <text class="small" x="245" y="404">回问这 10 个方法</text>
+  <text class="small" x="712" y="390">读/写 sess.win 自身状态</text>
+  <text class="small" x="1040" y="360">唯一有权发起维护事务</text>
+  <text class="small" x="1000" y="536" text-anchor="middle">字段展开为四个子节点</text>
+  <text class="small" x="690" y="790">CAS: transcriptVersion + CoveredPrefixHash</text>
+  <text class="small" x="690" y="806">+ ProjectionVersion + Generation</text>
+  <text class="small" x="390" y="726">repolint window-state 拒绝</text>
+  <text class="small" x="390" y="742">（Agent 之外的任何接收者都是第二个所有者）</text>
+  <text class="small" x="1170" y="790" text-anchor="end">forget()</text>
+  <text class="small" x="1170" y="812" text-anchor="end">只有事件，没有共享内存</text>
+</svg>

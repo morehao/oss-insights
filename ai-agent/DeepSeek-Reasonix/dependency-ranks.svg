@@ -1,0 +1,270 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1680" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>Reasonix 内核分层秩表与允许的依赖方向</title>
+  <desc>这张图表达 Reasonix 内核的分层秩表与允许的依赖方向。自下而上从秩 0 的 internal/base 到秩 9 的 internal/frontend，最顶是 cmd、desktop、benchmarks 三个宿主；同秩目录互为对等体，图中两条红色 ✗ 双向边标出 safety 与 state、ext 与 tools 彼此不可见。左下角的闭合轮廓是跨秩的 utility 集合（leaves，42 个成员）：成员之间可互相 import，任何包都可 import 一个叶子，但叶子不得 import 集合外的包。右侧四个虚线框是四条横切边界：control 准入、前端反向禁入、host adapter、以及 utility 集合的例外。读者应看出：允许的依赖只有一个方向，而"谁不能看见谁"被写成了可执行检查。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="1680" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">Reasonix 内核分层秩表与允许的依赖方向</text>
+  <text class="small" x="40" y="70">秩表由 tools/repolint/layer_order.go 声明，三张名单由 tools/repolint/layers.go 声明。本图自下而上：秩 0 在底部，宿主在顶部；向下的箭头才是允许的 import 方向。</text>
+
+  <!-- 容器轮廓先画：leaves 闭合集合的底色，好让集合内部的自环箭头画在它上面 -->
+  <rect class="node neutral" x="230" y="1196" width="470" height="364" rx="8" />
+
+  <!-- ============ connectors：先画边，再画节点覆盖 ============ -->
+
+  <!-- 图例之一：允许的 import 方向（只画一次示例，不逐包画满） -->
+  <path class="edge edge-arrow" d="M 187 126 L 261 126" />
+  <!-- 图例之二：同秩对等，双向 ✗ -->
+  <path class="edge edge-dashed" style="stroke:#ef4444" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 774 126 L 852 126" />
+
+  <!-- 秩 2：safety ↛ state（同秩对等，双向禁止） -->
+  <path class="edge edge-dashed" style="stroke:#ef4444" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 644 946 L 736 946" />
+  <!-- 秩 5：ext ↛ tools（同秩对等，双向禁止） -->
+  <path class="edge edge-dashed" style="stroke:#ef4444" marker-end="url(#arrow)" marker-start="url(#arrow)" d="M 644 676 L 736 676" />
+
+  <!-- 前端反向禁入：秩 9 以下不得反向 import 一个前端（唯一保留的红色 ✗ 穿层箭头） -->
+  <path class="edge edge-arrow" style="stroke:#ef4444" d="M 1000 364 L 1000 340" />
+
+  <!-- 任何包都可以 import 一个叶子 -->
+  <path class="edge edge-arrow" d="M 204 1394 L 226 1394" />
+  <!-- 成员之间可以互相 import（闭合轮廓内部的自环） -->
+  <path class="edge edge-arrow" d="M 560 1406 A 34 34 0 1 1 566 1473" />
+  <!-- 叶子不得 import 集合外的任何包 -->
+  <path class="edge edge-arrow" style="stroke:#ef4444" d="M 560 1564 L 560 1592" />
+
+  <!-- ============ nodes ============ -->
+
+  <!-- 图例框 -->
+  <rect class="zone" x="40" y="96" width="1160" height="50" rx="8" />
+  <text class="small" x="64" y="126">允许的 import 方向：</text>
+  <text class="small" x="265" y="126">可以 import 严格更低的秩（示例：runtime/agent → contract/tool）</text>
+  <text class="small" x="710" y="126">同秩对等：</text>
+  <text class="small" x="856" y="126">两个同秩目录彼此不可见（✗）</text>
+  <text class="small" x="1040" y="126">红色 ✗ = 禁止方向</text>
+
+  <!-- 最顶带：hosts -->
+  <rect class="node input" x="40" y="170" width="1160" height="76" rx="8" />
+  <text class="band" x="64" y="216">hosts</text>
+  <text class="label" x="150" y="200">cmd/ · desktop/ · benchmarks/</text>
+  <text class="small" x="150" y="222">装配一切（assembles everything）：benchmarks/* 也被 host() 当作宿主</text>
+
+  <!-- 秩 9：frontend -->
+  <rect class="node input" x="40" y="260" width="1160" height="76" rx="8" />
+  <rect class="node input" x="760" y="270" width="440" height="56" rx="8" style="stroke-dasharray:6 5" />
+  <text class="band" x="64" y="306">秩 9</text>
+  <text class="label" x="150" y="290">internal/frontend</text>
+  <text class="small" x="150" y="312">cli · tui · serve · acp · capdiag · doctor · termrender</text>
+  <text class="label" x="784" y="296">frontend/remotehost</text>
+  <text class="small" x="784" y="316">hostAdapters 唯一成员（由 hosts 组装）</text>
+  <text class="small" x="800" y="358" style="fill:#ef4444">✗ 秩 9 以下不得 import 前端</text>
+
+  <!-- 秩 8：assembly -->
+  <rect class="node process" x="40" y="368" width="1160" height="76" rx="8" />
+  <rect class="node process" x="760" y="378" width="440" height="56" rx="8" style="stroke-dasharray:6 5" />
+  <text class="band" x="64" y="414">秩 8</text>
+  <text class="label" x="150" y="398">internal/assembly</text>
+  <text class="small" x="150" y="420">装配整个内核，唯一允许组装全部依赖的地方</text>
+  <text class="label" x="784" y="404">assembly/boot</text>
+  <text class="small" x="784" y="424">秩 8，却被声明在 frontends 名单里</text>
+
+  <!-- 秩 7：session（control 高亮描边） -->
+  <rect class="node storage" x="40" y="458" width="1160" height="76" rx="8" />
+  <rect class="node input" x="760" y="468" width="440" height="56" rx="8" style="stroke-width:2.5" />
+  <text class="band" x="64" y="504">秩 7</text>
+  <text class="label" x="150" y="488">internal/session</text>
+  <text class="small" x="150" y="510">会话状态与索引包；收束点见右侧高亮</text>
+  <text class="label" x="784" y="494">session/control</text>
+  <text class="small" x="784" y="514">全场唯一收束点：三个前端共享</text>
+
+  <!-- 秩 6：runtime -->
+  <rect class="node process" x="40" y="548" width="1160" height="76" rx="8" />
+  <text class="band" x="64" y="594">秩 6</text>
+  <text class="label" x="150" y="578">internal/runtime</text>
+  <text class="small" x="150" y="600">agent · plan · taskpolicy · delegation · verdict · capability</text>
+
+  <!-- 秩 5：ext 与 tools 同秩对等 -->
+  <rect class="node process" x="40" y="638" width="600" height="76" rx="8" />
+  <rect class="node process" x="740" y="638" width="460" height="76" rx="8" />
+  <text class="band" x="64" y="684">秩 5</text>
+  <text class="label" x="150" y="668">internal/ext</text>
+  <text class="small" x="150" y="690">extension · plugin · mcp · skill · market · hook</text>
+  <text class="band" x="764" y="684">秩 5</text>
+  <text class="label" x="820" y="668">internal/tools</text>
+  <text class="small" x="820" y="690">builtin · jobs · script · shellrun · advisor</text>
+  <text class="small" x="682" y="668" style="fill:#ef4444">✗</text>
+  <text class="small" x="666" y="700">同秩对等</text>
+
+  <!-- 秩 4：platform -->
+  <rect class="node neutral" x="40" y="728" width="1160" height="76" rx="8" />
+  <text class="band" x="64" y="774">秩 4</text>
+  <text class="label" x="150" y="758">internal/platform</text>
+  <text class="small" x="150" y="780">browser · gitstatus · update · lsp · packagegrant · releaseasset</text>
+
+  <!-- 秩 3：model -->
+  <rect class="node external" x="40" y="818" width="1160" height="76" rx="8" />
+  <text class="band" x="64" y="864">秩 3</text>
+  <text class="label" x="150" y="848">internal/model</text>
+  <text class="small" x="150" y="870">openai · anthropic · responses · providerbroker · catalog · billing</text>
+
+  <!-- 秩 2：safety 与 state 同秩对等 -->
+  <rect class="node process" x="40" y="908" width="600" height="76" rx="8" />
+  <rect class="node storage" x="740" y="908" width="460" height="76" rx="8" />
+  <text class="band" x="64" y="954">秩 2</text>
+  <text class="label" x="150" y="938">internal/safety</text>
+  <text class="small" x="150" y="960">permission · sandbox · egress · shellsafe · redirectguard</text>
+  <text class="band" x="764" y="954">秩 2</text>
+  <text class="label" x="820" y="938">internal/state</text>
+  <text class="small" x="820" y="960">sessionstore · checkpoint · memory · projectiondb</text>
+  <text class="small" x="682" y="938" style="fill:#ef4444">✗</text>
+  <text class="small" x="666" y="970">同秩对等</text>
+
+  <!-- 秩 1：contract -->
+  <rect class="node external" x="40" y="998" width="1160" height="76" rx="8" />
+  <text class="band" x="64" y="1044">秩 1</text>
+  <text class="label" x="150" y="1028">internal/contract</text>
+  <text class="small" x="150" y="1050">tool · eventwire · agentgraph · config · pricing · surface · planmode</text>
+
+  <!-- 秩 0：base -->
+  <rect class="node neutral" x="40" y="1088" width="1160" height="76" rx="8" />
+  <text class="band" x="64" y="1134">秩 0</text>
+  <text class="label" x="150" y="1118">internal/base</text>
+  <text class="small" x="150" y="1140">fileutil · shellparse · textutil · tokencount · workspaceid · proc</text>
+
+  <!-- utility 闭合集合（leaves，跨秩 0/1/2/3/4/5） -->
+  <text class="label" x="254" y="1228">utility 闭合集合（leaves）</text>
+  <text class="small" x="254" y="1252">42 个成员，跨秩 0 / 1 / 2 / 3 / 4 / 5</text>
+  <text class="small" x="254" y="1272">它是一个集合，不是一层：成员可以互相 import</text>
+  <text class="small" x="254" y="1296">代表成员：base/fileutil · base/shellparse</text>
+  <text class="small" x="254" y="1316">contract/surface · safety/egress · state/store</text>
+  <text class="small" x="254" y="1446">轮廓内：成员之间可以互相 import</text>
+  <text class="small" x="40" y="1358">任何人可 import 一个叶子</text>
+
+  <!-- 叶子集合的入口：任一包 -->
+  <rect class="node input" x="40" y="1374" width="160" height="40" rx="8" />
+  <text class="small" x="64" y="1400">任一包（任意秩）</text>
+
+  <!-- 叶子集合的出口禁则 -->
+  <rect class="node risk" x="380" y="1596" width="320" height="40" rx="8" />
+  <text class="small" x="404" y="1622">✗ 成员不得 import 轮廓外的包</text>
+
+  <!-- 四条横切边界：虚线框 + 标注 -->
+  <rect class="zone" x="760" y="1196" width="440" height="96" rx="8" />
+  <text class="label" x="784" y="1222">control 准入边界</text>
+  <text class="small" x="784" y="1246">只有 frontend/{acp,cli,serve,tui} 与 assembly/boot、</text>
+  <text class="small" x="784" y="1264">frontend/remotehost 与 hosts 可以穿。</text>
+  <text class="small" x="784" y="1282">原句：reachable from frontends and entrypoints only</text>
+
+  <rect class="zone" x="760" y="1300" width="440" height="96" rx="8" />
+  <text class="label" x="784" y="1326">前端反向禁入边界</text>
+  <text class="small" x="784" y="1350">秩 9 以下没有任何包可以 import 一个前端；</text>
+  <text class="small" x="784" y="1368">带区里那条向上的红色 ✗ 箭头就是它。</text>
+  <text class="small" x="784" y="1386">原句：nothing below a frontend may import one</text>
+
+  <rect class="zone" x="760" y="1404" width="440" height="96" rx="8" />
+  <text class="label" x="784" y="1430">host adapter 边界</text>
+  <text class="small" x="784" y="1454">remotehost 由 hosts 组装，内核与 controller</text>
+  <text class="small" x="784" y="1472">都不得反向够到它。它是 hostAdapters 唯一成员。</text>
+
+  <rect class="zone" x="760" y="1508" width="440" height="96" rx="8" />
+  <text class="label" x="784" y="1534">utility 集合的例外</text>
+  <text class="small" x="784" y="1558">leaves 只有一条规则：成员只能 import 成员或</text>
+  <text class="small" x="784" y="1576">标准库；任何包都可以 import 一个叶子。</text>
+  <text class="small" x="784" y="1594">原句：a leaf reaching a leaf drags no graph along</text>
+</svg>

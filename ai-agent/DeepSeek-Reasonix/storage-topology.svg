@@ -1,0 +1,226 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1060" font-family="system-ui, -apple-system, 'Segoe UI', 'Noto Sans CJK SC', 'PingFang SC', sans-serif">
+  <title>Reasonix 存储拓扑：可搬的权威文件层与可丢弃投影层、不可搬的 home 与 locks，以及只经 HTTPS 相连的远端 D1 信任域</title>
+  <desc>本图把本地持久化分成权威层、投影层、配置与锁三组，并单独画出远端信任域。权威层位于 state 根下，含会话 JSONL 及其边车、每日统计、记忆与归档修复快照，可随环境变量整体搬迁。投影层位于 cache 根下，是 history-search 与 usage-catalog 两个 SQLite 库，列出全部表名，整库可丢弃重建。宿主进程用实线写权威文件，用虚线把权威派生成投影；三个消费方对投影是查询边，并有两条虚线二次读边回到权威取 snippet 与精确回退。home 与 locks 标注为不可搬，locks 还必须跨实例汇聚。右上远端 D1 只经 HTTPS 连宿主进程，与任何本地文件都没有边。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="1060" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">存储拓扑：权威文件、可丢弃投影与远端 D1 信任域</text>
+  <text class="small" x="40" y="72">四个本地存储根 + 一个远端信任域；实线＝权威写入/查询，虚线＝投影派生与二次读回权威</text>
+
+  <!-- ===== connectors first ===== -->
+  <!-- 宿主进程 -> 权威层（实线：权威写入） -->
+  <path class="edge edge-arrow" fill="none" d="M 626 200 L 556 200 L 556 168 L 536 168" />
+  <path class="edge edge-arrow" fill="none" d="M 626 212 L 560 212 L 560 252 L 536 252" />
+  <path class="edge edge-arrow" fill="none" d="M 626 224 L 572 224 L 572 336 L 536 336" />
+  <path class="edge edge-arrow" fill="none" d="M 626 236 L 584 236 L 584 420 L 536 420" />
+  <!-- 宿主进程 -> 配置 / 锁（实线） -->
+  <path class="edge edge-arrow" fill="none" d="M 700 256 L 700 386" />
+  <path class="edge edge-arrow" fill="none" d="M 894 236 L 926 236 L 926 588 L 886 588" />
+  <!-- 宿主进程 -> 投影层（虚线：投影派生、可重建） -->
+  <path class="edge edge-arrow edge-dashed" fill="none" d="M 660 256 L 660 276 L 596 276 L 596 740 L 576 740" />
+  <!-- 宿主进程 -> 远端 D1（实线：HTTPS 契约） -->
+  <path class="edge edge-arrow" fill="none" d="M 894 196 L 974 172" />
+  <!-- 消费方 -> 投影层（查询边） -->
+  <path class="edge edge-arrow" fill="none" d="M 644 758 L 600 758 L 600 780 L 576 780" />
+  <path class="edge edge-arrow" fill="none" d="M 644 842 L 610 842 L 610 920 L 576 920" />
+  <path class="edge edge-arrow" fill="none" d="M 644 926 L 606 926 L 606 838 L 576 838" />
+  <!-- 二次读边（虚线：回权威取 snippet / 精确回退） -->
+  <path class="edge edge-arrow edge-dashed" fill="none" d="M 700 726 L 700 680 L 566 680 L 566 520 L 300 520 L 300 200" />
+  <path class="edge edge-arrow edge-dashed" fill="none" d="M 700 810 L 700 670 L 580 670 L 580 300 L 520 300 L 520 284" />
+
+  <!-- ===== zones ===== -->
+  <rect class="zone" x="40" y="100" width="520" height="380" rx="8" />
+  <text class="band" x="56" y="124">权威层 &lt;state root&gt;（可搬：REASONIX_STATE_HOME）</text>
+  <rect class="zone" x="610" y="350" width="300" height="140" rx="8" />
+  <text class="band" x="626" y="374">&lt;home&gt;（不可搬：不动）</text>
+  <rect class="zone" x="610" y="520" width="300" height="140" rx="8" />
+  <text class="band" x="626" y="544">&lt;locks&gt;（不可搬：跨实例必须汇聚）</text>
+  <rect class="zone" x="950" y="100" width="250" height="440" rx="8" />
+  <text class="band" x="966" y="124">远端信任域（独立）</text>
+  <rect class="zone" x="40" y="690" width="560" height="330" rx="8" />
+  <text class="band" x="56" y="714">投影层 &lt;cache root&gt;（可搬：REASONIX_CACHE_HOME）</text>
+  <rect class="zone" x="620" y="690" width="580" height="330" rx="8" />
+  <text class="band" x="636" y="714">消费方（查询边 → 投影；二次读边 → 权威）</text>
+
+  <!-- ===== nodes ===== -->
+  <rect class="node storage" x="64" y="136" width="472" height="64" rx="8" />
+  <text class="label" x="88" y="162">&lt;state&gt;/sessions/*.jsonl</text>
+  <text class="small" x="88" y="182">权威转录；&lt;id&gt;.events.jsonl · .meta · .ckpt/ · .blobs/</text>
+
+  <rect class="node storage" x="64" y="220" width="472" height="64" rx="8" />
+  <text class="label" x="88" y="246">&lt;state&gt;/stats/YYYY-MM-DD.jsonl</text>
+  <text class="small" x="88" y="266">每日一行，O_APPEND，容忍撕裂尾行</text>
+
+  <rect class="node storage" x="64" y="304" width="472" height="64" rx="8" />
+  <text class="label" x="88" y="330">&lt;state&gt;/memory/ · projects/&lt;slug&gt;/memory/</text>
+  <text class="small" x="88" y="350">MEMORY.md 索引 + 一事一 Markdown frontmatter</text>
+
+  <rect class="node storage" x="64" y="388" width="472" height="64" rx="8" />
+  <text class="label" x="88" y="414">&lt;state&gt;/archive/*.jsonl</text>
+  <text class="small" x="88" y="434">repair/config.toml.last-known-good（修复快照）</text>
+
+  <rect class="node process" x="626" y="180" width="268" height="76" rx="8" />
+  <text class="label" x="650" y="208">宿主进程</text>
+  <text class="small" x="650" y="230">Agent 运行循环 / sessionstore / 配置写入</text>
+
+  <rect class="node neutral" x="634" y="386" width="252" height="64" rx="8" />
+  <text class="label" x="658" y="412">&lt;home&gt;/config.toml、&lt;home&gt;/.env</text>
+  <text class="small" x="658" y="432">凭据与配置；不可搬</text>
+
+  <rect class="node neutral" x="634" y="556" width="252" height="64" rx="8" />
+  <text class="label" x="658" y="582">&lt;locks&gt;/workspace-leases</text>
+  <text class="small" x="658" y="602">repair-mutation-locks；必须汇聚</text>
+
+  <rect class="node storage" x="64" y="726" width="512" height="120" rx="8" />
+  <text class="label" x="88" y="756">&lt;cache&gt;/history-search/v1.sqlite</text>
+  <text class="small" x="88" y="784">表：history_state · history_roots · history_sources</text>
+  <text class="small" x="88" y="810">history_documents · history_fts（contentless，不含正文）</text>
+
+  <rect class="node storage" x="64" y="866" width="512" height="120" rx="8" />
+  <text class="label" x="88" y="896">&lt;cache&gt;/usage-catalog/v5.sqlite</text>
+  <text class="small" x="88" y="924">表：usage_state · usage_files · usage_records</text>
+  <text class="small" x="88" y="950">usage_rollups · usage_cost（派生，可 DELETE 重算）</text>
+
+  <rect class="node input" x="644" y="726" width="256" height="64" rx="8" />
+  <text class="label" x="668" y="752">history 工具</text>
+  <text class="small" x="668" y="772">FTS5 / bm25 + 键集游标</text>
+
+  <rect class="node input" x="644" y="810" width="256" height="64" rx="8" />
+  <text class="label" x="668" y="836">桌面统计面板</text>
+  <text class="small" x="668" y="856">SQL 聚合快路径</text>
+
+  <rect class="node input" x="644" y="894" width="256" height="64" rx="8" />
+  <text class="label" x="668" y="920">reasonix doctor catalogs</text>
+  <text class="small" x="668" y="940">Inspect：integrity / version / lag</text>
+
+  <rect class="node external" x="974" y="140" width="202" height="64" rx="8" />
+  <text class="label" x="998" y="166">id.reasonix.io</text>
+  <text class="small" x="998" y="186">D1 reasonix-accounts</text>
+
+  <rect class="node external" x="974" y="224" width="202" height="96" rx="8" />
+  <text class="label" x="998" y="252">crash.reasonix.io</text>
+  <text class="small" x="998" y="274">D1 reasonix-crash</text>
+  <text class="small" x="998" y="294">+ reasonix-registry</text>
+
+  <rect class="node external" x="974" y="340" width="202" height="64" rx="8" />
+  <text class="label" x="998" y="366">reasonix-forum</text>
+  <text class="small" x="998" y="386">D1（forum）</text>
+
+  <text class="small" x="974" y="440">只经 HTTPS 连宿主进程</text>
+  <text class="small" x="974" y="462">与任何本地文件无边</text>
+  <text class="small" x="974" y="484">无本地 schema 关系</text>
+
+  <!-- ===== legend ===== -->
+  <rect class="zone" x="930" y="716" width="250" height="290" rx="8" />
+  <text class="band" x="954" y="742">图例</text>
+  <line x1="954" y1="768" x2="992" y2="768" style="stroke:var(--line);stroke-width:1.5" />
+  <text class="small" x="1000" y="772">实线＝权威写入 / 查询</text>
+  <line x1="954" y1="796" x2="992" y2="796" style="stroke:var(--line);stroke-width:1.5;stroke-dasharray:6 5" />
+  <text class="small" x="1000" y="800">虚线＝投影派生、可重建</text>
+  <text class="small" x="954" y="832">① 回权威取 snippet</text>
+  <text class="small" x="954" y="858">② 回退权威 JSONL 精确查询</text>
+  <text class="small" x="954" y="890">搬迁：home 不动</text>
+  <text class="small" x="954" y="914">state·cache·worktrees 可搬</text>
+  <text class="small" x="954" y="938">locks 不可搬，跨实例汇聚</text>
+  <text class="small" x="954" y="966">远端只经 HTTPS，无本地文件边</text>
+
+  <text class="small" x="470" y="510">①</text>
+  <text class="small" x="566" y="340">②</text>
+</svg>

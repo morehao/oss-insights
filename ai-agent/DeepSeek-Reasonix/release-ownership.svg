@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 900" font-family="system-ui, -apple-system, 'Segoe UI', 'Noto Sans CJK SC', 'PingFang SC', sans-serif">
+  <title>Reasonix 交付所有权拓扑：四形态（Studio 桌面 / CLI 归档 / npm 包 / 编辑器扩展）× 两条发布线（1.x main-v2 / 2.x studio）× 三条更新通道，虚线边由 STUDIO_PUBLISHES_CLI 开关与 CLI_PUBLISH_FROZEN 闸门决定</title>
+  <desc>本图把交付面画成两条泳道与一组更新通道。左泳道 1.x（main-v2）：npm i -g reasonix 与 brew install 两个用户入口直连 npm registry 与 Homebrew tap，1.x desktop 独写 dl.reasonix.io/versions.json。右泳道 2.x（studio）：studio-v* tag 触发发布流水线，产出 Studio 桌面与 2.x CLI 归档；桌面走自建 Studio catalog，CLI 归档经虚线借道三条通道，虚线须先打开 STUDIO_PUBLISHES_CLI 闸门并满足 CLI_PUBLISH_FROZEN=true。编辑器扩展不在本树，发布到外部市场，运行期依赖 PATH 上第一个 reasonix。要紧的是：通道所有权是配置态而非代码态——1.x 拥有通道，2.x 拥有主产物。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="900" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">交付所有权拓扑：四形态 × 两条发布线 × 三条更新通道</text>
+  <text class="small" x="40" y="72">实线＝该线拥有该通道；虚线＝开关打开后才存在的借道（STUDIO_PUBLISHES_CLI，且须 CLI_PUBLISH_FROZEN=true）</text>
+
+  <!-- ===== connectors first ===== -->
+  <!-- 1.x 用户入口 -> 它们拥有的通道 -->
+  <path class="edge edge-arrow" fill="none" d="M 274 172 H 310" />
+  <path class="edge edge-arrow" fill="none" d="M 274 268 H 520" />
+  <!-- 1.x desktop 读取自己的更新清单 -->
+  <path class="edge edge-arrow" fill="none" d="M 165 408 V 428" />
+  <!-- studio-v* release -> 两个主产物 -->
+  <path class="edge edge-arrow" fill="none" d="M 1000 204 V 236" />
+  <path class="edge edge-arrow" fill="none" d="M 1176 172 H 1188 V 356 H 1176" />
+  <path class="edge edge-arrow" fill="none" d="M 1050 408 V 428" />
+  <!-- Studio 桌面 -> 自建 catalog -->
+  <path class="edge edge-arrow" fill="none" d="M 966 274 H 940 V 396 H 920" />
+  <!-- 编辑器扩展发布到外部市场（运行期依赖 PATH 上的 reasonix） -->
+  <path class="edge edge-arrow" fill="none" d="M 966 466 H 940 V 668 H 886" />
+  <!-- 2.x CLI 归档借道：先过闸门，再落到三条通道 -->
+  <path class="edge edge-arrow edge-dashed" fill="none" d="M 966 370 H 924 V 562 H 920" />
+  <path class="edge edge-arrow edge-dashed" fill="none" d="M 520 562 H 406 V 216" />
+  <path class="edge edge-arrow edge-dashed" fill="none" d="M 620 524 V 312" />
+  <path class="edge edge-arrow edge-dashed" fill="none" d="M 780 524 V 504" />
+
+  <!-- ===== zones ===== -->
+  <rect class="zone" x="40" y="88" width="250" height="436" rx="8" />
+  <text class="band" x="56" y="112">1.x（main-v2）发布线</text>
+  <rect class="zone" x="310" y="88" width="610" height="420" rx="8" />
+  <text class="band" x="326" y="112">更新通道（分发面）：左起三列 = npm / Homebrew / Studio catalog + CLI 指针</text>
+  <rect class="zone" x="950" y="88" width="250" height="436" rx="8" />
+  <text class="band" x="966" y="112">2.x（studio）发布线</text>
+  <rect class="zone" x="470" y="600" width="440" height="120" rx="8" />
+  <text class="band" x="486" y="624">外部信任域（不属任何一条发布线）</text>
+
+  <!-- ===== nodes ===== -->
+  <rect class="node input" x="56" y="140" width="218" height="64" rx="8" />
+  <text class="label" x="80" y="166">npm i -g reasonix</text>
+  <text class="small" x="80" y="186">1.x CLI 的用户入口</text>
+
+  <rect class="node input" x="56" y="236" width="218" height="64" rx="8" />
+  <text class="label" x="80" y="262">brew install reasonix</text>
+  <text class="small" x="80" y="282">1.x 拥有 tap</text>
+
+  <rect class="node process" x="56" y="332" width="218" height="76" rx="8" />
+  <text class="label" x="80" y="360">1.x desktop 应用</text>
+  <text class="small" x="80" y="384">reasonix.io 下载页分发</text>
+
+  <rect class="node external" x="56" y="428" width="218" height="76" rx="8" />
+  <text class="label" x="80" y="456">versions.json</text>
+  <text class="small" x="80" y="480">1.x 独写 · 2.x 永不写</text>
+
+  <rect class="node external" x="310" y="140" width="190" height="76" rx="8" />
+  <text class="label" x="334" y="168">npm registry</text>
+  <text class="small" x="334" y="192">reasonix + 6 平台包</text>
+
+  <rect class="node external" x="520" y="236" width="190" height="76" rx="8" />
+  <text class="label" x="544" y="264">Homebrew tap</text>
+  <text class="small" x="544" y="288">Casks/reasonix.rb</text>
+
+  <rect class="node external" x="730" y="332" width="190" height="76" rx="8" />
+  <text class="label" x="754" y="360">Studio catalog</text>
+  <text class="small" x="754" y="384">studio/versions.json</text>
+
+  <rect class="node external" x="730" y="428" width="190" height="76" rx="8" />
+  <text class="label" x="754" y="456">CLI 更新指针</text>
+  <text class="small" x="754" y="480">cli/*/latest.json</text>
+
+  <rect class="node process" x="966" y="140" width="210" height="64" rx="8" />
+  <text class="label" x="990" y="166">studio-v* release</text>
+  <text class="small" x="990" y="186">tag 触发的发布流水线</text>
+
+  <rect class="node process" x="966" y="236" width="210" height="76" rx="8" />
+  <text class="label" x="990" y="264">Studio 桌面应用</text>
+  <text class="small" x="990" y="288">win/mac 五腿 · 自更新</text>
+
+  <rect class="node process" x="966" y="332" width="210" height="76" rx="8" />
+  <text class="label" x="990" y="360">2.x CLI 归档</text>
+  <text class="small" x="990" y="384">6 个 tar.gz/zip，同一 tag</text>
+
+  <rect class="node neutral" x="966" y="428" width="210" height="76" rx="8" />
+  <text class="label" x="990" y="456">编辑器扩展</text>
+  <text class="small" x="990" y="480">不在本树，靠 acp 对接</text>
+
+  <rect class="node risk" x="520" y="524" width="400" height="76" rx="8" />
+  <text class="label" x="544" y="552">闸门：STUDIO_PUBLISHES_CLI</text>
+  <text class="small" x="544" y="576">打开前须 CLI_PUBLISH_FROZEN=true</text>
+
+  <rect class="node external" x="494" y="636" width="392" height="64" rx="8" />
+  <text class="label" x="518" y="662">VS Marketplace / Open VSX</text>
+  <text class="small" x="518" y="682">VSIX 由外部仓库发布，本树不产出</text>
+
+  <!-- ===== legend / notes ===== -->
+  <text class="small" x="40" y="758">读法：从产物向上找通道，从通道向左找主人。虚线三条＝2.x CLI 归档借道 npm registry / Homebrew tap / CLI 更新指针，全部先过闸门。</text>
+  <text class="small" x="40" y="784">1.x 拥有 npm 与 Homebrew，并独写 dl.reasonix.io/versions.json（2.x 永远不写）；Studio 桌面只走自建 catalog，与 electron-builder 自带更新无关。</text>
+  <text class="small" x="40" y="810">编辑器扩展不在本树：VSIX 由外部仓库发布，运行期用的是 PATH 上第一个 reasonix，于是它跑哪条线取决于 PATH 顺序而不是文档推荐。</text>
+  <text class="small" x="40" y="836">四形态对照：Studio 桌面＝右泳道 Studio 桌面应用；CLI 归档＝右泳道 2.x CLI 归档；npm 包＝左泳道 npm i -g 入口 + npm registry 平台包；编辑器扩展＝右泳道编辑器扩展 → 外部市场。</text>
+  <text class="small" x="40" y="862">所有权是配置态而非代码态：开关与冻结变量一旦与 tag 状态不一致，图上的虚线就变成实线，而文档不会自动更新。</text>
+</svg>

@@ -1,0 +1,205 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1000" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title>ACP 与 MCP 的方向与归属对照：宿主与内核谁在外、控制流朝哪边、共用底座是什么</title>
+  <desc>这张图对照 Reasonix 里两套方向相反的宿主协议。左栏是 ACP：顶层是编辑器宿主，底层是 reasonix acp 子进程，控制流由宿主向下进入内核（session/new、session/prompt、session/cancel），内核向上有三条边——一条单向投影的 session/update，两条要宿主回复的反向请求（session/request_permission 与 fs/*、terminal/*）。右栏是 MCP：顶层是 Reasonix 内核本身，底层是被它拉起或连接的外部 server，控制流同样自上而下（initialize、tools/call、resources/read），回程只有能力清单与通知，没有裁决边。两栏底部横跨的是同一份内核底座：同一个 control.Controller、同一道 internal/safety/permission 门、同一份工具注册表。下半部分还标出 ACP 取消路径的三条入口（session/cancel、stdin EOF、宿主显式 cancelled）以及一个虚线空框表示的缺省——没有审批超时。读者应看出授权只在左侧发生，这是位置性质而不是纪律性质。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1240" height="1000" fill="var(--bg)" />
+
+  <!-- connectors first: nodes are painted over them -->
+  <path class="edge" d="M 110 244 L 110 490" style="stroke:var(--input)" marker-end="url(#arrow)" />
+  <path class="edge" d="M 250 490 L 250 244" style="stroke:var(--input)" marker-end="url(#arrow)" />
+  <path class="edge edge-dashed" d="M 440 490 L 440 244" style="stroke:var(--external)" marker-end="url(#arrow)" />
+  <path class="edge edge-dashed" d="M 480 490 L 480 244" style="stroke:var(--external)" marker-end="url(#arrow)" />
+  <path class="edge" d="M 760 244 L 760 490" style="stroke:var(--storage)" marker-end="url(#arrow)" />
+  <path class="edge edge-dashed" d="M 1100 490 L 1100 244" style="stroke:var(--storage)" marker-end="url(#arrow)" />
+  <path class="edge edge-dashed" d="M 540 574 L 540 836" style="stroke:var(--process)" marker-end="url(#arrow)" />
+  <path class="edge edge-dashed" d="M 672 202 L 620 202 L 620 836" style="stroke:var(--process)" marker-end="url(#arrow)" />
+
+  <!-- zone frames -->
+  <rect class="zone" x="40" y="92" width="560" height="520" rx="8" />
+  <rect class="zone" x="640" y="92" width="560" height="520" rx="8" />
+
+  <!-- title -->
+  <text class="title" x="40" y="44">ACP 与 MCP：方向与归属的对照</text>
+  <text class="small" x="40" y="70">同一份内核、同一道权限门，接在两条方向相反的控制流上；论据是位置与箭头方向，不是消息顺序</text>
+
+  <!-- left band -->
+  <text class="band" x="60" y="120">ACP：宿主在外、内核在内、控制流反向</text>
+  <text class="band" x="60" y="140">蓝实线＝控制流；琥珀虚线＝反向请求（要回复）</text>
+
+  <!-- right band -->
+  <text class="band" x="660" y="120">MCP：内核在外、server 在内、控制流正向</text>
+  <text class="band" x="660" y="140">青实线＝正向调用；青虚线＝服务端回程（不回复）</text>
+
+  <!-- left host -->
+  <rect class="node input" x="72" y="160" width="496" height="84" rx="8" />
+  <text class="label" x="96" y="194">编辑器宿主（client）</text>
+  <text class="small" x="96" y="218">UI · 未保存缓冲区 · 宿主终端 · 用户裁决权</text>
+
+  <!-- left kernel -->
+  <rect class="node process" x="72" y="490" width="496" height="84" rx="8" />
+  <text class="label" x="96" y="524">reasonix acp（agent / server）</text>
+  <text class="small" x="96" y="548">acpSession 簿记 · 盘上 &lt;id&gt;.jsonl transcript</text>
+
+  <!-- right kernel -->
+  <rect class="node process" x="672" y="160" width="496" height="84" rx="8" />
+  <text class="label" x="696" y="194">reasonix 内核（agent · 会话真源）</text>
+  <text class="small" x="696" y="218">工具循环 · permission 门 · 工具注册表</text>
+
+  <!-- right external server -->
+  <rect class="node external" x="672" y="490" width="496" height="84" rx="8" />
+  <text class="label" x="696" y="524">MCP Server（被拉起的外部能力）</text>
+  <text class="small" x="696" y="548">远端或子进程：工具 / 资源 / prompt</text>
+
+  <!-- left edge labels -->
+  <text class="label" x="118" y="282">宿主 → 内核</text>
+  <text class="small" x="118" y="306">session/new</text>
+  <text class="small" x="118" y="326">session/prompt</text>
+  <text class="small" x="118" y="346">session/cancel</text>
+  <text class="label" x="432" y="282" text-anchor="end">内核 → 宿主 反向请求</text>
+  <text class="small" x="432" y="306" text-anchor="end">session/request_permission</text>
+  <text class="small" x="432" y="326" text-anchor="end">fs/* · terminal/*</text>
+  <text class="small" x="432" y="346" text-anchor="end">（要回复：allow / reject）</text>
+  <text class="small" x="258" y="430">session/update</text>
+  <text class="small" x="258" y="450">（单向投影，不回复）</text>
+  <text class="small" x="258" y="470">宿主在这里按 allow / reject</text>
+
+  <!-- right edge labels -->
+  <text class="label" x="768" y="282">内核 → MCP Server</text>
+  <text class="small" x="768" y="306">initialize · tools/call</text>
+  <text class="small" x="768" y="326">resources/read · prompts/get</text>
+  <text class="small" x="768" y="370">服务端只声明能力，不做裁决</text>
+  <text class="small" x="768" y="390">（本篇证据未记录 sampling /</text>
+  <text class="small" x="768" y="410">elicitation 往返，故不画该边）</text>
+  <text class="label" x="1092" y="440" text-anchor="end">MCP Server → 内核</text>
+  <text class="small" x="1092" y="464" text-anchor="end">tools/list · notifications（不回复）</text>
+
+  <!-- cancel path box -->
+  <rect class="node neutral" x="40" y="620" width="480" height="190" rx="8" />
+  <text class="label" x="64" y="650">取消路径：三条入口</text>
+  <text class="small" x="64" y="678">① session/cancel（通知，无响应）</text>
+  <text class="small" x="64" y="700">② stdin EOF → 取消在飞 handler</text>
+  <text class="small" x="64" y="722">③ 宿主显式回 cancelled</text>
+  <text class="small" x="64" y="744">→ 内核记为拒绝（RefusalDeclined）</text>
+  <text class="small" x="64" y="772">三者都走 abort()：只 cancel，不等待</text>
+  <text class="small" x="64" y="792">收口在 closeAll / abortAndWait</text>
+
+  <!-- no-timeout marker: dashed empty box -->
+  <rect class="node" x="680" y="620" width="220" height="190" rx="8" style="stroke:var(--risk);stroke-dasharray:6 5;fill:none" />
+  <text class="label" x="790" y="668" text-anchor="middle">无审批超时</text>
+  <text class="small" x="790" y="700" text-anchor="middle">cli/acp.go 不填</text>
+  <text class="small" x="790" y="720" text-anchor="middle">ApprovalTimeout</text>
+  <text class="small" x="790" y="750" text-anchor="middle">waitContext 在 ≤0 时</text>
+  <text class="small" x="790" y="770" text-anchor="middle">直接返回父 ctx</text>
+
+  <!-- decision-side note box -->
+  <rect class="node neutral" x="920" y="620" width="280" height="190" rx="8" />
+  <text class="label" x="944" y="650">裁决只在宿主一侧</text>
+  <text class="small" x="944" y="678">ACP：宿主按 allow / reject，</text>
+  <text class="small" x="944" y="698">答案沿反向请求回到内核</text>
+  <text class="small" x="944" y="726">MCP：服务端只声明能力</text>
+  <text class="small" x="944" y="746">（tools/list），不做裁决</text>
+  <text class="small" x="944" y="774">草稿证据未记录反向请求边</text>
+
+  <!-- shared base spanning both columns -->
+  <rect class="node process" x="40" y="836" width="1160" height="124" rx="8" />
+  <text class="label" x="64" y="872">共用底座：同一个 control.Controller · 同一道 internal/safety/permission 门 · 同一份工具注册表</text>
+  <text class="small" x="64" y="900">ACP 前端只持 controller 指针（acpSession 里没有对话内容）；MCP server 只是内核按需调用的外部能力。</text>
+  <text class="small" x="64" y="924">两侧共用的是内核本身，不是一个协议；图上的位置与箭头方向本身就是论据。</text>
+</svg>

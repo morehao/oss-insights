@@ -1,0 +1,185 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1000" font-family="system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif">
+  <title>启动姿态与门的分层：三道宿主门是包在 listener 与路由之间的包裹层</title>
+  <desc>这张图讲的是 Reasonix 本机 HTTP/SSE 服务端的启动姿态与信任门的分层。左侧是五个请求来源：Electron 主进程、浏览器标签页、已配对设备、同进程 TUI、远端内核。右侧用同心的嵌套框表示包裹关系：最外层是两道互斥的宿主门 G1 loopback gate（仅 Studio）与 G3 device gate（仅已配对设备），它们装在 Hub.Handler() 之外；Hub.Handler() 之内是 G2 auth gate（hostGuard 到 csrfGuard 到 mutationGate 三个子层）与最内层的 hostOnly，再往里是 hostMux 与裸 mux 两张路由表。箭头从框的开口进入表示这一层检查了这个请求，箭头穿过框线表示绕过了这一层，因此谁在谁的外面直接读作一个请求先遇到谁、能绕过谁。左下角列出四处必须看清的标注，底部虚线指向 launch token 的落盘文件。</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --fg: #172033;
+      --muted: #5b6475;
+      --line: #64748b;
+      --neutral: #e2e8f0;
+      --input: #bfdbfe;
+      --process: #c7d2fe;
+      --storage: #99f6e4;
+      --external: #fde68a;
+      --risk: #fecaca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #e5e7eb;
+        --muted: #a3adbd;
+        --line: #94a3b8;
+        --neutral: #334155;
+        --input: #1d4ed8;
+        --process: #4338ca;
+        --storage: #0f766e;
+        --external: #92400e;
+        --risk: #991b1b;
+      }
+    }
+    svg {
+      background: var(--bg);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 650;
+      fill: var(--fg);
+    }
+    .label {
+      font-size: 14px;
+      font-weight: 600;
+      fill: var(--fg);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .band {
+      font-size: 12px;
+      font-weight: 600;
+      fill: var(--muted);
+    }
+    .node {
+      stroke: var(--line);
+      stroke-width: 1;
+    }
+    .neutral {
+      fill: var(--neutral);
+    }
+    .input {
+      fill: var(--input);
+    }
+    .process {
+      fill: var(--process);
+    }
+    .storage {
+      fill: var(--storage);
+    }
+    .external {
+      fill: var(--external);
+    }
+    .risk {
+      fill: var(--risk);
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.5;
+      fill: none;
+    }
+    .edge-arrow {
+      marker-end: url(#arrow);
+    }
+    .edge-dashed {
+      stroke-dasharray: 6 5;
+    }
+    .zone {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 1;
+      stroke-dasharray: 6 5;
+      opacity: 0.8;
+    }
+  </style>
+
+  <rect x="0" y="0" width="1280" height="1000" fill="var(--bg)" />
+
+  <text class="title" x="40" y="44">启动姿态与门的分层：三道宿主门是包裹层，不是流程里的一步</text>
+  <text class="small" x="40" y="76">读法：从框的开口进入 = 这一层检查了这个请求；箭头穿过框线 = 绕过了这一层。框的包含关系 = 谁包着谁。</text>
+  <text class="small" x="40" y="96">G1 与 G3 互斥（Studio 宿主装 G1，手机配对装 G3），两者都装在 Hub.Handler() 之外；G2 与 hostOnly 在 Hub.Handler() 之内。</text>
+
+  <rect class="zone" x="40" y="640" width="290" height="210" rx="8" />
+
+  <path class="node" fill="none" stroke-dasharray="6 5" d="M 392 188 L 1148 188 L 1148 772 L 392 772 L 392 360 M 392 320 L 392 188" />
+  <path class="node" fill="none" stroke-dasharray="6 5" d="M 414 210 L 1126 210 L 1126 750 L 414 750 L 414 560 M 414 520 L 414 210" />
+  <path class="node" fill="none" stroke-dasharray="3 4" d="M 436 232 L 1104 232 L 1104 728 L 436 728" />
+  <path class="node" fill="none" stroke-dasharray="3 4" d="M 458 254 L 1082 254 L 1082 706 L 458 706" />
+  <path class="node" fill="none" stroke-dasharray="3 4" d="M 480 276 L 1060 276 L 1060 684 L 480 684" />
+
+  <text class="band" x="404" y="208">G1 loopback gate（仅 Studio 宿主；装在 Hub.Handler() 之外）</text>
+  <text class="band" x="426" y="230">G3 device gate（仅已配对设备；装在 Hub.Handler() 之外）</text>
+  <text class="band" x="448" y="252">H Hub.Handler()：网关只在这一层包一次，runtime 挂成裸 mux</text>
+  <text class="band" x="470" y="274">G2 auth gate：hostGuard → csrfGuard → mutationGate（按此顺序）</text>
+  <text class="band" x="492" y="296">hostOnly(hostMux, mux)：被 G3 打标记的请求对 host-only 路由得 404</text>
+
+  <path class="edge edge-arrow" d="M 240 320 L 356 320 L 356 340 L 530 340" />
+  <path class="edge edge-arrow" d="M 240 380 L 332 380 L 332 500 L 530 500" />
+  <path class="edge edge-arrow" d="M 240 440 L 308 440 L 308 540 L 530 540" />
+  <path class="edge edge-arrow" d="M 240 500 L 284 500 L 284 580 L 530 580" />
+  <path class="edge edge-dashed" marker-start="url(#arrow)" marker-end="url(#arrow)" d="M 240 560 L 260 560 L 260 620 L 530 620" />
+  <path class="edge edge-arrow" d="M 700 440 L 700 470" />
+  <path class="edge edge-dashed" d="M 900 706 L 900 868 L 185 868 L 185 886" />
+
+  <rect class="node process" x="530" y="320" width="440" height="120" rx="8" />
+  <rect class="node process" x="530" y="470" width="440" height="160" rx="8" />
+
+  <rect class="node input" x="40" y="294" width="200" height="52" rx="8" />
+  <rect class="node input" x="40" y="354" width="200" height="52" rx="8" />
+  <rect class="node input" x="40" y="414" width="200" height="52" rx="8" />
+  <rect class="node input" x="40" y="474" width="200" height="52" rx="8" />
+  <rect class="node external" x="40" y="534" width="200" height="52" rx="8" />
+
+  <rect class="node storage" x="40" y="886" width="290" height="76" rx="8" />
+
+  <text class="label" x="546" y="348">hostMux：窗口自己的能力</text>
+  <text class="small" x="546" y="372">/host/*、/remotes/*、/studio/logs</text>
+  <text class="small" x="546" y="396">POST /remotes/open 在这里建立 RemoteEndpoint</text>
+
+  <text class="label" x="546" y="498">mux：Server.routes()（裸 mux，无中间件）</text>
+  <text class="small" x="546" y="522">GET /、/submit、/events、/workspace/file…</text>
+  <text class="small" x="546" y="546">远程 pane 在这里被 httputil.ReverseProxy 转走</text>
+  <text class="small" x="546" y="570">同一张 mux 也服务 /rt/{id}/ 下的每个 runtime</text>
+
+  <text class="label" x="52" y="316">S1 Electron 主进程</text>
+  <text class="small" x="52" y="334">HTTP + Cookie（token）</text>
+  <text class="label" x="52" y="376">S2 浏览器标签页</text>
+  <text class="small" x="52" y="394">HTTP（token / password）</text>
+  <text class="label" x="52" y="436">S3 已配对设备（手机）</text>
+  <text class="small" x="52" y="454">HTTP，私有地址 listener</text>
+  <text class="label" x="52" y="496">S4 TUI 同进程</text>
+  <text class="small" x="52" y="514">handlerTransport（无 listener）</text>
+  <text class="label" x="52" y="556">S5 远端内核</text>
+  <text class="small" x="52" y="574">另一台机器的 reasonix serve</text>
+
+  <text class="label" x="52" y="910">launch-&lt;pid&gt;.token</text>
+  <text class="small" x="52" y="930">&lt;Reasonix home&gt;/remote/</text>
+  <text class="small" x="52" y="948">0600；同 uid 可读</text>
+
+  <text class="small" x="246" y="312">HTTP + Cookie</text>
+  <text class="small" x="246" y="372">HTTP / token</text>
+  <text class="small" x="246" y="432">HTTP + device reach</text>
+  <text class="small" x="246" y="492">无 listener（进程内）</text>
+  <text class="small" x="246" y="552">ReverseProxy /rt/{id}/</text>
+
+  <text class="small" x="712" y="462">未命中 hostMux 才落到这里</text>
+  <text class="small" x="766" y="700">G2 的 launch token 落到 →</text>
+
+  <text class="label" x="52" y="664">图上四处必须看清的标注</text>
+  <text class="small" x="52" y="688">① G1/G3 的 token 每次启动铸出（32 字节），</text>
+  <text class="small" x="52" y="704">只经 cookie / Bearer 传递；配置关不掉。</text>
+  <text class="small" x="52" y="726">② G2 三个子层按序：</text>
+  <text class="small" x="52" y="742">hostGuard → csrfGuard → mutationGate</text>
+  <text class="small" x="52" y="764">③ hostOnly 是 H 内的一层：</text>
+  <text class="small" x="52" y="780">被 G3 标记的请求对 host-only</text>
+  <text class="small" x="52" y="796">路由得到 404，而不是 403。</text>
+  <text class="small" x="52" y="820">④ 虚线 = auth_none 时 G2 的 launch token</text>
+  <text class="small" x="52" y="836">落到该文件。</text>
+</svg>

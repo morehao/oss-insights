@@ -5,6 +5,7 @@
 | 项目 | 语言 | 说明 | 协议 | 仓库 |
 |------|------|------|------|------|
 | [Mem0](mem0/) | Python+TS | AI Agent 智能记忆层：V3 ADD-only 记忆管线 + 多信号检索（语义+BM25+实体），四类 Provider 插件体系，双模式部署 + MCP | Apache-2.0 | [GitHub](https://github.com/mem0ai/mem0) |
+| [Mem0 项目 Wiki](mem0-wiki/README.md) | Markdown（文档 + 12 张 Mermaid 图） | 面向**不打算读源码的人**的 Mem0 中文项目 Wiki（8 页 / 几乎零代码，基线 `v2.0.17` @ `12c47f52`）：三种运行形态（Library / 自托管 Server / Cloud Platform）怎么选，ADD-only 写入管线的八个阶段（上下文收集、已有记忆检索、单次 LLM 提取、批量嵌入、哈希去重、批量落库、批量实体链接、消息留痕），语义 + BM25 + 实体三路信号如何打分融合（sigmoid 归一化、阈值只门控语义分、实体加权随关联数衰减），四类 Provider 工厂与反射加载、接自有 Provider 的步骤，记忆负载字段与三轴作用域、SQLite history/messages 两表与实体记录、记忆生命周期，自托管 Server 的双认证（JWT + API key）、五张元数据表、REST 路由与 Docker Compose 三服务栈，以及 TS SDK 双入口、Node/Python 双 CLI、远程 MCP 与 skills 分工 | Apache-2.0（同上游，文档） | [GitHub](https://github.com/mem0ai/mem0) |
 | [New API](new-api/) | Go+React | 统一 AI API 网关与资产管理：四协议(OpenAI/Claude/Gemini/Responses)互转的独立 relaykit 转换层，40+ 供应商适配器 + 渠道分发，预扣/结算/退款计费与双资金池，SQLite/MySQL/PG 三库 | AGPL-3.0 | [GitHub](https://github.com/QuantumNous/new-api) |
 | [Promptfoo](promptfoo/) | TypeScript | LLM 评估与红队测试：统一评估管线 + 百种攻击插件 + 风险定级，100+ Provider 抽象，SQLite 持久化 | MIT | [GitHub](https://github.com/promptfoo/promptfoo) |
 | [DeepEval](deepeval/) | Python | LLM 评测框架（类似 pytest）：50+ Metric + LLM-as-Judge 三层 schema 判官协议，GEval/DAG 双判官，Synthesizer 造数据，@observe 非侵入 OTel 追踪，pytest 插件进 CI | Apache-2.0 | [GitHub](https://github.com/confident-ai/deepeval) |

@@ -245,6 +245,12 @@ graph TB
 |------|------|
 | [Go](programming-guides/go/) | Go 语言规范、最佳实践与惯用法指南 |
 
+### [科学计算（Scientific Computing）](scientific-computing/)
+
+| 项目 | 语言 | 说明 | 协议 | 仓库 |
+|------|------|------|------|------|
+| [Colour 项目 Wiki](scientific-computing/colour-wiki/README.md) | Markdown（文档 + 15 张 Mermaid 图） | 面向**不打算读源码的人**的 Colour（colour-science）中文项目 Wiki（13 页 / 零外部资源，基线 `v0.4.7` @ `a3bfe3496`）：色彩科学算法与标准数据集库的定位与边界，五个基础概念（颜色表示、连续信号、域-范围尺度、自动转换图、数据集注册表），25 个子包的分层与转换主链路，自动转换图与 RGB 色彩空间对象、色适应与色域体积，光谱数据与两条积分路径，12 个外观模型与 CAM16 流程，色差公式与 STRESS，相机/显示特性化与 ACES IDT、IO，色温/CRI/TM-30，色域体积/光谱恢复/光学现象等专门模块，以及工程实践（仅依赖 NumPy、全局尺度状态、CI 与发布）；并单列选型硬事实（无 Array API 兼容、无 JAX/PyTorch 后端、无自动微分） | BSD-3-Clause | [GitHub](https://github.com/colour-science/colour) |
+
 ---
 
 > 每个项目目录下有独立的 README 作为项目解读的入口和三方仓库地址。

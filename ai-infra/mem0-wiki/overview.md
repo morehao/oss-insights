@@ -44,7 +44,7 @@ graph TD
 | 个性化助手 / 客服机器人 | 跨会话记住用户偏好与历史工单 |
 | 多 Agent 协作 | 用 `agent_id`、`run_id` 隔离并共享上下文 |
 | 企业知识沉淀 | 把交互中反复出现的事实固化成可检索条目 |
-| 编码助手 / 桌面 Agent | 通过 CLI 或编辑器插件直接读写记忆 |
+| 编码助手 / 桌面 Agent | 通过 CLI、Claude Code 插件或其他宿主的插件直接读写记忆 |
 
 需要按"谁"隔离记忆是常见诉求，Mem0 用 `user_id` / `agent_id` / `run_id` 三个作用域维度表达，详情见 [data-model.md](data-model.md)。
 
@@ -77,6 +77,7 @@ graph TD
 | Provider 插件 | LLM / Embedding / VectorStore / Reranker 四类，可按名注册 |
 | 过期与历史 | 记忆可带 `expiration_date`；变更以历史记录留痕 |
 | 多语言交付 | Python SDK、TypeScript SDK、Python/Node 双实现 CLI |
+| 编码 Agent 接入 | Claude Code 插件、多平台插件包、DeepSeek Harness / Strands / Vercel AI SDK 集成 |
 
 ## 技术栈
 
@@ -89,13 +90,14 @@ graph TD
 | 实体抽取 | spaCy（`en_core_web_sm`，`[nlp]` extra） | 实体链接与检索加权 |
 | 本地历史 | SQLite（标准库 `sqlite3`） | 存 `history` 与最近消息 |
 | 自托管服务 | FastAPI + SQLAlchemy + Alembic + Postgres(pgvector) | Server 的 API、元数据表与向量存储 |
-| 遥测 | PostHog（匿名，可关） | 使用统计与功能开关 |
+| 遥测 | PostHog（匿名，可用 `MEM0_TELEMETRY` 关闭） | 使用统计；提示配置已改为本地文件 + 哈希分桶，不再走功能开关接口 |
 
 ## 不适用 / 从哪里开始读
 
 - **只要一次性的文档问答**：那是检索增强（RAG）的活，不需要"跨会话记忆"这层抽象。
 - **需要在写入时自动改写旧记忆**：开源版默认 ADD-only，需要自行用 `update` / `delete` 补逻辑。
 - **需要知识图谱式的关系推理**：开源 SDK 不构建图谱；Graph Memory 属托管平台能力。
+- **需要按时间语义重排或记忆衰减**：这两项是平台 v3 的排序能力，开源 SDK 传入相关参数会直接报错。
 - **要多实例共享同一份历史记录**：开源版的 `history` 落在本地 SQLite，不是分布式存储。
 
 这些边界与理由，以及各能力的降级条件，见首页的「现状与边界」。

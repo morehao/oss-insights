@@ -1,7 +1,7 @@
 ---
 type: 项目 Wiki
 title: Mem0 多信号检索
-description: Mem0 检索链路如何把语义相似度、BM25 关键词与实体关联三路信号融合成一个分数：候选过量召回、BM25 的 sigmoid 归一化与查询长度自适应参数、实体加权的权重与衰减、阈值门控的语义、重排与增强元数据过滤。
+description: Mem0 检索链路如何把语义相似度、BM25 关键词与实体关联三路信号融合成一个分数：候选过量召回、BM25 的 sigmoid 归一化与查询长度自适应参数、实体加权的权重与衰减、阈值门控的语义、重排与增强元数据过滤（含平台与开源版的过滤差异）。
 ---
 
 # 多信号检索
@@ -82,12 +82,45 @@ graph TD
 
 - **过期过滤**：默认不返回已过期记忆，`show_expired=True` 时才包含。
 
+## 过滤器的写法：同一棵树，两种校验
+
+过滤条件在平台与开源版之间**共享同一套组合语义**，差别在于哪些字段、哪些算子会被接受：
+
+| 写法 | 含义 |
+|------|------|
+| `{"user_id": "alice"}` | 单条裸条件，无需包装 |
+| `{"AND": [ ... ]}` / `{"OR": [ ... ]}` / `{"NOT": ...}` | 显式逻辑组合 |
+| `{"user_id": "alice", "agent_id": "a1"}` | 平级多键，隐式 AND，等价于显式 `AND` |
+
+下图是同一份过滤器在两侧各自被接受的路径。
+
+```mermaid
+graph TD
+  F[过滤器 JSON] --> P1{平台：键在白名单}
+  P1 --> OK1[按字段限定算子执行]
+  F --> O1{开源：翻译给向量库}
+  O1 --> OK2[算子全集透传]
+  O1 --> R1[in 值不是列表时抛 ValueError]
+  O1 --> R2[keyword_search 失败时降级为空]
+```
+
+该看什么：开源侧的"接受面"更宽但执行能力取决于所选的向量库；平台侧相反——字段白名单很窄，越界直接返回 400，但允许的算子在该字段上确实会生效。两侧都用同一套 `AND`/`OR`/`NOT` 与隐式 AND，所以过滤器的**结构**可以照搬，**字段与算子**要看后端。
+
+| 维度 | 平台 | 开源 SDK |
+|------|------|---------|
+| 可过滤字段 | 固定白名单：`user_id`、`agent_id`、`app_id`、`run_id`、各类时间字段、`categories`、`metadata`、`keywords`、`memory_ids` 等；其他键返回 400 | 任意 payload 键与 metadata 键都可直接过滤，白名单仅在部分向量库（如 Upstash）内部另有校验 |
+| 算子 | 按字段限定：`metadata` 支持 `eq`/`ne`/`contains`，`categories` 支持 `contains`/`in`，时间字段支持范围算子 | 过滤层接受全集，实际生效取决于向量库实现 |
+| 作用域 | 多一个 `app_id` 作为应用/租户维度 | 只有 `user_id` / `agent_id` / `run_id` |
+
+一处新近收紧的行为：`in` / `nin` 的值必须是列表。此前给字符串会按字符逐个展开（`{"user_id": {"in": "alice"}}` 会匹配 `a`、`l`、`i`、`c`、`e`），现在直接抛 `ValueError`。
+
 ## 边界与限制
 
 - **关键词与实体信号无法新增候选**：候选池完全由语义检索决定，召回率的上限在向量库这一步。
 - **实体加权依赖 spaCy 与实体库的非空**：查询抽不出实体、或实体库为空时，实体分整体为 0。
 - **阈值语义容易误解**：它约束的是语义分而非最终分，调大 `threshold` 会先砍掉语义弱的候选。
 - **reranker 是可选桩**：不配置就没有重排；配置了但调用失败也只是回退。
-- **时间感知检索不在开源版**：查询里带时间意图不会触发任何时间排序；时间相关的参数在开源 SDK 会直接报错。
+- **时间感知检索与记忆衰减不在开源版**：这两个是平台 v3 的排序能力。开源 SDK 遇到时间参数（`timestamp` / `reference_date`）或开启衰减（`decay`）会直接抛"不支持"的 `ValueError`，而不是静默忽略。
+- **图记忆也不在开源版**：开源版仍会抽取实体并用它加权重排，但不构建可查询的图，也没有关系字段。
 
-> 依据：`mem0/memory/main.py:1369-1512`、`mem0/memory/main.py:1618-1721`、`mem0/memory/main.py:1723-1803`、`mem0/utils/scoring.py:12-139`、`mem0/vector_stores/base.py:68-85`、`mem0/utils/lemmatization.py`
+> 依据：`mem0/memory/main.py:1284-1330`、`mem0/memory/main.py:1379-1522`、`mem0/memory/main.py:1628-1731`、`mem0/memory/main.py:1733-1813`、`mem0/utils/scoring.py:12-139`、`mem0/vector_stores/base.py:68-85`、`mem0/utils/lemmatization.py`、`mem0/vector_stores/pgvector.py:50-105`、`mem0/vector_stores/upstash_vector.py:14-25`、`mem0/memory/notices.py:126-135`、`docs/platform/features/v2-memory-filters.mdx`、`docs/platform/platform-vs-oss.mdx`

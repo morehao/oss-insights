@@ -1,7 +1,7 @@
 ---
 type: 项目 Wiki
 title: Mem0 数据模型
-description: Mem0 的数据存在哪、长什么样：记忆负载的字段与三轴作用域、实体记录与它维护的 linked_memory_ids、本地 SQLite 的 history 与 messages 两张表、记忆从新增到删除的生命周期，以及历史表结构如何演进。
+description: Mem0 的数据存在哪、长什么样：记忆负载的字段与三轴作用域（含 search 只认 filters 的调用约束）、实体记录与它维护的 linked_memory_ids、本地 SQLite 的 history 与 messages 两张表及会话作用域键的转义规则、记忆从新增到删除的生命周期，以及历史表结构如何演进。
 ---
 
 # 数据模型
@@ -43,6 +43,8 @@ Mem0 用 `user_id`、`agent_id`、`run_id` 三个维度给记忆划范围，`add
 
 一个刻意的约束：这三个身份键**只由函数参数决定**。调用方在自定义 metadata 里塞 `user_id` 之类的键会被剥掉，防止一次写入被 metadata 悄悄放进未声明的范围。相比之下，`actor_id` 是查询期的收窄条件，不会写进存储模板。
 
+作用域还有一条容易被忽略的用法约束：`add` 接受把 `user_id` / `agent_id` / `run_id` 作为**顶层参数**传入，而 `search` 与 `get_all` 只认 `filters={"user_id": ...}` 这种写法；把同一个参数名平铺在 `search` 上会直接抛 `ValueError`。这样设计是为了让"查什么范围"与"往哪个范围写"在调用形态上就不容易混淆。
+
 ## 本地 SQLite 的两张表
 
 历史库默认落在 `~/.mem0/history.db`（可用 `MEM0_DIR` 或配置改路径）。它建两张表：
@@ -68,9 +70,34 @@ Mem0 用 `user_id`、`agent_id`、`run_id` 三个维度给记忆划范围，`add
 | `role` / `content` / `name` | 消息本身 |
 | `created_at` | 时间戳 |
 
+## 会话作用域键与会话缓冲
+
+`messages` 表按 `session_scope` 归组。这个键由三段作用域 ID 按固定顺序拼接（`agent_id=…&run_id=…&user_id=…`），是一个**字符串派生量**而不是哈希：只要拼接规则稳定，同一组 ID 永远落到同一行会话缓冲。
+
+拼接带来的问题是分隔符歧义——若某个 ID 本身含 `&` 或 `=`，拼接结果会把一个 ID 拆成两个键值对。因此写入前会对三个结构字符做百分号转义：
+
+| 原字符 | 转义为 | 为什么 |
+|--------|--------|--------|
+| `%` | `%25` | 转义字符本身，必须先处理，否则二次转义 |
+| `&` | `%26` | 键值对分隔符 |
+| `=` | `%3D` | 键与值的分隔符 |
+
+代价是一条明确的行为变化：普通 ID 的键完全不变；含上述字符的 ID 会映射到一个**新的**键，其会话缓冲会清空一次并在下一次写入时重新填充。已存记忆与检索结果不受影响，受影响的只是"最近消息"这一上下文来源。
+
+```mermaid
+graph TD
+  F[作用域 filters] --> S[按键名排序]
+  S --> E[逐值转义 % & =]
+  E --> J[用 & 与 = 拼接]
+  J --> K[session_scope]
+  K --> Q[(messages 表查询与写入)]
+```
+
+该看什么：这张图解释为什么一个"改几个字符"的转义修复会波及历史缓冲——键是从 ID 现场拼出来的，没有独立的映射表，所以改拼接规则就等于改键空间。
+
 ## 实体记录
 
-实体记录也存在向量库里，但放在**按向量库 provider 与集合名派生的独立集合**中，与记忆集合分开。它的负载是：
+实体记录也存在向量库里，但放在**按集合名派生的独立集合**中——默认是记忆集合名加上实体后缀，个别后端因为命名限制会换成另一种分隔符——与记忆集合分开。它的负载是：
 
 | 字段 | 说明 |
 |------|------|
@@ -105,5 +132,6 @@ stateDiagram-v2
 - **历史不是分布式存储**：SQLite 文件按本地生效，多实例部署不共享历史与最近消息。
 - **记忆的"事实文本"才是检索对象**：原始消息不进向量库，只进 `messages` 表。
 - **字段演进无版本号**：payload 是自由字典，新增字段不需要迁移；只有 SQLite 的表结构演进被显式处理。
+- **会话缓冲的键不可迁移**：`session_scope` 是派生字符串，拼接规则一变旧键就成孤儿；这类改变只影响"最近消息"，不影响已存记忆。
 
-> 依据：`mem0/memory/storage.py:11-160`、`mem0/memory/storage.py:227-325`、`mem0/memory/main.py:314-404`、`mem0/memory/main.py:600-645`、`mem0/memory/main.py:1680-1719`、`mem0/memory/main.py:1951-2114`、`mem0/configs/base.py:16-57`
+> 依据：`mem0/memory/storage.py:11-160`、`mem0/memory/storage.py:227-325`、`mem0/memory/main.py:314-425`、`mem0/memory/main.py:919-920`、`mem0/memory/main.py:605-650`、`mem0/memory/main.py:1690-1729`、`mem0/memory/main.py:1961-2124`、`mem0/configs/base.py:16-57`、`mem0-ts/src/oss/src/utils/casing.ts:1-22`、`docs/changelog/sdk.mdx`

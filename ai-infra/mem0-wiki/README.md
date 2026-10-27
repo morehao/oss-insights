@@ -1,7 +1,7 @@
 ---
 type: 项目 Wiki
 title: Mem0 项目文档
-description: 面向使用者与团队成员的 Mem0 项目 Wiki：Mem0 是什么、怎么给 AI Agent 加长期记忆、写入与检索两条链路怎么运转、四类 Provider 怎么扩展、数据存在哪、自托管 Server 怎么部署、TS SDK 与 CLI 及 MCP/插件生态怎么接入。
+description: 面向使用者与团队成员的 Mem0 项目 Wiki：Mem0 是什么、怎么给 AI Agent 加长期记忆、写入与检索两条链路怎么运转、四类 Provider 怎么扩展、数据存在哪、自托管 Server 怎么部署、TS SDK 与 CLI 及编码 Agent 插件/框架集成怎么接入，以及开源版与托管平台的语义边界。
 ---
 
 # Mem0
@@ -10,20 +10,20 @@ Mem0（读作 "mem-zero"）是给 AI Agent 加**长期记忆**的一层组件。
 
 它同时以三种形态对外提供：可嵌入的 **Python/TypeScript SDK**、可自部署的 **Server**（FastAPI + 自带 Dashboard）、以及托管的 **Cloud Platform**。本仓库是这三者的开源部分——SDK、自托管 Server、CLI 与各类编辑器/框架集成都在这里，Cloud Platform 的专有优化不在此仓库内。
 
-**本文档依据**：`v2.0.17`（`12c47f52`，2026-08-05）
+**本文档依据**：`v2.0.20`（`9a7924be`，2026-09-02）
 
 ## 页面索引
 
 | 页面 | 内容 | 重要度 |
 |------|------|--------|
 | [overview.md](overview.md) | 解决什么问题、给谁用、三种运行形态、核心能力、技术栈与边界 | 高 |
-| [architecture.md](architecture.md) | 系统分层、模块地图、装配过程、add/search 主链路与关键取舍 | 高 |
-| [memory-pipeline.md](memory-pipeline.md) | 写入链路：ADD-only 提取管线如何把对话变成去重后的记忆与实体 | 高 |
-| [retrieval.md](retrieval.md) | 检索链路：语义 + BM25 + 实体三路信号如何打分融合 | 高 |
-| [provider-system.md](provider-system.md) | 四类 Provider 扩展点：LLM / Embedding / VectorStore / Reranker 怎么接 | 中 |
-| [data-model.md](data-model.md) | 记忆的字段、作用域、三处存储与生命周期 | 中 |
+| [architecture.md](architecture.md) | 系统分层、模块地图、装配过程、search 主链路、内置提示机制与开源/平台语义边界 | 高 |
+| [memory-pipeline.md](memory-pipeline.md) | 写入链路：ADD-only 提取管线如何把对话变成去重后的记忆与实体，及其旁路的失败处理 | 高 |
+| [retrieval.md](retrieval.md) | 检索链路：语义 + BM25 + 实体三路信号如何打分融合，过滤器怎么写、平台与开源差在哪 | 高 |
+| [provider-system.md](provider-system.md) | 四类 Provider 扩展点：LLM / Embedding / VectorStore / Reranker 怎么接，以及环境变量与模型标识推断 | 中 |
+| [data-model.md](data-model.md) | 记忆的字段、作用域、三处存储、会话作用域键与生命周期 | 中 |
 | [self-hosted-server.md](self-hosted-server.md) | 自托管 Server：认证、数据表、API 路由与 Docker 部署 | 中 |
-| [ecosystem.md](ecosystem.md) | TS SDK、CLI、MCP 与 skills、编辑器/框架集成 | 中 |
+| [ecosystem.md](ecosystem.md) | TS SDK、CLI、编码 Agent 插件、skills 与框架集成 | 中 |
 
 ## 建议阅读顺序
 
@@ -35,18 +35,21 @@ Mem0（读作 "mem-zero"）是给 AI Agent 加**长期记忆**的一层组件。
 按目的分叉：
 
 - **只想快速用起来** → [overview.md](overview.md) 的三种形态对比，然后直接跳到 [ecosystem.md](ecosystem.md) 挑 SDK 或 CLI
-- **要选型 / 评估** → [overview.md](overview.md) 的「现状与边界」+ [retrieval.md](retrieval.md) 的信号说明
+- **要选型 / 评估** → [overview.md](overview.md) 的「现状与边界」+ [architecture.md](architecture.md) 的「开源版与平台的语义边界」
 - **要接一个自有模型或向量库** → [provider-system.md](provider-system.md)
 - **要自建服务给团队用** → [self-hosted-server.md](self-hosted-server.md) + [data-model.md](data-model.md)
 - **要做二次开发** → [architecture.md](architecture.md) 的模块地图与关键取舍
 
 ## 现状与边界
 
-选型前需要知道的硬事实（以本文档基线 `v2.0.17` 为准）：
+选型前需要知道的硬事实（以本文档基线 `v2.0.20` 为准）：
 
 - **开源 SDK 不含 Platform 的专有优化**。README 列出的 benchmark 数字（LoCoMo / LongMemEval / BEAM）来自 Mem0 托管平台，官方明确说明开源用户应预期"方向相似但数值不同"。
-- **部分能力是 Platform 专有**：Graph Memory（图记忆）只在托管平台提供，开源 SDK 的实体匹配只做"共现实体加权"，不构建知识图谱；时间推理（temporal reasoning）中用户可直接传入的 `timestamp` / `reference_date` 参数在开源 SDK 里**会直接报错**，不属于开源能力。
+- **部分能力是 Platform 专有，开源版会显式报错而非静默忽略**：时间推理（`timestamp` / `reference_date`）、记忆衰减（`decay`）、图记忆、后台整合 Dream、项目级配置更新都不在开源 SDK 里；前两者传入即抛错。开源版仍抽取实体用于检索加权，但不构建可查询的图。
+- **过滤器"结构相通、接受面不同"**：平台对可过滤字段有白名单，越界返回 400；开源版接受任意键，但算子能否生效取决于所用向量库。见 [retrieval.md](retrieval.md)。
 - **写入默认是 ADD-only**：一次 `add` 只做"新增"，不自动改写或删除旧记忆。需要纠正时要显式调用 `update` / `delete`。
 - **混合检索依赖向量库与 NLP extra**：BM25 关键词检索要求所用向量库实现了 `keyword_search`；实体提取依赖 spaCy 与 `[nlp]` extra。两者不具备时能力会**降级**而非报错（退化为纯语义检索）。
 - **历史记录用本地 SQLite**：`history` 与最近消息存在本地 SQLite 文件里，按进程/单机本地生效，设计上不是多实例共享的分布式存储。
+- **编码 Agent 插件面向托管平台**：`claude-code-plugin`、`mem0-plugin` 等插件都需要 Platform API key，不自带 OSS 后端；Claude Code 插件已从通用插件包中拆出独立目录并独立演进，从旧版升级是破坏性的。
+- **CLI 的双实现存在版本与规格漂移**：Node 与 Python 两份实现分别发版；新加的 `version` 子命令尚未写进共享命令规格文件。
 - 本仓库同时是 **monorepo**：Python SDK（`mem0/`）、TypeScript SDK（`mem0-ts/`）、CLI（`cli/`）、自托管 Server（`server/`）、编辑器与框架集成（`integrations/`）各自独立发版，版本号不必一致。

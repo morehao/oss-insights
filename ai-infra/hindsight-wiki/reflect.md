@@ -1,6 +1,6 @@
 ---
 title: 反思操作（Reflect）
-description: Hindsight 的 reflect 操作如何用工具循环做多轮推理，通过分层检索（心智模型、观察、原始事实）产出带依据的深度回答。
+description: Hindsight 的 reflect 操作如何用工具循环做多轮推理，通过分层检索（心智模型、观察、原始事实）产出带依据的深度回答；含决策模型驱动的决策编排形态。
 type: 项目 Wiki
 ---
 
@@ -26,7 +26,7 @@ Reflect 还会受 bank 的**性格（disposition）**影响：怀疑、字面、
 
 ## 内部怎么运转
 
-Reflect 的主体是一个循环：模型看到当前证据，决定调用工具或给出答案；工具结果回灌后继续下一轮，直到模型给出终止信号或达到迭代上限。
+Reflect 的主体是一个循环：模型看到当前证据，决定调用工具或给出答案；工具结果回灌后继续下一轮，直到模型给出终止信号或达到迭代上限（默认 10 轮，到达上限会走一次强制的最终综合，而不是无限循环）。
 
 ```mermaid
 sequenceDiagram
@@ -46,6 +46,8 @@ sequenceDiagram
 
 该看什么：**每一轮都可能触发真正的数据库检索**，所以 reflect 的成本与延迟是"迭代次数 × 单轮开销"，与 recall 的单次检索不在一个量级。
 
+上面是"agent 轮次"的默认形态。配置了决策模型时，reflect 还可以切换到**决策编排（decision-orchestrated）**形态：每一轮把三类检索（心智模型、观察、原始事实）**并行**发起，各用一句查询，再用决策模型判断"现有证据是否足以回答"——够了就结束检索，不再让模型一轮轮自己写查询。在这种形态下，每轮检索回来的证据还会先被决策模型**剪枝**（挑出真正相关的候选）再交给写作模型，从而把轮次与上下文都压下来。
+
 Agent 可用的工具是分层设计的，越靠上质量越高、越靠下越接近事实本身：
 
 | 工具 | 检索对象 | 定位 |
@@ -61,7 +63,8 @@ Agent 可用的工具是分层设计的，越靠上质量越高、越靠下越�
 
 - **成本显著高于 recall**：多轮 LLM 调用叠加多轮检索，适合"值得深想"的问题，不适合高频查表。
 - **有迭代上限**：达到上限时会走一次强制的最终综合，而不是无限循环。
+- **决策编排不是必需**：不配置决策模型时走 agent 轮次形态；配置后可用决策编排压低轮次与上下文，但多依赖一个模型服务。
 - **受证据上限约束**：推理质量取决于检索到的证据，证据缺失时反思也只能得出保守结论。
 - **性格是倾向不是事实**：disposition 改变的是推理风格，不会改变记忆里存了什么。
 
-> 依据：`hindsight-api-slim/hindsight_api/engine/reflect/agent.py:532-591`、`hindsight-api-slim/hindsight_api/engine/reflect/agent.py:1193-1230`、`hindsight-api-slim/hindsight_api/engine/reflect/agent.py:992-1046`、`hindsight-api-slim/hindsight_api/engine/reflect/tools.py:118-560`、`hindsight-api-slim/hindsight_api/engine/reflect/observations.py:15-130`、`hindsight-api-slim/hindsight_api/engine/reflect/prompts.py:161-186`
+> 依据：`hindsight-api-slim/hindsight_api/engine/reflect/agent.py:546-700`、`hindsight-api-slim/hindsight_api/engine/reflect/agent.py:1057-1111`、`hindsight-api-slim/hindsight_api/engine/reflect/agent.py:161-170`、`hindsight-api-slim/hindsight_api/engine/reflect/tools.py:119-561`、`hindsight-api-slim/hindsight_api/engine/reflect/tools_schema.py:1-120`、`hindsight-api-slim/hindsight_api/engine/reflect/observations.py:15-130`、`hindsight-api-slim/hindsight_api/engine/reflect/prompts.py:172-197`

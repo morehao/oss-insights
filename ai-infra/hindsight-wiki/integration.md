@@ -31,12 +31,12 @@ graph TD
 
 | SDK | 入口 | 公开能力 |
 |-----|------|----------|
-| Python | `hindsight_client.Hindsight` | `retain` / `recall` / `reflect`，另有异步变体 |
-| TypeScript | `HindsightClient` | 同名三方法，内置退避重试 |
+| Python | `hindsight_client.Hindsight` | `retain` / `retain_batch` / `retain_files` / `recall` / `reflect`，另有异步变体与按资源的管理方法 |
+| TypeScript | `HindsightClient` | 同名方法，内置退避重试 |
 | Go | `hindsight` 包 | 按资源的操作方法（记忆、检索、反思等） |
 | Rust | 生成式客户端 | 方法由 OpenAPI 规格在构建期生成 |
 
-Python 与 TypeScript 提供贴近使用场景的便捷方法；Go 与 Rust 更接近底层接口。Rust 客户端的方法体是构建时从 OpenAPI 规格生成的，因此以生成的 API 为准。
+Python 与 TypeScript 提供贴近使用场景的便捷方法；Go 与 Rust 更接近底层接口。Rust 客户端的方法体是构建时从 OpenAPI 规格生成的，因此以生成的 API 为准。注意不同语言的 SDK 与生成的客户端在 v1.1.0 引入了若干新字段与枚举值，若使用较早生成的客户端，需要相应更新才能读到这些字段。
 
 ## 命令行与 Web 控制台
 
@@ -61,6 +61,8 @@ MCP 端点把 retain、recall、reflect 以及记忆、文档、心智模型等�
 ## LLM Wrapper 与框架集成
 
 最省事的接入方式是 **LLM Wrapper**：把一个普通的 LLM 客户端包一层，之后的每次调用都会自动"调用前检索、调用后写入"，应用代码几乎不用改。它由独立的 LiteLLM 集成包提供，底层经 LiteLLM 覆盖大量模型。
+
+在 LLM 供应侧，v1.1.0 进一步扩了"订阅型"接入：除了 `openai-codex`、`claude-code`、`cursor`、`github-copilot` 之外，新增了走 ChatGPT 订阅的 `chatgpt` provider——它用"Sign in with ChatGPT"流程拿到的 OAuth 令牌调用 Responses API，因此**无需 API key**即可使用。这类订阅型的共同特点是：凭据来自用户自己的订阅账号，而不是一个可随时更换的普通 API key。
 
 仓库内的集成包按目标分成几类：
 
@@ -89,7 +91,8 @@ MCP 端点把 retain、recall、reflect 以及记忆、文档、心智模型等�
 
 - **SDK 与 CLI 的完备度不同**：CLI 与 REST API 覆盖的资源面最广，各语言 SDK 侧重常用操作。
 - **集成包成熟度不一**：数量多、覆盖面广，但各包的维护程度有差异，接入前应针对目标框架验证。
+- **订阅型 provider 依赖用户账号**：Codex / Claude Code / ChatGPT 等靠用户订阅的令牌工作，凭据的获取与续期在用户侧，不适用于无人值守的纯服务端场景。
 - **MCP 默认开启**：单 bank 端点默认启用，公开部署时需要留意其鉴权配置。
 - **嵌入式模式的定位是本地/单机**：它省去外部数据库，但不适合作为高并发生产部署的形态。
 
-> 依据：`hindsight-clients/python/hindsight_client/hindsight_client.py:465-720`、`hindsight-clients/typescript/src/index.ts:343-639`、`hindsight-clients/go/hindsight_client.go:39`、`hindsight-clients/rust/src/lib.rs:23-70`、`hindsight-cli/src/main.rs:73-159`、`hindsight-api-slim/hindsight_api/api/mcp.py:333-520`、`hindsight-api-slim/hindsight_api/mcp_tools.py:43-790`、`hindsight-integrations/litellm/hindsight_litellm/wrappers.py:1690-1793`、`hindsight-embed/hindsight_embed/cli.py:1-24`、`hindsight-all-npm/src/server.ts:13-70`、`hindsight-api-slim/hindsight_api/pg0.py:19-98`
+> 依据：`hindsight-clients/python/hindsight_client/hindsight_client.py:197-800`、`hindsight-clients/typescript/src/index.ts:344-700`、`hindsight-clients/go/hindsight_client.go:39`、`hindsight-clients/rust/src/lib.rs:23-70`、`hindsight-cli/src/main.rs:38-159`、`hindsight-api-slim/hindsight_api/api/mcp.py:333-520`、`hindsight-api-slim/hindsight_api/mcp_tools.py:43-790`、`hindsight-integrations/litellm/hindsight_litellm/wrappers.py:1690-1793`、`hindsight-api-slim/hindsight_api/engine/providers/chatgpt_llm.py:1-30`、`hindsight-embed/hindsight_embed/cli.py:1-24`、`hindsight-all-npm/src/server.ts:13-70`、`hindsight-api-slim/hindsight_api/pg0.py:19-98`

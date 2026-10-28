@@ -8,7 +8,7 @@ type: 项目 Wiki
 
 Hindsight 是一套给 AI agent 用的**长期记忆系统**。它不做简单的对话历史回放，而是把 agent 见过的事实、经历、以及由此形成的判断组织成可检索、可演化的记忆，让 agent 越用越"懂"。它既是一个可自部署的服务（REST API + MCP），也提供 Python / Node / Go / Rust 客户端与嵌入式运行方式。
 
-**本文档依据**：`v1.0.0`（`39c65ffe2`，2026-10-13）
+**本文档依据**：`v1.1.0`（`a5a619b5c`，2026-10-21）
 
 ## 页面索引
 
@@ -19,8 +19,8 @@ Hindsight 是一套给 AI agent 用的**长期记忆系统**。它不做简单�
 | [memory-model.md](memory-model.md) | 核心概念：bank、三类事实、实体与链接、observation、mental model | 高 |
 | [retain.md](retain.md) | 写入链路：从原始文本到可检索的记忆单元 | 高 |
 | [recall.md](recall.md) | 检索链路：四路召回、融合、重排与评分 | 高 |
-| [reflect.md](reflect.md) | 反思操作：agent 如何用工具循环给出深度回答 | 中 |
-| [learning.md](learning.md) | 后台学习：观察固化、mental model 刷新、knowledge pages | 高 |
+| [reflect.md](reflect.md) | 反思操作：agent 如何用工具循环给出深度回答（含决策编排形态） | 中 |
+| [learning.md](learning.md) | 后台学习：观察固化（决策模型分流）、mental model 刷新、knowledge pages、变更历史 | 高 |
 | [storage.md](storage.md) | 数据存储：多后端抽象、核心表、向量与全文索引 | 中 |
 | [integration.md](integration.md) | 客户端 SDK、CLI、MCP、框架与编码代理集成、Control Plane | 中 |
 | [deployment.md](deployment.md) | 部署形态、配置层级、后台 worker、可观测性与安全 | 中 |
@@ -41,7 +41,7 @@ Hindsight 是一套给 AI agent 用的**长期记忆系统**。它不做简单�
 
 ## 现状与边界
 
-- **本文档基于发布版 `v1.0.0`**。晚于该版本的变更未涵盖；上游默认分支上的改动不在文档范围内。
+- **本文档基于发布版 `v1.1.0`**（2026-10-21）。晚于该版本的变更未涵盖；上游默认分支上的改动不在文档范围内。
 - **Hindsight Cloud 不在覆盖范围内**：托管版（`api.hindsight.vectorize.io`）是闭源服务，本文档只描述本仓库中的开源代码。
 - **默认数据库是 PostgreSQL**：项目同时支持 Oracle AI Database，但 Oracle 的支持依赖商用数据库与对应驱动，本文档对 Oracle 只做说明、不铺开细节。
 - **基准测试成绩来自项目自述**：仓库的 README 中关于 LongMemEval 等指标的结论由项目方发布，本文档不复述具体数字。

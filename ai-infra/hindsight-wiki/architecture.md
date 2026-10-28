@@ -40,6 +40,8 @@ graph TD
 
 引擎层承担了最关键的复杂度：它既是**同步请求的编排者**，又是**异步作业的调度者**，还持有各类缓存（bank 信息、统计、embedding 缓存等）。之所以集中在一层，是因为一次写入会横跨文档、分块、事实、实体、链接多张表，这些写入必须在同一条一致性边界内协调——分散到各个 handler 里会难以保证。
 
+需要特别指出「Memories Store」这一层并不等同于"PostgreSQL 专属代码"。它定义的是一套 `MemoriesExtension` 接口：仓库自带的实现把操作翻译成 SQL，但接口允许一个外部后端**整包接管**——把写入、召回、实体解析等整套语义在服务端一次原子完成（写作 store-owned）。这样一来，领域管道（retain/search/reflect）只面向接口编程，既跑得了 PostgreSQL 的逐表实现，也能对接一个"存储自己拥有索引"的后端，而无需改动上层。
+
 ## 模块地图
 
 仓库是一个多语言 monorepo，后端全部源码集中在 `hindsight-api-slim`：
@@ -47,9 +49,12 @@ graph TD
 | 目录 | 职责 |
 |------|------|
 | `hindsight-api-slim/hindsight_api/engine/` | 引擎主体：retain、search、reflect、consolidation、db、memories、storage |
+| `hindsight-api-slim/hindsight_api/engine/memories/` | 「记忆存储」抽象（`MemoriesExtension`）：PostgreSQL 有一套实现，也可由外部后端整包接管 |
+| `hindsight-api-slim/hindsight_api/engine/decision_model.py` | 决策模型客户端：为召回重排、反思充分性、观察整理提供秒级类型化判断 |
+| `hindsight-api-slim/hindsight_api/engine/document_history.py` | 文档变更历史：从操作日志重建每个文档的观察增删改记录 |
 | `hindsight-api-slim/hindsight_api/api/` | FastAPI 应用、REST 路由、MCP 中间件 |
-| `hindsight-api-slim/hindsight_api/worker/` | 后台任务轮询器与执行器 |
-| `hindsight-api-slim/hindsight_api/extensions/` | 扩展点基类、加载器与内置扩展（多租户、memory defense） |
+| `hindsight-api-slim/hindsight_api/worker/` | 后台任务轮询器与执行器（含启动即领活的 `background.py`） |
+| `hindsight-api-slim/hindsight_api/extensions/` | 扩展点基类、加载器与内置扩展（多租户、memory defense、按调用选 LLM 等） |
 | `hindsight-api-slim/hindsight_api/alembic/` | 数据库迁移版本 |
 | `hindsight-api/` | PyPI 包入口（`pip install hindsight-api`） |
 | `hindsight-all/`、`hindsight-all-npm/`、`hindsight-embed/` | 嵌入式运行（自动拉起本地服务与进程内数据库） |
@@ -92,9 +97,10 @@ sequenceDiagram
 | 取舍 | 选择 | 代价 |
 |------|------|------|
 | 任务队列 | 用数据库表 `async_operations` + `FOR UPDATE SKIP LOCKED` 领取 | 无需外部消息中间件，部署简单；但队列吞吐受数据库限制 |
-| worker 位置 | 默认内嵌在 API 进程（随应用 lifespan 启动），也可独立进程运行 | 单机部署方便；需要按负载调整 worker 数量与并发 |
-| 存储抽象 | 领域层面向 `memories` 接口，数据库方言由 `db` 层的 ops 抽象 | 支持多后端；引入一层间接与方言改写的维护成本 |
+| worker 位置 | 默认内嵌在 API 进程（随应用 lifespan 启动），也可独立进程运行；重启后先领活、后台再补做恢复 | 单机部署方便；需要按负载调整 worker 数量与并发 |
+| 存储抽象 | 领域层面向 `MemoriesExtension` 接口，PostgreSQL 逐表实现只是其中一种，也可由外部后端整包接管 | 支持多后端；引入一层间接与方言改写的维护成本 |
 | 配置解析 | 配置在每次请求时按 全局 → 租户 → bank 解析 | 多实例间行为一致；每请求有一次解析开销 |
+| 中间判断 | 交给独立「决策模型」做秒级类型化判断（召回重排、反思充分性、观察整理），写作才用 LLM | 降低延迟与成本；但多引入一个需要配置与运维的模型服务 |
 | 服务形态 | 单体服务而非微服务 | 部署与调试简单；横向扩展靠多副本 + 共享数据库 |
 
-> 依据：`hindsight-api-slim/hindsight_api/server.py:25-87`、`hindsight-api-slim/hindsight_api/api/__init__.py:17-109`、`hindsight-api-slim/hindsight_api/api/http.py:5073-5361`、`hindsight-api-slim/hindsight_api/engine/memory_engine.py:2621-3008`、`hindsight-api-slim/hindsight_api/worker/poller.py:320-708`、`hindsight-api-slim/hindsight_api/engine/db/base.py:23-205`
+> 依据：`hindsight-api-slim/hindsight_api/server.py:25-87`、`hindsight-api-slim/hindsight_api/api/__init__.py:17-109`、`hindsight-api-slim/hindsight_api/api/http.py:5232-5620`、`hindsight-api-slim/hindsight_api/engine/memory_engine.py:2945-3332`、`hindsight-api-slim/hindsight_api/worker/poller.py:320-737`、`hindsight-api-slim/hindsight_api/engine/db/base.py:23-205`、`hindsight-api-slim/hindsight_api/engine/memories/base.py:1-90`、`hindsight-api-slim/hindsight_api/engine/memories/__init__.py:46-70`、`hindsight-api-slim/hindsight_api/engine/decision_model.py:1-38`、`hindsight-api-slim/hindsight_api/worker/background.py:1-29`

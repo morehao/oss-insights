@@ -14,24 +14,31 @@ type: 项目 Wiki
 
 ## 观察（Observation）是怎么形成的
 
-写入的事实不会自动变成判断。后台的 consolidation 作业负责这一步：它读取尚未固化的事实，让 LLM 判断应该新建、更新还是删除观察，然后把结果落库。观察在存储上就是一条类型为 `observation` 的记忆单元，额外记录**出现次数**和**它来自哪些源记忆**。
+写入的事实不会自动变成判断。后台的 consolidation 作业负责这一步：它读取尚未固化的事实，让模型判断应该新建、更新还是删除观察，然后把结果落库。观察在存储上就是一条类型为 `observation` 的记忆单元，额外记录**出现次数**和**它来自哪些源记忆**。
 
 ```mermaid
 graph TD
     A[新事实写入] --> B[入队 consolidation]
     B --> C[取未固化的事实]
-    C --> D[LLM 决策增改删]
-    D --> E[写入或精炼观察]
-    E --> F[触发心智模型刷新]
-    F --> G[后台重写常备答案]
-    G --> H[读取时直接返回]
+    C --> D[决策模型先做简单三分类]
+    D --> E[仅疑难事实进 LLM 决策]
+    E --> F[写入或精炼观察]
+    F --> G[触发心智模型刷新]
+    G --> H[后台重写常备答案]
+    H --> I[读取时直接返回]
 ```
 
 几个要点：
 
+- **先分流、再重写**：不是每条事实都送进 LLM。多数事实落在三种"简单情形"——重复已有观察、补一个全新属性、或纯闲聊。默认会先用**决策模型**给事实做一个快速的三分类（复述 / 新增 / 修改），只有真正会改变某条观察含义的疑难事实才交给 LLM 去重写。这样把昂贵的 LLM 调用留给了"需要改写"的少数情形。
 - **观察引用证据而非覆盖事实**：它记住支撑自己的源记忆 id，因此可以回溯到原文；新证据到来时被**精炼**而不是重写。
 - **有去重环节**：当一条新观察与已有观察高度接近时，系统会判定并折叠（fold）而不是重复创建；这也是融合策略中"交替融合"存在的原因——融合若把近似观察排在预算之外，LLM 看不到它就会造出重复。
 - **观察带"趋势"**：根据证据时间分布，观察会被算出稳定、增强、减弱、新增、陈旧等趋势标签，供读取方判断它是否还成立。
+- **可按作用域用不同策略**：consolidation 的强度与参数可以按"观察作用域"配置成不同策略（哪一类记忆走哪套设置），而不用全局一刀切。
+
+## 变更历史
+
+观察是派生数据——底下的某条事实一变，它就会被重建（旧版本直接删除，因为逐版本留着比它想解释的知识还贵）。为了让"某条判断是怎么变的"这个问题还能回答，系统提供了**文档变更历史**：把每次观察增删改以"id 与计数"的形式记在触发它的那次操作上（不存原文），再按文档把这些记录读出来。这份历史的上限取决于操作日志的保留期，没有对应操作的改动（例如同步 retain、或关闭了自动 consolidation 的编辑）不会进入历史。
 
 ## 心智模型与知识页
 
@@ -54,8 +61,9 @@ graph TD
 ## 边界与限制
 
 - **成熟有延迟**：观察与心智模型是异步产物，写入后立刻查询可能还看不到它们。
-- **决策依赖 LLM**：增、改、删的判断由模型给出，模型能力直接影响观察质量与去重效果。
+- **决策依赖 LLM 与决策模型**：增、改、删的最终判断由 LLM 给出，简单分流由决策模型给出，两者的能力都直接影响观察质量与去重效果。
 - **观察会漂移**：随着证据变化，同一条观察的内容可能被重写，读取方应以最后一次刷新为准。
+- **变更历史不是无损的**：它只覆盖有操作记录、且保留了对应操作日志的那部分改动，不存原文。
 - **心智模型需要定义问题**：它只回答你预先问的问题，不会自动覆盖所有疑问。
 
-> 依据：`hindsight-api-slim/hindsight_api/engine/consolidation/consolidator.py:1469-1529`、`hindsight-api-slim/hindsight_api/engine/consolidation/consolidator.py:1336-3467`、`hindsight-api-slim/hindsight_api/engine/memories/pg/consolidation.py:95-323`、`hindsight-api-slim/hindsight_api/engine/memory_engine.py:6826-6854`、`hindsight-api-slim/hindsight_api/engine/memory_engine.py:17301-18384`、`hindsight-api-slim/hindsight_api/engine/reflect/observations.py:15-130`、`hindsight-api-slim/hindsight_api/engine/maintenance.py:629`
+> 依据：`hindsight-api-slim/hindsight_api/engine/consolidation/consolidator.py:1125-1170`、`hindsight-api-slim/hindsight_api/engine/consolidation/consolidator.py:1556-1650`、`hindsight-api-slim/hindsight_api/engine/consolidation/consolidator.py:3629-3700`、`hindsight-api-slim/hindsight_api/engine/consolidation/triage.py:101-290`、`hindsight-api-slim/hindsight_api/engine/memories/pg/consolidation.py:141-369`、`hindsight-api-slim/hindsight_api/engine/document_history.py:1-60`、`hindsight-api-slim/hindsight_api/engine/memory_engine.py:18063-18200`、`hindsight-api-slim/hindsight_api/engine/reflect/observations.py:15-130`、`hindsight-api-slim/hindsight_api/engine/maintenance.py:137-260`

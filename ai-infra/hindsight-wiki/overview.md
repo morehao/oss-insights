@@ -39,8 +39,11 @@ Hindsight 针对这三点分别给出机制：把信息归一化成**带时间�
 | 观察（Observation） | 后台把相关事实固化成带证据的信念，随新证据增强或削弱 | 稳定偏好、反复出现的模式 |
 | 心智模型 / 知识页 | 对固定问题的"常备答案"，后台重写、读取时零 LLM 调用 | agent 启动时加载既有认知 |
 | Memory Bank 隔离 | 每个 bank 一个独立"大脑"，严格不串库 | 多租户、多项目、多用户 |
+| Bank 别名与标签作用域 | bank 可额外接一个别名做零停机迁移；共享 bank 支持按调用方能读写的标签作用域 | 灰度迁移 bank id、多调用方共用一个库时做读写隔离 |
 | 多语言 | 端到端保持输入语言，实体保留原生字形 | 中文人名不被转写成拼音 |
 | Memory Defense | 按 bank 可开启的密钥/PII 扫描，命中即脱敏或拦截 | 防止密钥被写进记忆 |
+| 决策模型（Decision Model） | 用秒级"类型化判断"模型承担召回重排、反思充分性判断、观察整理的中间判断，把 LLM 留给写作 | 降低延迟与成本，同时提高判断一致性 |
+| 文档变更历史 | 从操作日志重建每个文档的观察增删改记录（存 id 与计数，不存原文） | 回答"这条判断是怎么变的" |
 
 上面这些能力不是并列的功能点，而是同一条链路的不同环节：写入 → 检索 → 反思 → 后台固化 → 再被检索。下图给出它们的相对位置。
 
@@ -71,7 +74,8 @@ graph TD
 | SQLAlchemy 2.0 + Alembic | 表结构与版本化迁移 | 迁移由程序在启动时驱动，无需外部配置文件 |
 | asyncpg | 异步 PostgreSQL 驱动 | 服务全程异步，驱动需支持连接重置控制 |
 | FastMCP | 内置 MCP server | 每个 bank 暴露一组工具端点 |
-| 多 LLM provider 适配层 | 接入 25+ 种模型服务 | 含托管 API、本地推理（Ollama 等）与订阅型（Codex/Claude Code 等） |
+| 多 LLM provider 适配层 | 接入 25+ 种模型服务 | 含托管 API、本地推理（Ollama 等）与订阅型（Codex/Claude Code/ChatGPT 等）；另有决策模型独立接入 |
+| 决策模型客户端 | 召回重排、反思充分性、观察整理的秒级判断 | 支持 typesafe / Cloudflare / OpenAI 三类后端，与写作用的 LLM 分开配置 |
 | toktok-rs | 分词与 token 计数 | 与 tiktoken 同 id、更快、词表随包分发 |
 | Rust（CLI） | 命令行客户端 | 单二进制，含交互式 TUI |
 | Next.js（Control Plane） | Web 控制台 | 代理数据面 API，供人查看与管理记忆 |
@@ -93,4 +97,4 @@ graph TD
 - 集成生态覆盖面广但成熟度不一，接入前建议针对目标框架单独验证。
 - Oracle 后端与扩展机制面向企业场景，文档中只做机制说明。
 
-> 依据：`README.md:22-52`、`README.md:275-369`、`hindsight-api/README.md:1-20`、`hindsight-api-slim/pyproject.toml:1-40`、`hindsight-api-slim/hindsight_api/api/__init__.py:17-109`
+> 依据：`README.md:22-52`、`README.md:273-394`、`hindsight-api/README.md:1-20`、`hindsight-api-slim/pyproject.toml:1-45`、`hindsight-api-slim/hindsight_api/api/__init__.py:17-109`、`hindsight-api-slim/hindsight_api/engine/decision_model.py:1-38`、`hindsight-api-slim/hindsight_api/engine/bank_aliases.py:1-32`、`hindsight-api-slim/hindsight_api/engine/document_history.py:1-28`

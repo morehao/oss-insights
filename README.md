@@ -130,6 +130,10 @@ graph TB
 - 未完成的章节使用 `[WIP]` 前缀，如 `[WIP] 第三部分：核心实现详解`
 - 内容中不确定或待补充的部分使用 `TODO` 标记
 
+## Wiki 建设
+
+各项目的 wiki 覆盖情况与待办清单见 [WIKI_GAPS.md](WIKI_GAPS.md)。
+
 ## 分类索引
 
 ### [计费与商业化后端（Billing & Monetization）](billing/)

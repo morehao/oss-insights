@@ -42,12 +42,14 @@
 
 ## 分析前的源码准备
 
-做项目分析（写项目解读或 Wiki）时，按以下顺序准备源码：
+做项目分析（写项目解读或 Wiki）时，按以下顺序执行：
 
-1. **先查本机克隆**：在 `~/Documents/study/` 下按项目名和上游仓库 URL 查找，例如 `~/Documents/study/ai-agent/<项目>`、`~/Documents/study/ai-infra/<项目>`。目录名大小写可能与上游不同，URL 能对上才算命中；已有但基线不符时，先在原克隆里 `git fetch --tags` 并切到目标基线，不要重复克隆。
-2. **没有再浅克隆**：把源码浅克隆到本仓库的 `.dsh/repo/<项目>/`，不要放进受版本控制的分类目录。命令：`git clone --depth 1 <repo-url> .dsh/repo/<project>`；需要指定基线时加 `--branch <tag>`；重名时用 `<owner>-<repo>` 作为目录名。
-3. **再分析**：写 Wiki 用 `project-wiki` skill，写源码级解读用 `project-insight` skill；基线仍按「稳定 tag > 稳定分支 > 默认分支」选择。
-4. **收尾确认**：分析完成后，用选项式提问问用户是否清理 `.dsh/repo/<项目>/`，**默认推荐清理**；用户明确保留时才保留。删除前确认路径确实是本次克隆的目录。
+1. **先建工作分支**：动手前先基于最新 `main` 新建工作分支（如 `docs/<项目>-wiki`、`docs/<项目>`）；本次分析的所有产出与提交都在该分支上进行，**禁止在 `main` 上直接产出或提交**。
+2. **先查本机克隆**：在 `~/Documents/study/` 下按项目名和上游仓库 URL 查找，例如 `~/Documents/study/ai-agent/<项目>`、`~/Documents/study/ai-infra/<项目>`。目录名大小写可能与上游不同，URL 能对上才算命中；已有但基线不符时，先在原克隆里 `git fetch --tags` 并切到目标基线，不要重复克隆。
+3. **没有再浅克隆**：把源码浅克隆到本仓库的 `.dsh/repo/<项目>/`，不要放进受版本控制的分类目录。命令：`git clone --depth 1 <repo-url> .dsh/repo/<project>`；需要指定基线时加 `--branch <tag>`；重名时用 `<owner>-<repo>` 作为目录名。
+4. **再分析**：写 Wiki 用 `project-wiki` skill，写源码级解读用 `project-insight` skill；基线仍按「稳定 tag > 稳定分支 > 默认分支」选择。
+5. **收尾确认**：分析完成后，用选项式提问问用户是否清理 `.dsh/repo/<项目>/`，**默认推荐清理**；用户明确保留时才保留。删除前确认路径确实是本次克隆的目录。
+6. **自动提交与合并**：完成第 5 步（已确认清理与否）之后，**无需再向用户确认**，直接依次执行 `commit-push` → `pr-create` → `pr-merge`（语义见「Git 工作流」）。这是本仓库分析收尾的默认动作；仅在提交 / 推送 / 建 PR / 合并任一步失败时停下并如实报告。
 
 `.dsh/` 整体被 git 忽略，不得把其中的克隆或过程文件提交。
 
@@ -102,10 +104,19 @@
 ## Git 工作流
 
 - `main` 是稳定分支，**不要直接提交**。从最新 `main` 切 `docs/<topic>`、`feat/<topic>`、`fix/<topic>` 等工作分支，提 PR 后用 squash 合并。
+- **每次分析都从最新 `main` 新开工作分支**（一个项目 / 一篇 wiki 一个分支），分析全程在该分支操作；这与全局「禁止在保护分支直接提交」一致。
 - commit message 用 Conventional Commits：`type(scope): summary`，摘要英文、祈使句、≤72 字符、不加句号，例如 `docs(wiki): add mem0 project wiki`。scope 取分类名或项目名；message 内不要出现双引号。
 - PR 标题与 commit 同格式；描述至少写清「背景 / 变更 / 校验」，中文正文可以。
 - `.tmp/` 与 `.dsh/` 永远不入库；草稿、临时脚本、抓取结果放 `.tmp/`，分析用浅克隆放 `.dsh/repo/`。
 - 合并后删除短生命周期 head 分支；`main`/`release/*` 等稳定分支的 head 按规则保留。
+
+### 分析完成后的自动收尾（无需逐项确认）
+
+分析完成、并经用户确认是否清理临时 repo 之后，按 `commit-push` → `pr-create` → `pr-merge` 的顺序自动执行，**不再逐项确认**：
+
+- 这是用户对「分析收尾」场景的显式授权，因此 `pr-merge` 跳过常规的三选一确认，直接合并；
+- 范围仅限本次分析产出的文档变更（含 `README.md` / `WIKI_GAPS.md` 索引同步），不要夹带无关改动；
+- 任一步骤失败（无 remote、未登录 `gh`/`glab`、推送失败、PR 冲突等）立即停下并如实报告，不静默跳过。
 
 ## 不要做
 

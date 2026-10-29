@@ -16,8 +16,8 @@
 
 | 状态 | 数量 |
 |------|------|
-| 已建 wiki | 9 |
-| 已有解读、缺 wiki | 39 |
+| 已建 wiki | 10 |
+| 已有解读、缺 wiki | 38 |
 | 仓库内无任何文档 | 15 |
 | **合计（去重）** | **63** |
 
@@ -25,7 +25,7 @@
 
 路径说明：已建 wiki 的条目，`·` 后是仓库内的文档目录；待建条目的 `·` 后默认是本机源码目录，文档入口在链接里；跨分类条目额外标注了源码路径。
 
-## 已建 wiki（9）
+## 已建 wiki（10）
 
 - [DeepSeek-Reasonix](ai-agent/DeepSeek-Reasonix-wiki/README.md) · `ai-agent/DeepSeek-Reasonix-wiki`
 - [DeepSeek Harness](ai-agent/deepseek-harness-wiki/README.md) · `ai-agent/deepseek-harness-wiki`
@@ -36,14 +36,14 @@
 - [Hindsight](ai-infra/hindsight-wiki/README.md) · `ai-infra/hindsight-wiki`
 - [EverOS](ai-infra/EverOS-wiki/README.md) · `ai-infra/EverOS-wiki`
 - [Engram](ai-infra/engram-wiki/README.md) · `ai-infra/engram-wiki`
+- [MOVO](ai-agent/movo-wiki/README.md) · `ai-agent/movo-wiki`
 
-## 待建：已有解读（39）
+## 待建：已有解读（38）
 
 条目按现有解读的体量降序，前面的更适合优先转成 wiki。
 
-### ai-agent（31）
+### ai-agent（30）
 
-- [ ] [MOVO](ai-agent/movo/README.md) · 17 页 · `ai-agent/movo`
 - [ ] [Multica](ai-agent/multica/README.md) · 13 页 · `ai-agent/multica`
 - [ ] [RoadMan](ai-agent/roadman/README.md) · 13 页 · `ai-agent/roadman`
 - [ ] [Arkloop](ai-agent/Arkloop/README.md) · 12 页 · `ai-agent/Arkloop`

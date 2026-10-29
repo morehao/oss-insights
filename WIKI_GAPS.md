@@ -130,7 +130,7 @@
 
 ## 建议顺序
 
-1. **第一批**：已有解读且 ≥10 页的 12 个项目——MOVO、Multica、RoadMan、Arkloop、Codeg、CompozyOS、Goose、GoRaven、OpenHands、TripStar、WebBrain、WeKnora。
+1. **第一批**：已有解读且 ≥10 页的 11 个项目——Multica、RoadMan、Arkloop、Codeg、CompozyOS、Goose、GoRaven、OpenHands、TripStar、WebBrain、WeKnora。
 2. **第二批**：其余已有解读的 27 个项目。
 3. **第三批**：15 个无文档项目，先做解读，再决定是否建 wiki。
 

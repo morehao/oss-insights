@@ -11,22 +11,22 @@
   ],
   "count": 81,
   "degraded": false,
-  "contentHash": "sha256:d8c807583d757e61aad484468fcc43332ef043e744cb417cf1f0d6ef8f3e9211",
+  "contentHash": "sha256:e93af1509ff35a83a36baf6cca2afcc72b924149438e80294e2779a49196da7c",
   "contentHashAlgo": "jcs-sha256-v1",
-  "coreVersion": "0.8.8",
-  "generatedAt": "2026-11-04T01:04:10.844486Z",
+  "coreVersion": "0.9.0",
+  "generatedAt": "2026-11-04T02:06:58.507894Z",
   "repos": [
     {
       "fullName": "debpalash/VoiceStudio",
       "url": "https://github.com/debpalash/VoiceStudio",
       "description": "VoiceStudio is the open-source, fully-local ElevenLabs alternative — voice cloning, voice design, video dubbing, dictation, transcription \u0026 audiobook creation in 646 languages.",
       "language": "python",
-      "stars": 100079,
+      "stars": 100132,
       "starsInPeriod": 48168,
-      "forks": 11085,
+      "forks": 11088,
       "rank": 1,
       "source": "trending-html",
-      "summaryZh": "本地运行的开源语音工作室，提供声音克隆、配音、听写与转写等功能，覆盖数百种语言。",
+      "summaryZh": "可完全本地运行的语音工作台，支持语音克隆、音色设计、视频配音、听写与转写，模型按需下载。",
       "summarySource": "model"
     },
     {
@@ -34,12 +34,12 @@
       "url": "https://github.com/morluto/rea",
       "description": "Reverse engineer anything with agents, from app behavior down to native binaries.",
       "language": "typescript",
-      "stars": 427110,
+      "stars": 427288,
       "starsInPeriod": 426427,
-      "forks": 106321,
+      "forks": 106366,
       "rank": 2,
       "source": "trending-html",
-      "summaryZh": "用智能体对软件做逆向分析，从应用行为到原生二进制，面向安全与逆向工程人员。",
+      "summaryZh": "面向逆向工程的 MCP 工具，让智能体分析应用行为与原生二进制，直至底层实现细节。",
       "summarySource": "model"
     },
     {
@@ -47,12 +47,12 @@
       "url": "https://github.com/ollama/ollama",
       "description": "Get up and running with Kimi, GLM, MiniMax, DeepSeek, gpt-oss, Qwen, Gemma and other models.",
       "language": "go",
-      "stars": 185818,
+      "stars": 185823,
       "starsInPeriod": 4771,
       "forks": 18868,
       "rank": 3,
       "source": "trending-html",
-      "summaryZh": "一键在本地或云端运行开源大模型的工具，支持私有部署与多种编码助手集成。",
+      "summaryZh": "在本地或云端一键运行开源大模型的工具，提供命令行与 Docker 部署，便于接入各类智能体应用。",
       "summarySource": "model"
     },
     {
@@ -60,12 +60,12 @@
       "url": "https://github.com/pbakaus/impeccable",
       "description": "The design vocabulary for your coding agent. Steer with polish and bolder, review with critique and audit, catch AI slop before it ships.",
       "language": "rust",
-      "stars": 101543,
+      "stars": 101585,
       "starsInPeriod": 26980,
-      "forks": 5988,
+      "forks": 5990,
       "rank": 4,
       "source": "trending-html",
-      "summaryZh": "为多种编码代理提供设计指令集，用简洁命令调整视觉风格并审查页面，减少 AI 生成感。",
+      "summaryZh": "为编码智能体提供设计词汇与命令，帮助打磨界面、审查设计质量并识别套路化生成痕迹。",
       "summarySource": "model"
     },
     {
@@ -73,12 +73,12 @@
       "url": "https://github.com/akitaonrails/ai-memory",
       "description": "Solution for long term memory for agent coding CLIs and to facilitate handoff between different agent vendors",
       "language": "rust",
-      "stars": 15040,
+      "stars": 15047,
       "starsInPeriod": 6304,
-      "forks": 1086,
+      "forks": 1087,
       "rank": 5,
       "source": "trending-html",
-      "summaryZh": "为 AI 编码代理提供跨工具共享的长期记忆，中途切换不同厂商 agent 也无需重述架构与失败尝试。",
+      "summaryZh": "为多种编码智能体提供共享长期记忆，跨工具延续任务上下文，减少重复交代项目背景。",
       "summarySource": "model"
     },
     {
@@ -86,12 +86,12 @@
       "url": "https://github.com/anthropics/knowledge-work-plugins",
       "description": "Open source repository of plugins primarily intended for knowledge workers to use in Claude Cowork",
       "language": "python",
-      "stars": 34619,
+      "stars": 34627,
       "starsInPeriod": 8685,
       "forks": 3828,
       "rank": 6,
       "source": "trending-html",
-      "summaryZh": "面向知识工作者的 Claude 插件集，按岗位打包技能、连接器与斜杠命令，可用于 Cowork 与 Code。",
+      "summaryZh": "面向知识工作者的 Claude 插件集，按岗位打包技能、连接器与命令，并支持按企业流程定制。",
       "summarySource": "model"
     },
     {
@@ -99,12 +99,12 @@
       "url": "https://github.com/cloudflare/security-audit-skill",
       "description": "A coding-agent skill for multi-phase security audits with independently verified, machine-readable findings",
       "language": "javascript",
-      "stars": 58209,
+      "stars": 58243,
       "starsInPeriod": 34248,
-      "forks": 3792,
+      "forks": 3793,
       "rank": 7,
       "source": "trending-html",
-      "summaryZh": "让编码智能体按六个阶段执行安全审计，输出经独立核验、机器可读的漏洞结果。",
+      "summaryZh": "把编码智能体变成安全审计员的技能，分阶段侦察、排查、验证并输出机器可读结论。",
       "summarySource": "model"
     },
     {
@@ -112,12 +112,12 @@
       "url": "https://github.com/heygen-com/hyperframes",
       "description": "Write HTML. Render video. Built for agents.",
       "language": "typescript",
-      "stars": 78376,
+      "stars": 78402,
       "starsInPeriod": 22387,
-      "forks": 7213,
+      "forks": 7215,
       "rank": 8,
       "source": "trending-html",
-      "summaryZh": "把 HTML、CSS 与可定位动画确定性地渲染成 MP4 的框架，便于本地或由 AI 编码代理生成视频。",
+      "summaryZh": "把 HTML、CSS 与可定位动画渲染成确定性 MP4 的框架，可由命令行或编码智能体驱动。",
       "summarySource": "model"
     },
     {
@@ -125,12 +125,12 @@
       "url": "https://github.com/vxcontrol/pentagi",
       "description": "Fully autonomous AI Agents system capable of performing complex penetration testing tasks",
       "language": "go",
-      "stars": 33190,
+      "stars": 33194,
       "starsInPeriod": 8181,
       "forks": 5182,
       "rank": 9,
       "source": "trending-html",
-      "summaryZh": "自主多智能体渗透测试系统，用大模型编排侦察、利用与报告等复杂安全测试任务。",
+      "summaryZh": "多智能体渗透测试系统，自主编排侦察、攻击与报告流程，供安全团队在自有环境部署。",
       "summarySource": "model"
     },
     {
@@ -138,12 +138,12 @@
       "url": "https://github.com/Agent-Field/CodeAF",
       "description": "Open-Source Software factory for Open Models",
       "language": "go",
-      "stars": 626,
+      "stars": 627,
       "starsInPeriod": 361,
       "forks": 73,
       "rank": 10,
       "source": "trending-html",
-      "summaryZh": "面向开源模型的编码代理框架，以单一窗口调度多项目任务，降低每个问题的解决成本。",
+      "summaryZh": "面向开源模型的编码工具框架，用单一窗口管理多个智能体并行任务，压低单次修复成本。",
       "summarySource": "model"
     },
     {
@@ -151,12 +151,12 @@
       "url": "https://github.com/NVIDIA/OpenShell",
       "description": "OpenShell is the safe, private runtime for autonomous AI agents.",
       "language": "rust",
-      "stars": 21048,
+      "stars": 21053,
       "starsInPeriod": 6529,
-      "forks": 2059,
+      "forks": 2062,
       "rank": 11,
       "source": "trending-html",
-      "summaryZh": "面向自主 AI 智能体的安全隔离运行时，用策略约束其文件、系统调用和网络访问。",
+      "summaryZh": "为自主 AI 代理提供安全私密的运行环境，在运行时按策略限制文件、系统调用与网络访问。",
       "summarySource": "model"
     },
     {
@@ -164,12 +164,12 @@
       "url": "https://github.com/Nutlope/hallmark",
       "description": "Anti-AI-slop design skill for Claude Code, Cursor, and Codex.",
       "language": "css",
-      "stars": 46986,
+      "stars": 47027,
       "starsInPeriod": 17314,
-      "forks": 2485,
+      "forks": 2487,
       "rank": 12,
       "source": "trending-html",
-      "summaryZh": "面向编码代理的网页设计技能，内置多套主题并在浏览器中校验成品，避免页面带有 AI 生成痕迹。",
+      "summaryZh": "面向 Claude Code、Cursor 等编码代理的设计技能，通过主题与浏览器检查避免生成千篇一律的 AI 风格页面。",
       "summarySource": "model"
     },
     {
@@ -177,12 +177,12 @@
       "url": "https://github.com/earthtojake/text-to-cad",
       "description": "Design physical products with AI",
       "language": "python",
-      "stars": 25235,
+      "stars": 25244,
       "starsInPeriod": 8708,
       "forks": 2398,
       "rank": 13,
       "source": "trending-html",
-      "summaryZh": "给 AI 智能体的建模插件，生成 STEP、STL 等 3D 模型并做可制造性检查与工程图。",
+      "summaryZh": "让 AI 代理用 Python 脚本生成 STEP、STL 等三维模型，并附带可制造性检查与工程图。",
       "summarySource": "model"
     },
     {
@@ -190,12 +190,12 @@
       "url": "https://github.com/ranxianglei/billion-context",
       "description": "A context-compression plugin for month-long single sessions (billions of tokens) ,small context windows (a 100K context is enough) and token savings (5x fewer tokens) .上下文压缩插件，月级长会话会话， 兼顾小窗口(100k上下文足矣)省token(省5倍token) . billion-context is all you need",
       "language": "typescript",
-      "stars": 3902,
+      "stars": 3916,
       "starsInPeriod": 3363,
-      "forks": 323,
+      "forks": 324,
       "rank": 14,
       "source": "trending-html",
-      "summaryZh": "针对长会话 AI 编程的上下文压缩插件，压缩历史内容以节省 token、缩小上下文窗口。",
+      "summaryZh": "上下文压缩插件，压缩长会话历史，让 100K 小窗口也能支撑超长对话并大幅节省 token。",
       "summarySource": "model"
     },
     {
@@ -203,12 +203,12 @@
       "url": "https://github.com/anthropics/claude-plugins-official",
       "description": "Official, Anthropic-managed directory of high quality Claude Code Plugins.",
       "language": "python",
-      "stars": 45995,
+      "stars": 46002,
       "starsInPeriod": 8845,
-      "forks": 4786,
+      "forks": 4787,
       "rank": 15,
       "source": "trending-html",
-      "summaryZh": "Anthropic 维护的 Claude Code 插件目录，收录官方与社区插件，可经插件系统直接安装。",
+      "summaryZh": "Anthropic 维护的 Claude Code 插件目录，收录官方与社区插件，可在插件系统内直接安装。",
       "summarySource": "model"
     },
     {
@@ -216,12 +216,12 @@
       "url": "https://github.com/gosom/google-maps-scraper",
       "description": "scrape data from Google Maps. Extracts data such as the name, address, phone number, website URL, rating, reviews number, latitude and longitude, reviews,email and more for each place",
       "language": "go",
-      "stars": 7244,
+      "stars": 7249,
       "starsInPeriod": 997,
       "forks": 1129,
       "rank": 16,
       "source": "trending-html",
-      "summaryZh": "抓取 Google Maps 商家信息的开源工具，提供命令行、网页界面与 REST API，用于线索采集。",
+      "summaryZh": "从 Google Maps 抓取商家名称、电话、邮箱、评分等线索，供销售获客与本地调研使用。",
       "summarySource": "model"
     },
     {
@@ -229,12 +229,12 @@
       "url": "https://github.com/thedotmack/claude-mem",
       "description": "Persistent Context Across Sessions for Every Agent – Captures everything your agent does during sessions, compresses it with AI, and injects relevant context back into future sessions. Works with Claude Code, OpenClaw, Codex, Gemini, Hermes, Copilot, OpenCode + More",
       "language": "typescript",
-      "stars": 111913,
+      "stars": 111966,
       "starsInPeriod": 16740,
-      "forks": 9737,
+      "forks": 9743,
       "rank": 17,
       "source": "trending-html",
-      "summaryZh": "为 Claude Code 等编程智能体保留跨会话记忆，自动压缩会话记录并向后续会话回注上下文。",
+      "summaryZh": "为编码代理自动记录并压缩会话内容，在后续会话中注入相关记忆，支持 Claude Code 等多种工具。",
       "summarySource": "model"
     },
     {
@@ -242,12 +242,12 @@
       "url": "https://github.com/xerj-org/xerj",
       "description": "AI search engine and MCP server for bots and agents. One Rust binary indexes code, docs, logs, JSONL/CSV and PDFs for BM25 full-text, vector and hybrid search, code search without grep, agent memory and RAG. Elasticsearch-compatible API; Corpus Hub serves hundreds of reference memory corpora.",
       "language": "rust",
-      "stars": 18942,
+      "stars": 18947,
       "starsInPeriod": 17149,
       "forks": 1454,
       "rank": 18,
       "source": "trending-html",
-      "summaryZh": "面向 AI 智能体的本地搜索引擎与 MCP 服务，索引代码和文档，支持全文、向量与混合检索。",
+      "summaryZh": "单个 Rust 二进制实现的本地搜索引擎与 MCP 服务，为 AI 代理索引代码和文档并提供检索与记忆。",
       "summarySource": "model"
     },
     {
@@ -255,12 +255,12 @@
       "url": "https://github.com/AgriciDaniel/claude-seo",
       "description": "Universal SEO skill for Claude Code. 26 sub-skills + 19 sub-agents covering technical SEO, E-E-A-T, schema, GEO/AEO, agent readiness (Lighthouse Agentic Browsing, WebMCP, llms.txt), backlinks, local SEO, e-commerce, international SEO, Google APIs, and PDF/Excel reporting. 9 optional extensions for live SEO data.",
       "language": "python",
-      "stars": 26332,
+      "stars": 26355,
       "starsInPeriod": 8108,
-      "forks": 3431,
+      "forks": 3433,
       "rank": 19,
       "source": "trending-html",
-      "summaryZh": "为 Claude Code 提供 SEO 审计技能，覆盖技术 SEO、结构化数据与 AI 搜索引用优化，并输出报告。",
+      "summaryZh": "Claude Code 的 SEO 技能包，覆盖技术 SEO、结构化数据与 AI 搜索可见性，输出审计报告与改进计划。",
       "summarySource": "model"
     },
     {
@@ -273,19 +273,19 @@
       "forks": 5901,
       "rank": 20,
       "source": "trending-html",
-      "summaryZh": "用 Compose 文件定义多容器应用，一条命令即可在 Docker 上启动和管理整套服务。",
+      "summaryZh": "用 Compose 文件定义多容器应用，通过一条命令启动和管理 Docker 容器编排。",
       "summarySource": "model"
     },
     {
       "fullName": "pingdotgg/t3code",
       "url": "https://github.com/pingdotgg/t3code",
       "language": "typescript",
-      "stars": 44412,
+      "stars": 44518,
       "starsInPeriod": 18907,
-      "forks": 9252,
+      "forks": 9260,
       "rank": 21,
       "source": "trending-html",
-      "summaryZh": "跨端智能体控制台，用手机、网页或桌面应用远程操控本机上的 Claude Code、Codex、Cursor 等编码代理。",
+      "summaryZh": "统一控制本机各类编码智能体的客户端，提供 iOS、安卓、网页与桌面应用。",
       "summarySource": "model"
     },
     {
@@ -293,12 +293,12 @@
       "url": "https://github.com/vercel-labs/agent-desktop",
       "description": "Computer use CLI for AI agents",
       "language": "rust",
-      "stars": 12770,
+      "stars": 12908,
       "starsInPeriod": 10250,
-      "forks": 881,
+      "forks": 890,
       "rank": 22,
       "source": "trending-html",
-      "summaryZh": "让 AI 智能体通过系统无障碍树读取并操作桌面应用的跨平台 CLI 与 C 库。",
+      "summaryZh": "面向 AI 智能体的桌面操作 CLI，通过系统无障碍树读取并操控三大平台应用。",
       "summarySource": "model"
     },
     {
@@ -306,12 +306,12 @@
       "url": "https://github.com/Panniantong/Agent-Reach",
       "description": "Give your AI agent eyes to see the entire internet. Read \u0026 search Twitter, Reddit, YouTube, GitHub, Bilibili, XiaoHongShu — one CLI, zero API fees.",
       "language": "python",
-      "stars": 108443,
+      "stars": 108460,
       "starsInPeriod": 19446,
-      "forks": 9672,
+      "forks": 9674,
       "rank": 23,
       "source": "trending-html",
-      "summaryZh": "为 AI 智能体提供统一 CLI，免 API 费用读取搜索 Twitter、Reddit、YouTube、B站、小红书等平台内容。",
+      "summaryZh": "让智能体免 API 费用读取与搜索推特、Reddit、YouTube、B站、小红书等平台的命令行工具。",
       "summarySource": "model"
     },
     {
@@ -319,12 +319,12 @@
       "url": "https://github.com/caddyserver/caddy",
       "description": "Fast and extensible multi-platform HTTP/1-2-3 web server with automatic HTTPS",
       "language": "go",
-      "stars": 78709,
+      "stars": 78711,
       "starsInPeriod": 2635,
       "forks": 5231,
       "rank": 24,
       "source": "trending-html",
-      "summaryZh": "支持 HTTP/1.1、HTTP/2、HTTP/3 的可扩展 Web 服务器和反向代理，默认自动签发并续期 HTTPS 证书。",
+      "summaryZh": "默认自动配置 HTTPS 的多协议 Web 服务器与反向代理，支持 HTTP/1-3 与动态配置。",
       "summarySource": "model"
     },
     {
@@ -332,12 +332,12 @@
       "url": "https://github.com/jub0t/Concat",
       "description": "Beta: The truly free, open-source, local-first, cross-platform CapCut replacement. Scriptable through a JSON-RPC API \u0026 MCP.",
       "language": "rust",
-      "stars": 14007,
+      "stars": 14014,
       "starsInPeriod": 10038,
       "forks": 1732,
       "rank": 25,
       "source": "trending-html",
-      "summaryZh": "开源跨平台视频编辑器，可替代 CapCut，支持自动字幕与离线剪辑，并提供 JSON-RPC、MCP 接口做脚本化控制。",
+      "summaryZh": "开源跨平台视频剪辑软件，作为剪映替代品，支持自动字幕、语音合成与 MCP 脚本自动化。",
       "summarySource": "model"
     },
     {
@@ -345,12 +345,12 @@
       "url": "https://github.com/tester-army/e2e",
       "description": "Next generation e2e testing framework for web and mobile apps.",
       "language": "typescript",
-      "stars": 12908,
+      "stars": 12924,
       "starsInPeriod": 10768,
-      "forks": 672,
+      "forks": 673,
       "rank": 26,
       "source": "trending-html",
-      "summaryZh": "面向 Web 与移动应用的端到端测试框架，用自然语言描述目标由智能体操作界面，再用定位器与断言校验结果。",
+      "summaryZh": "面向 Web 与移动应用的端到端测试框架，用自然语言描述操作并由智能体驱动执行。",
       "summarySource": "model"
     },
     {
@@ -358,12 +358,12 @@
       "url": "https://github.com/HKUDS/DeepTutor",
       "description": "DeepTutor: Lifelong Personalized Tutoring. https://deeptutor.info/.",
       "language": "python",
-      "stars": 54727,
+      "stars": 54743,
       "starsInPeriod": 14236,
-      "forks": 6692,
+      "forks": 6697,
       "rank": 27,
       "source": "trending-html",
-      "summaryZh": "面向终身学习的个性化 AI 辅导系统，结合多智能体与 RAG 提供互动式学习体验。",
+      "summaryZh": "面向个人学习者的 AI 辅导系统，提供长期个性化教学、多智能体与检索增强学习工作台。",
       "summarySource": "model"
     },
     {
@@ -371,12 +371,12 @@
       "url": "https://github.com/NationalSecurityAgency/ghidra",
       "description": "Ghidra is a software reverse engineering (SRE) framework",
       "language": "java",
-      "stars": 97549,
+      "stars": 97559,
       "starsInPeriod": 17325,
-      "forks": 11035,
+      "forks": 11037,
       "rank": 28,
       "source": "trending-html",
-      "summaryZh": "NSA 开源的逆向工程框架，提供反汇编、反编译、图形化分析与脚本扩展，支持多种处理器和可执行格式。",
+      "summaryZh": "美国国家安全局开源的逆向工程框架，提供反汇编、反编译、图形化分析与脚本扩展。",
       "summarySource": "model"
     },
     {
@@ -384,12 +384,12 @@
       "url": "https://github.com/lexmount/moli",
       "description": "Best headless browser for AI agents. Lite, Fast, High-Compatibility. Built in Rust",
       "language": "rust",
-      "stars": 22444,
+      "stars": 22455,
       "starsInPeriod": 17420,
       "forks": 621,
       "rank": 29,
       "source": "trending-html",
-      "summaryZh": "用 Rust 编写的无头浏览器，为 AI 智能体提供网页抓取、搜索与自动化操作，兼容 CDP 与 WebDriver 协议。",
+      "summaryZh": "用 Rust 编写的轻量无头浏览器，供智能体抓取网页、搜索并自动化浏览器任务。",
       "summarySource": "model"
     },
     {
@@ -397,12 +397,12 @@
       "url": "https://github.com/mksglu/context-mode",
       "description": "Free, local plugin that keeps tool output out of your coding agent's context window. Sandbox and SQLite FTS5 search, 99% fewer bytes in context. Works with Claude Code, Codex, Pi, OpenCode, Gemini CLI, Copilot CLI and 4 more agents. Zero telemetry.",
       "language": "typescript",
-      "stars": 33384,
+      "stars": 33397,
       "starsInPeriod": 8397,
       "forks": 2299,
       "rank": 30,
       "source": "trending-html",
-      "summaryZh": "本地插件，把工具输出移出编码智能体的上下文窗口，经沙箱与 SQLite 全文检索按需取回，兼容多种编码智能体。",
+      "summaryZh": "本地插件把工具输出移出编码智能体的上下文，配合沙箱与全文检索大幅压缩占用。",
       "summarySource": "model"
     },
     {
@@ -410,12 +410,12 @@
       "url": "https://github.com/strelov1/freehire",
       "description": "freehire — the open-source search engine for job seekers",
       "language": "go",
-      "stars": 3496,
+      "stars": 3495,
       "starsInPeriod": 2937,
       "forks": 368,
       "rank": 31,
       "source": "trending-html",
-      "summaryZh": "开源职位搜索引擎，直接抓取企业招聘系统并去重，为求职者提供分面检索。",
+      "summaryZh": "面向求职者的开源职位搜索引擎，直接抓取企业招聘系统原始岗位，去重后支持多维度筛选检索。",
       "summarySource": "model"
     },
     {
@@ -423,12 +423,12 @@
       "url": "https://github.com/Asymptote-Labs/agent-beacon",
       "description": "The cross-harness, self-improving memory layer for AI agents. Join our community: https://discord.com/invite/zdNChS2fBu",
       "language": "go",
-      "stars": 3236,
+      "stars": 3238,
       "starsInPeriod": 1495,
       "forks": 288,
       "rank": 32,
       "source": "trending-html",
-      "summaryZh": "跨多种编码智能体的记忆层，捕获会话历史并沉淀为可复用知识供后续智能体使用。",
+      "summaryZh": "为编码智能体提供跨工具的记忆层，把会话中的工作流与排错经验沉淀给后续任务复用。",
       "summarySource": "model"
     },
     {
@@ -436,12 +436,12 @@
       "url": "https://github.com/calesthio/OpenMontage",
       "description": "World's first open-source, agentic video production system. 12 production pipelines, 100+ tools, 700+ agent skill and production-knowledge files. Turn your AI coding assistant into a full video production studio.",
       "language": "python",
-      "stars": 75991,
+      "stars": 76003,
       "starsInPeriod": 13622,
-      "forks": 10059,
+      "forks": 10063,
       "rank": 33,
       "source": "trending-html",
-      "summaryZh": "把 AI 编码助手变成视频制作流程编排器，用自然语言完成调研、脚本、素材生成、剪辑与合成。",
+      "summaryZh": "开源智能体视频制作系统，让 AI 编程助手按自然语言完成脚本、素材生成到剪辑合成。",
       "summarySource": "model"
     },
     {
@@ -449,12 +449,12 @@
       "url": "https://github.com/cjpais/Handy",
       "description": "A free, open source, and extensible speech-to-text application that works completely offline.",
       "language": "rust",
-      "stars": 37363,
+      "stars": 37371,
       "starsInPeriod": 4697,
-      "forks": 3521,
+      "forks": 3522,
       "rank": 34,
       "source": "trending-html",
-      "summaryZh": "跨平台离线语音转写桌面应用，按快捷键说话即可将文字输入任意文本框，音频不离开本机。",
+      "summaryZh": "跨平台离线语音转文字桌面应用，按快捷键说话即可在任意输入框中生成文本，无需上云。",
       "summarySource": "model"
     },
     {
@@ -462,12 +462,12 @@
       "url": "https://github.com/tashfeenahmed/freellmapi",
       "description": "7.4 billion tokens per month. 34 free LLM providers. 635 free model endpoints. All behind one /v1 endpoint, plus any custom OpenAI-compatible endpoint. Smart routing, automatic failover, encrypted keys. Personal experimentation only.",
       "language": "typescript",
-      "stars": 47055,
+      "stars": 47078,
       "starsInPeriod": 16812,
-      "forks": 6433,
+      "forks": 6435,
       "rank": 35,
       "source": "trending-html",
-      "summaryZh": "将多家免费 LLM 提供方聚合为统一 OpenAI 兼容接口，带智能路由、限流故障转移与密钥加密，供个人实验使用。",
+      "summaryZh": "把多家免费大模型额度聚合成单一 OpenAI 兼容接口，提供智能路由、故障转移与用量统计。",
       "summarySource": "model"
     },
     {
@@ -475,12 +475,12 @@
       "url": "https://github.com/AstrBotDevs/AstrBot",
       "description": "AI Agent Assistant \u0026 development framework that integrates lots of IM platforms, LLMs, plugins and AI feature, and can be your openclaw alternative. ✨",
       "language": "python",
-      "stars": 45852,
+      "stars": 45860,
       "starsInPeriod": 4731,
       "forks": 3366,
       "rank": 36,
       "source": "trending-html",
-      "summaryZh": "集成多种即时通讯平台与大模型的开源智能体机器人框架，用于搭建客服、陪伴等应用。",
+      "summaryZh": "可接入多种即时通讯平台的一体化 AI 智能体机器人框架，支持插件、知识库与多模型对话。",
       "summarySource": "model"
     },
     {
@@ -488,12 +488,12 @@
       "url": "https://github.com/crmne/spotifast",
       "description": "Spotify, native and fast. One lightweight Rust app for your whole library, local playback, and Spotify Connect on Linux, macOS, and Windows.",
       "language": "rust",
-      "stars": 9602,
+      "stars": 9605,
       "starsInPeriod": 4694,
-      "forks": 569,
+      "forks": 571,
       "rank": 37,
       "source": "trending-html",
-      "summaryZh": "用 Rust 编写的轻量 Spotify 桌面客户端，覆盖三大平台，支持本地播放与 Connect。",
+      "summaryZh": "用 Rust 编写的轻量原生 Spotify 客户端，支持整库浏览、本地播放与 Spotify Connect。",
       "summarySource": "model"
     },
     {
@@ -506,7 +506,7 @@
       "forks": 507,
       "rank": 38,
       "source": "trending-html",
-      "summaryZh": "Kubernetes 上的 LLM 推理流量入口，按负载与前缀缓存路由并控制请求优先级。",
+      "summaryZh": "Kubernetes 推理服务的智能入口路由，按负载与前缀缓存调度请求并管理优先级和流量。",
       "summarySource": "model"
     },
     {
@@ -514,12 +514,12 @@
       "url": "https://github.com/michael-denyer/pstack-claude",
       "description": "Claude Code, Codex, Copilot, Pi, OpenCode, Muse, Gemini, and Prime Agent versions of Poteto's pstack. Rigorous agent workflows with Cursor primitives translated for other harnesses.",
       "language": "javascript",
-      "stars": 3900,
+      "stars": 3906,
       "starsInPeriod": 3026,
-      "forks": 352,
+      "forks": 354,
       "rank": 39,
       "source": "trending-html",
-      "summaryZh": "把 pstack 技能栈移植到 Claude Code、Codex、Copilot 等代理，规范开发与审查流程。",
+      "summaryZh": "将 pstack 智能体工作流移植到 Claude Code、Codex 等多种编码助手，规范开发与代码评审。",
       "summarySource": "model"
     },
     {
@@ -527,12 +527,12 @@
       "url": "https://github.com/HKUDS/CLI-Anything",
       "description": "\"CLI-Anything: Making ALL Software Agent-Native\" -- CLI-Hub: https://clianything.cc/",
       "language": "python",
-      "stars": 58189,
+      "stars": 58190,
       "starsInPeriod": 6960,
-      "forks": 5236,
+      "forks": 5237,
       "rank": 40,
       "source": "trending-html",
-      "summaryZh": "为各类软件生成 CLI 封装，让 AI 代理可直接调用，并提供 CLI 集市供浏览安装。",
+      "summaryZh": "为各类软件生成命令行接口并通过 CLI-Hub 分发，让 AI 智能体能够直接操作现成工具。",
       "summarySource": "model"
     },
     {
@@ -545,7 +545,7 @@
       "forks": 145,
       "rank": 41,
       "source": "trending-html",
-      "summaryZh": "面向 AI 编码代理的 gRPC 回归测试工具，把人工确认的调用链存为基线，供后续版本重放比对。",
+      "summaryZh": "面向 AI 编码代理的 gRPC 回归测试工具，用人工确认的基线回放 API 调用链并定位字段变更。",
       "summarySource": "model"
     },
     {
@@ -553,12 +553,12 @@
       "url": "https://github.com/Vincentwei1021/video-shotcraft",
       "description": "AI video skill for Claude Code \u0026 Codex — cinematic, editable product promos with Remotion: 124 shot recipe cards, 150 motion previews, beat sync, sound design, Motion Workbench \u0026 JianYing (CapCut CN) export.",
       "language": "typescript",
-      "stars": 16537,
+      "stars": 16567,
       "starsInPeriod": 6322,
-      "forks": 1566,
+      "forks": 1569,
       "rank": 42,
       "source": "trending-html",
-      "summaryZh": "面向 Claude Code 与 Codex 的产品宣传片技能：按镜头配方编排分镜，用 Remotion 生成可编辑视频。",
+      "summaryZh": "为 Claude Code 与 Codex 提供的产品宣传片制作技能，用 Remotion 以代码生成可编辑的分镜动画与音效。",
       "summarySource": "model"
     },
     {
@@ -566,12 +566,12 @@
       "url": "https://github.com/bevyengine/bevy",
       "description": "A refreshingly simple data-driven game engine built in Rust",
       "language": "rust",
-      "stars": 49492,
+      "stars": 49493,
       "starsInPeriod": 1047,
       "forks": 5015,
       "rank": 43,
       "source": "trending-html",
-      "summaryZh": "用 Rust 编写的开源数据驱动游戏引擎，提供 2D/3D 功能集，API 迭代较快，适合能跟进变化的开发者。",
+      "summaryZh": "基于 Rust 的数据驱动游戏引擎，提供 2D/3D 完整功能，适合看重简洁架构与性能的开发者。",
       "summarySource": "model"
     },
     {
@@ -579,12 +579,12 @@
       "url": "https://github.com/NVIDIA/SkillSpector",
       "description": "Security scanner for AI agent skills. Detect vulnerabilities, malicious patterns, security risks, prompt injection, data exfiltration, and supply-chain risks in Claude Code, Codex, and MCP skills before you install them.",
       "language": "python",
-      "stars": 24213,
+      "stars": 24218,
       "starsInPeriod": 5054,
       "forks": 2086,
       "rank": 44,
       "source": "trending-html",
-      "summaryZh": "安装前扫描 Claude Code、Codex 与 MCP 技能的安全工具，检测漏洞与恶意注入风险。",
+      "summaryZh": "安装前扫描 Claude Code、Codex、MCP 等 AI 代理技能，检测漏洞、恶意模式与供应链风险。",
       "summarySource": "model"
     },
     {
@@ -597,7 +597,7 @@
       "forks": 548,
       "rank": 45,
       "source": "trending-html",
-      "summaryZh": "Docker 出品的 AI 代理构建与运行工具，用 YAML 声明式定义代理和工具，支持多代理协作。",
+      "summaryZh": "Docker 出品的 AI 代理构建与运行工具，用 YAML 声明配置、挂载工具并编排多代理协作。",
       "summarySource": "model"
     },
     {
@@ -610,7 +610,7 @@
       "forks": 1470,
       "rank": 46,
       "source": "trending-html",
-      "summaryZh": "面向 AI 代理的单文件记忆层，把数据、向量与索引打包为可移植文件，替代复杂 RAG 流程。",
+      "summaryZh": "面向 AI 代理的单文件记忆层，将数据、向量与索引打包，替代复杂 RAG 实现快速检索与长期记忆。",
       "summarySource": "model"
     },
     {
@@ -618,12 +618,12 @@
       "url": "https://github.com/vercel-labs/skills",
       "description": "The open agent skills tool - npx skills",
       "language": "typescript",
-      "stars": 37961,
+      "stars": 37970,
       "starsInPeriod": 5032,
-      "forks": 3288,
+      "forks": 3289,
       "rank": 47,
       "source": "trending-html",
-      "summaryZh": "面向编码代理的技能生态命令行工具，可发现、安装并在多种代理中管理可复用任务指令。",
+      "summaryZh": "开源代理技能生态的命令行工具，用 npx skills 为 Claude Code、Cursor 等编码代理查找并安装技能。",
       "summarySource": "model"
     },
     {
@@ -636,7 +636,7 @@
       "forks": 21018,
       "rank": 48,
       "source": "trending-html",
-      "summaryZh": "Go 语言官方源码仓库，提供简洁高效的编译型语言及标准工具链。",
+      "summaryZh": "Go 语言官方仓库，提供简洁高效的编译型语言、标准库与工具链，适合构建可靠的服务端软件。",
       "summarySource": "model"
     },
     {
@@ -644,12 +644,12 @@
       "url": "https://github.com/remotion-dev/remotion",
       "description": "🎥 Make videos programmatically with React",
       "language": "typescript",
-      "stars": 70452,
+      "stars": 70468,
       "starsInPeriod": 8905,
-      "forks": 5798,
+      "forks": 5799,
       "rank": 49,
       "source": "trending-html",
-      "summaryZh": "用 React 以代码方式制作视频，支持组件化动画与批量渲染，面向需要自动化视频的开发者。",
+      "summaryZh": "用 React 以代码方式制作视频的框架，支持组件化动画、批量渲染与视频生成自动化。",
       "summarySource": "model"
     },
     {
@@ -662,7 +662,7 @@
       "forks": 221,
       "rank": 50,
       "source": "trending-html",
-      "summaryZh": "Rust 编写的高性能 AI 模型推理引擎，支持在应用端侧本地部署，善用 Apple 设备统一内存。",
+      "summaryZh": "面向本地部署的高性能 AI 推理引擎，提供简洁 API，在 Apple 设备上实现低延迟、数据不出端的推理。",
       "summarySource": "model"
     },
     {
@@ -670,12 +670,12 @@
       "url": "https://github.com/wshobson/agents",
       "description": "Multi-harness agentic plugin marketplace for Claude Code, Codex, Cursor, OpenCode, GitHub Copilot, Google Antigravity, and Pi",
       "language": "python",
-      "stars": 42158,
+      "stars": 42162,
       "starsInPeriod": 2094,
-      "forks": 4454,
+      "forks": 4455,
       "rank": 51,
       "source": "trending-html",
-      "summaryZh": "面向 Claude Code、Codex、Cursor 等多家 AI 编码工具的插件与智能体集市，提供统一的技能、命令与代理配置。",
+      "summaryZh": "为 Claude Code、Codex、Cursor 等多种 AI 编码工具提供统一的插件、代理与技能集合，含近百个插件。",
       "summarySource": "model"
     },
     {
@@ -683,12 +683,12 @@
       "url": "https://github.com/Alishahryar1/free-claude-code",
       "description": "Use Claude Code, Codex, Antigravity, VSCode, Pi, and OpenCode (and 6 other harnesses) for free (1.3B+ free tokens) from your terminal, app, IDE, or phone, and now from the browser with native browser sessions (multi-harness + multi-model) like OpenClaw (voice supported + ToS friendly)",
       "language": "python",
-      "stars": 66196,
+      "stars": 66202,
       "starsInPeriod": 10288,
-      "forks": 10309,
+      "forks": 10311,
       "rank": 52,
       "source": "trending-html",
-      "summaryZh": "提供在终端、IDE 或浏览器中免费使用 Claude Code、Codex 等多种 AI 编程工具的方案。",
+      "summaryZh": "把 Claude Code、Codex 等 12 种编码工具接入 61 家模型提供商，提供免费额度，并支持终端与浏览器使用。",
       "summarySource": "model"
     },
     {
@@ -701,7 +701,7 @@
       "forks": 450,
       "rank": 53,
       "source": "trending-html",
-      "summaryZh": "用 Rust 编写的跨平台 CAD 应用，支持 DWG/DXF 原生读写、二维制图与三维建模，并提供桌面与浏览器版本。",
+      "summaryZh": "用 Rust 编写的跨平台 CAD 应用，原生读写 DWG/DXF，支持 GPU 加速的 2D 绘图与 3D 建模。",
       "summarySource": "model"
     },
     {
@@ -709,12 +709,12 @@
       "url": "https://github.com/cursor/plugins",
       "description": "Cursor plugin specification and official plugins",
       "language": "typescript",
-      "stars": 15246,
+      "stars": 15252,
       "starsInPeriod": 5693,
-      "forks": 1575,
+      "forks": 1576,
       "rank": 54,
       "source": "trending-html",
-      "summaryZh": "Cursor 官方插件规范与插件集合，收录面向开发工具、框架和 SaaS 产品的可独立安装插件。",
+      "summaryZh": "Cursor 官方插件规范与插件集合，为开发工具和 SaaS 产品提供可直接安装的编辑器扩展。",
       "summarySource": "model"
     },
     {
@@ -727,7 +727,7 @@
       "forks": 1476,
       "rank": 55,
       "source": "trending-html",
-      "summaryZh": "连接个人 WhatsApp 账号的 MCP 服务器，让 AI 助手搜索、读取和发送消息与媒体，数据本地存于 SQLite。",
+      "summaryZh": "WhatsApp 的 MCP 服务器，让 AI 助手搜索、读取并发送个人消息与媒体，数据本地存于 SQLite。",
       "summarySource": "model"
     },
     {
@@ -740,7 +740,7 @@
       "forks": 45747,
       "rank": 56,
       "source": "trending-html",
-      "summaryZh": "生产级容器编排系统，用于跨主机部署、扩缩容和管理容器化应用。",
+      "summaryZh": "跨主机部署、调度与扩缩容容器化应用的开源编排系统，是云原生基础设施的核心组件。",
       "summarySource": "model"
     },
     {
@@ -748,12 +748,12 @@
       "url": "https://github.com/luongnv89/claude-howto",
       "description": "A visual, example-driven guide to Claude Code — from basic concepts to advanced agents, with copy-paste templates that bring immediate value.",
       "language": "python",
-      "stars": 46469,
+      "stars": 46471,
       "starsInPeriod": 4938,
       "forks": 5701,
       "rank": 57,
       "source": "trending-html",
-      "summaryZh": "以可视化示例讲解 Claude Code 的入门到进阶教程，提供可直接复制的模板，帮开发者搭建代理与工作流。",
+      "summaryZh": "面向 Claude Code 使用者的可视化教程，用示例与可复制模板讲解代理、钩子、技能和 MCP 的用法。",
       "summarySource": "model"
     },
     {
@@ -761,12 +761,12 @@
       "url": "https://github.com/rustdesk/rustdesk",
       "description": "An open-source remote desktop application designed for self-hosting, as an alternative to TeamViewer.",
       "language": "rust",
-      "stars": 128071,
+      "stars": 128082,
       "starsInPeriod": 3577,
-      "forks": 20284,
+      "forks": 20287,
       "rank": 58,
       "source": "trending-html",
-      "summaryZh": "开源远程桌面软件，支持自建服务器与多平台互控，可替代 TeamViewer 等商业方案。",
+      "summaryZh": "可自托管的开源远程桌面软件，支持跨平台远程控制与文件传输，作为 TeamViewer 的替代方案。",
       "summarySource": "model"
     },
     {
@@ -774,12 +774,12 @@
       "url": "https://github.com/supabase/supabase",
       "description": "The Postgres development platform. Supabase gives you a dedicated Postgres database to build your web, mobile, and AI applications.",
       "language": "typescript",
-      "stars": 114492,
+      "stars": 114494,
       "starsInPeriod": 3777,
       "forks": 15775,
       "rank": 59,
       "source": "trending-html",
-      "summaryZh": "基于 Postgres 的开发平台，为 Web、移动与 AI 应用提供数据库及配套后端服务。",
+      "summaryZh": "基于 Postgres 的开发平台，提供数据库、认证、实时订阅、存储与向量检索等后端能力。",
       "summarySource": "model"
     },
     {
@@ -787,12 +787,12 @@
       "url": "https://github.com/anthropics/sandbox-runtime",
       "description": "A lightweight sandboxing tool for enforcing filesystem and network restrictions on arbitrary processes at the OS level, without requiring a container.",
       "language": "typescript",
-      "stars": 6946,
+      "stars": 6949,
       "starsInPeriod": 1535,
       "forks": 620,
       "rank": 60,
       "source": "trending-html",
-      "summaryZh": "轻量级沙箱工具，在操作系统层面为任意进程限制文件系统与网络访问，无需依赖容器。",
+      "summaryZh": "借助系统原生沙箱与代理网络过滤，无需容器即可限制进程的文件和网络访问，用于加固 AI 代理。",
       "summarySource": "model"
     },
     {
@@ -800,12 +800,12 @@
       "url": "https://github.com/beenuar/AiSOC",
       "description": "Open-source AI Security Operations Center: alert fusion, LLM-agent triage, MITRE ATT\u0026CK investigation, and a replayable decision ledger for every agent step. Self-hostable, runs with no API keys, MIT licensed. Ships an MCP server for Claude, Cursor and Continue.",
       "language": "python",
-      "stars": 7000,
+      "stars": 7007,
       "starsInPeriod": 4934,
-      "forks": 719,
+      "forks": 721,
       "rank": 61,
       "source": "trending-html",
-      "summaryZh": "开源自托管 AI 安全运营中心，聚合告警、用 LLM 智能体调查威胁并留存可审计决策记录。",
+      "summaryZh": "自托管开源 AI 安全运营中心，融合告警并用可审计的 LLM 智能体做研判与响应建议。",
       "summarySource": "model"
     },
     {
@@ -813,12 +813,12 @@
       "url": "https://github.com/denoland/deno",
       "description": "A modern runtime for JavaScript and TypeScript.",
       "language": "rust",
-      "stars": 108802,
+      "stars": 108803,
       "starsInPeriod": 889,
       "forks": 6505,
       "rank": 62,
       "source": "trending-html",
-      "summaryZh": "基于 V8、Rust 与 Tokio 的 JavaScript/TypeScript/WASM 运行时，默认启用安全权限，适合服务端与脚本开发。",
+      "summaryZh": "基于 V8 与 Rust 的 JavaScript/TypeScript 运行时，默认安全，自带工具链。",
       "summarySource": "model"
     },
     {
@@ -826,12 +826,12 @@
       "url": "https://github.com/microsoft/TypeScript",
       "description": "TypeScript is a superset of JavaScript that compiles to clean JavaScript output.",
       "language": "go",
-      "stars": 111729,
+      "stars": 111730,
       "starsInPeriod": 662,
       "forks": 15410,
       "rank": 63,
       "source": "trending-html",
-      "summaryZh": "为 JavaScript 增加可选类型的语言，编译输出标准 JS，适合大型应用开发。",
+      "summaryZh": "为大规模 JavaScript 应用增加可选静态类型，并编译输出可读的标准 JavaScript。",
       "summarySource": "model"
     },
     {
@@ -839,12 +839,12 @@
       "url": "https://github.com/emilk/egui",
       "description": "egui: an easy-to-use immediate mode GUI in Rust that runs on both web and native",
       "language": "rust",
-      "stars": 31960,
+      "stars": 31961,
       "starsInPeriod": 1220,
       "forks": 2311,
       "rank": 64,
       "source": "trending-html",
-      "summaryZh": "纯 Rust 的即时模式 GUI 库，可运行于 Web、桌面与游戏引擎，便于快速搭建跨平台界面。",
+      "summaryZh": "纯 Rust 的即时模式 GUI 库，可跑在 Web、桌面与游戏引擎里，适合快速搭界面。",
       "summarySource": "model"
     },
     {
@@ -852,12 +852,12 @@
       "url": "https://github.com/keploy/keploy",
       "description": "Open-source platform for creating safe, isolated production sandboxes for API, integration, and E2E testing.",
       "language": "go",
-      "stars": 19280,
+      "stars": 19282,
       "starsInPeriod": 849,
-      "forks": 2447,
+      "forks": 2448,
       "rank": 65,
       "source": "trending-html",
-      "summaryZh": "面向开发者的 API 与集成测试工具，录制真实流量和数据库调用并回放为测试与 mock，无需改代码。",
+      "summaryZh": "基于 eBPF 录制真实 API 流量并自动生成测试与 Mock，无需改代码即可提升覆盖率。",
       "summarySource": "model"
     },
     {
@@ -865,12 +865,12 @@
       "url": "https://github.com/ruvnet/ruflo",
       "description": "🌊 The original agent harness. Deploy intelligent multi-player swarms, coordinate autonomous workflows, and build conversational AI systems. Features adaptive memory, self-learning intelligence, federation, vector RAG integration, and native Claude Code / Codex / Hermes and many more Integrated",
       "language": "typescript",
-      "stars": 80801,
+      "stars": 80804,
       "starsInPeriod": 7399,
       "forks": 9483,
       "rank": 66,
       "source": "trending-html",
-      "summaryZh": "面向 Claude Code 与 Codex 的智能体编排框架，支持多智能体协作、自适应记忆与向量检索集成。",
+      "summaryZh": "面向 Claude Code 与 Codex 的智能体编排框架，支持多智能体协作、记忆与工作流。",
       "summarySource": "model"
     },
     {
@@ -883,7 +883,7 @@
       "forks": 210,
       "rank": 67,
       "source": "trending-html",
-      "summaryZh": "为 KiCAD 提供 MCP 接口的 Rust 插件，让大模型调用原理图、布线等两百余项设计工具；仓库已归档。",
+      "summaryZh": "通过 MCP 向 LLM 开放 217 个 KiCad 原理图与布线工具，实现 AI 辅助 PCB 设计；仓库已归档。",
       "summarySource": "model"
     },
     {
@@ -891,12 +891,12 @@
       "url": "https://github.com/mvschwarz/openrig",
       "description": "Build your own network of agents from Claude Code, Codex and Pi: persistent teams with roles, shared context and owned work.",
       "language": "typescript",
-      "stars": 8591,
+      "stars": 8592,
       "starsInPeriod": 4045,
       "forks": 712,
       "rank": 68,
       "source": "trending-html",
-      "summaryZh": "用 YAML 定义由 Claude Code、Codex 等组成的多智能体团队，一条命令启动并共享上下文与工作。",
+      "summaryZh": "用 YAML 定义 Claude Code、Codex 等组成的持久化多智能体团队，统一编排角色与上下文。",
       "summarySource": "model"
     },
     {
@@ -909,7 +909,7 @@
       "forks": 745,
       "rank": 69,
       "source": "trending-html",
-      "summaryZh": "汇集三百余个智能体 AI 项目与资源的精选清单，按类别整理，方便开发者检索选型。",
+      "summaryZh": "分类收录 300 多个智能体 AI 项目与资源的清单，方便开发者检索与选型。",
       "summarySource": "model"
     },
     {
@@ -917,12 +917,12 @@
       "url": "https://github.com/chthollyphile/folia-major",
       "description": "专注于绚丽的歌词动画效果的本地音乐/navidrome/第三方多平台在线音乐播放器 A multi-platform music player for local files, Navidrome, and online streaming services, featuring stunning animated lyrics.",
       "language": "typescript",
-      "stars": 11449,
+      "stars": 11457,
       "starsInPeriod": 8273,
-      "forks": 1265,
+      "forks": 1266,
       "rank": 70,
       "source": "trending-html",
-      "summaryZh": "以全屏歌词动画为特色的音乐播放器，支持网易云、QQ 音乐、Navidrome 与本地曲库，提供桌面与网页版。",
+      "summaryZh": "以全屏歌词动画为特色的播放器，支持本地音乐、Navidrome 与多家在线音乐服务。",
       "summarySource": "model"
     },
     {
@@ -935,7 +935,7 @@
       "forks": 98,
       "rank": 71,
       "source": "trending-html",
-      "summaryZh": "基于 FreeSWITCH 的自托管 AI 呼叫中心，AI 默认接听，转人工时不中断通话，适合自建 SIP 客服系统。",
+      "summaryZh": "自托管 AI 呼叫中心，基于 FreeSWITCH 与实时语音模型接听来电，可无缝转人工，单二进制部署。",
       "summarySource": "model"
     },
     {
@@ -943,12 +943,12 @@
       "url": "https://github.com/xingkongliang/skills-manager",
       "description": "A lightweight desktop app to manage, sync, and organize AI agent skills across 50+ coding tools — Claude Code, Codex, Cursor, Copilot, Gemini CLI, and more.",
       "language": "rust",
-      "stars": 7214,
+      "stars": 7218,
       "starsInPeriod": 1855,
       "forks": 587,
       "rank": 72,
       "source": "trending-html",
-      "summaryZh": "跨 Claude Code、Codex、Cursor 等 50 多种编程工具的 AI 技能管理桌面应用，用于统一整理与同步技能。",
+      "summaryZh": "跨工具管理 AI 编码助手技能的桌面应用，统一技能库并支持备份与多设备同步。",
       "summarySource": "model"
     },
     {
@@ -956,12 +956,12 @@
       "url": "https://github.com/XTLS/Xray-core",
       "description": "Xray, Penetrates Everything. Also the best v2ray-core. Where the magic happens. An open platform for various uses.",
       "language": "go",
-      "stars": 42601,
+      "stars": 42603,
       "starsInPeriod": 836,
       "forks": 6103,
       "rank": 73,
       "source": "trending-html",
-      "summaryZh": "面向抗审查场景的网络代理平台，提供 VLESS、REALITY 等协议与灵活路由分流能力。",
+      "summaryZh": "开源网络代理内核，提供 VLESS、REALITY 等协议与传输工具，用于搭建抗审查代理服务。",
       "summarySource": "model"
     },
     {
@@ -969,12 +969,12 @@
       "url": "https://github.com/gitroomhq/postiz-app",
       "description": "📨 The ultimate agentic social media scheduling tool 🤖",
       "language": "typescript",
-      "stars": 40819,
+      "stars": 40822,
       "starsInPeriod": 4288,
       "forks": 7775,
       "rank": 74,
       "source": "trending-html",
-      "summaryZh": "开源社交媒体排期与自动化平台，支持多平台内容发布、效果分析与自托管部署。",
+      "summaryZh": "开源社媒排期与内容管理平台，支持多平台定时发布、自动化与效果分析，可自托管。",
       "summarySource": "model"
     },
     {
@@ -987,7 +987,7 @@
       "forks": 218,
       "rank": 75,
       "source": "trending-html",
-      "summaryZh": "用 Rust 与 Bevy 从零重写的《魔兽世界》1.12.1 客户端，可连原版协议服务器并读取自备游戏数据。",
+      "summaryZh": "用 Rust 与 Bevy 从零实现的《魔兽世界》1.12.1 客户端，可连原版协议服务器体验完整内容。",
       "summarySource": "model"
     },
     {
@@ -995,12 +995,12 @@
       "url": "https://github.com/Gaurav-Gosain/tuios",
       "description": "A terminal window manager that knows what your agents are doing. Tiling panes, workspaces, sessions that survive restarts, and one Inbox for every coding agent. Official only at tuios.dev and this repo. tuios has no X/Twitter account.",
       "language": "go",
-      "stars": 6327,
+      "stars": 6329,
       "starsInPeriod": 1756,
       "forks": 301,
       "rank": 76,
       "source": "trending-html",
-      "summaryZh": "面向编码代理的终端复用器与窗口管理器，提供平铺窗格、工作区、持久会话和代理状态收件箱。",
+      "summaryZh": "面向编码代理的终端复用器与窗口管理器，支持平铺分屏、会话持久与代理状态汇总。",
       "summarySource": "model"
     },
     {
@@ -1008,12 +1008,12 @@
       "url": "https://github.com/LibreSpark/LibreTV",
       "description": "一分钟搭建影视站，支持Docker等部署方式",
       "language": "typescript",
-      "stars": 23461,
+      "stars": 23467,
       "starsInPeriod": 9650,
-      "forks": 30687,
+      "forks": 30689,
       "rank": 77,
       "source": "trending-html",
-      "summaryZh": "可自建的影视聚合搜索与在线播放站，支持多源聚合、HLS 播放和 IPTV 直播，提供 Docker 部署。",
+      "summaryZh": "可一键部署的影视聚合搜索与在线播放平台，支持多源搜索、HLS 播放与直播订阅。",
       "summarySource": "model"
     },
     {
@@ -1021,12 +1021,12 @@
       "url": "https://github.com/changexbc/workbuddy-switch",
       "description": "WorkBuddy、CodeBuddy 账号切换，支持积分到期监控、积分统计与 Token 统计，agent 状态悬浮窗。",
       "language": "rust",
-      "stars": 1709,
+      "stars": 1710,
       "starsInPeriod": 742,
       "forks": 230,
       "rank": 78,
       "source": "trending-html",
-      "summaryZh": "WorkBuddy 与 CodeBuddy 多账号切换桌面工具，附带积分到期提醒、积分与 Token 用量统计。",
+      "summaryZh": "WorkBuddy 与 CodeBuddy 的多账号切换桌面工具，附带积分到期提醒与用量统计。",
       "summarySource": "model"
     },
     {
@@ -1034,12 +1034,12 @@
       "url": "https://github.com/Renhuai123/ziwei-doushu",
       "description": "紫微斗数开源排盘引擎 — 基于倪海厦《天纪》体系，含完整排盘算法、四化系统、格局知识库、古籍原文数据",
       "language": "typescript",
-      "stars": 14997,
+      "stars": 15043,
       "starsInPeriod": 10593,
-      "forks": 2910,
+      "forks": 2917,
       "rank": 79,
       "source": "trending-html",
-      "summaryZh": "基于倪海厦《天纪》体系的紫微斗数开源排盘引擎，含四化、格局知识与古籍数据。",
+      "summaryZh": "基于倪海厦《天纪》体系的紫微斗数开源排盘引擎，含四化、格局知识库与古籍数据。",
       "summarySource": "model"
     },
     {
@@ -1049,10 +1049,10 @@
       "language": "go",
       "stars": 60776,
       "starsInPeriod": 802,
-      "forks": 5644,
+      "forks": 5645,
       "rank": 80,
       "source": "trending-html",
-      "summaryZh": "命令行云存储同步工具，可在数十种对象存储与网盘之间复制、挂载和加密传输文件。",
+      "summaryZh": "命令行云存储同步工具，支持数十种对象存储与网盘间的复制、挂载和加密传输。",
       "summarySource": "model"
     },
     {
@@ -1060,12 +1060,12 @@
       "url": "https://github.com/makecindy/cindy",
       "description": "Consider it done. The open-source AI agent that works out of the box · 想到，就能做到。开源、开箱即用的 AI Agent。",
       "language": "typescript",
-      "stars": 9162,
+      "stars": 9169,
       "starsInPeriod": 6341,
-      "forks": 1108,
+      "forks": 1111,
       "rank": 81,
       "source": "trending-html",
-      "summaryZh": "开源跨设备 AI Agent，连接电脑与手机，复用已有模型和订阅，开箱即用。",
+      "summaryZh": "开箱即用的开源 AI Agent，支持多设备远程接入并复用已有模型与订阅，适合希望跨电脑和手机延续工作的用户。",
       "summarySource": "model"
     }
   ]

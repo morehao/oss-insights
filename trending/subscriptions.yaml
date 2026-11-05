@@ -2,3 +2,4 @@ schema: 1
 subscriptions:
     - deepseek-ai/dsh-superagent-prototype
     - deepseek-ai/deepseek-harness
+    - infiniflow/ragflow

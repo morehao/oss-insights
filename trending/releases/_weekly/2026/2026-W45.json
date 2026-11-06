@@ -2,13 +2,62 @@
   "schema": 2,
   "date": "2026-11-08",
   "period": "weekly",
-  "contentHash": "sha256:2cbab3f358ad4f922acd33c69da20d32d1418effadbcad7238c84c0e5f55e5b2",
+  "contentHash": "sha256:05d4f02cf12f2e3b6a851ab2e2b1ab34e9c80fbf8e8d0bdade94de777c534ba7",
   "contentHashAlgo": "jcs-sha256-v1",
-  "coreVersion": "0.10.0",
-  "generatedAt": "2026-11-06T09:12:38.662212Z",
-  "count": 1,
+  "coreVersion": "0.12.0",
+  "generatedAt": "2026-11-06T17:16:42.443302Z",
+  "count": 4,
   "degraded": false,
   "repos": [
+    {
+      "fullName": "infiniflow/ragflow",
+      "url": "https://github.com/infiniflow/ragflow",
+      "latestTag": "v1.0.0",
+      "newCount": 3,
+      "periodStart": "2025-12-01",
+      "periodEnd": "2025-12-07",
+      "releases": [
+        {
+          "id": 436462563,
+          "tag": "v1.0.0",
+          "name": "v1.0.0",
+          "kind": "release",
+          "publishedAt": "2026-11-06T12:31:31Z",
+          "url": "https://github.com/infiniflow/ragflow/releases/tag/v1.0.0",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## What's Changed\r\n* fix(parser): keep recovered PDF TOC leader lines out of the body guard by @jay77721 in https://github.com/infiniflow/ragflow/pull/21768\r\n* CI: Fix log tee failure by @myf-bee in https://github.com/infiniflow/ragflow/pull/21791\r\n* Update release notes of 1.0.0.rc3 by @yingfeng in https://github.com/infiniflow/ragflow/pull/21793\r\n* feat: add Wally as a model provider by @adityabatra072 in https://github.com/infiniflow/ragflow/pull/21719\r\n* add audit hooks to file APIs by @JinHai-CN in https://github.com/infiniflow/ragflow/pull/21807\r\n* add log hooks by @JinHai-CN in https://github.com/infiniflow/ragflow/pull/21822\r\n* i18n: translate pipeline version and parser settings strings in tr-TR by @bakiburakogun in https://github.com/infiniflow/ragflow/pull/21819\r\n* fix(models): honour context cancellation in driver HTTP requests by @ccclucky in https://github.com/infiniflow/ragflow/pull/21643\r\n* feat(vastbase): support Vastbase G100 as the metadata database in Go by @FengYikai710 in https://github.com/infiniflow/ragflow/pull/20913\r\n* fix: README.md by @eridan-ltu in https://github.com/infiniflow/ragflow/pull/21828\r\n* fix(chunker): prevent PDF child chunks from overwriting each other by @jay77721 in https://github.com/infiniflow/ragflow/pull/21773\r\n* test(sdk): remove explicit Python SDK test skips by @6ba3i in https://github.com/infiniflow/ragflow/pull/21783\r\n* fix(syncer): retain Dropbox checkpoints on download failure by @Zhi-Xiang-Guo in https://github.com/infiniflow/ragflow/pull/21809\r\n* fix(api): keep the datasets API error response body shape by @simpleqt in https://github.com/infiniflow/ragflow/pull/21831\r\n* perf(web): virtualize chat message lists by @dcc123456 in https://github.com/infiniflow/ragflow/pull/21790\r\n* CI: add check for ASCII, disallow none ASCII code check-in by @wangq8 in https://github.com/infiniflow/ragflow/pull/21784\r\n* fix(anthropic): support struct json schema in tool parameters by @Sanderhoff-alt in https://github.com/infiniflow/ragflow/pull/21638\r\n* feat(parser): hand off Markdown and HTML remote images as media refs by @jay77721 in https://github.com/infiniflow/ragflow/pull/21764\r\n* fix(paddleocr): handle submit request creation errors by @QAQadws in https://github.com/infiniflow/ragflow/pull/21839\r\n* fix(deepdoc): add cgo constraints to native configuration tests by @QAQadws in https://github.com/infiniflow/ragflow/pull/21837\r\n* fix: SoMark web page is missing by @fenglingxiansheng in https://github.com/infiniflow/ragflow/pull/21710\r\n* fix(agent): clamp dataset navigation max_docs to the default budget by @flyingwhit in https://github.com/infiniflow/ragflow/pull/21755\r\n* feat(admin): add user search, status filtering, sorting, and CLI pagination by @QAQadws in https://github.com/infiniflow/ragflow/pull/21729\r\n* feat(chat): add AnySearch web search provider by @GunaPalanivel in https://github.com/infiniflow/ragflow/pull/20633\r\n* refa: consolidate model access and tenant defaults by @buua436 in https://github.com/infiniflow/ragflow/pull/21740\r\n* fix(ingestion): stop MinerU JSON path from inlining zip figure bytes by @Souravrajvi0 in https://github.com/infiniflow/ragflow/pull/21803\r\n* fix(tool): cap tool HTTP response bodies at 4 MiB in arxiv, querit, duckduckgo and yahoo_finance by @flyingwhit in https://github.com/infiniflow/ragflow/pull/21769\r\n* fix(models): publish the provider catalog through an atomic pointer and drop the dao-side cache so concurrent readers and publishers no longer race by @flyingwhit in https://github.com/infiniflow/ragflow/pull/21749\r\n* fix(agent): resolve DeepL and QWeather credentials from node config or DEEPL_API_KEY/QWEATHER_API_KEY instead of model-visible params by @flyingwhit in https://github.com/infiniflow/ragflow/pull/21735\r\n* fix(dify): keep retrieval unscoped when metadata conditions are empty by @MoonPointer-Byte in https://github.com/infiniflow/ragflow/pull/21766\r\n* test(retrieval) : add unit tests for retrieval and reranker by @zzy1017-crypto in h",
+          "summary": "RAGFlow v1.0.0 是一次以功能扩展、解析与模型稳定性修复为主的版本发布。\n\n**主要变更**\n- 新增 Wally 模型提供商和 AnySearch 网页搜索提供商，扩展模型与搜索接入。\n- 新增 Vastbase G100 作为 Go 侧元数据库支持，并补充文件 API 审计钩子和日志钩子。\n- 管理端增加用户搜索、状态筛选、排序和 CLI 分页；聊天消息列表改为虚拟化以提升性能。\n- 解析侧支持将 Markdown/HTML 远程图片作为媒体引用处理，并修复 PDF 目录引导线混入正文、PDF 子分块互相覆盖、MinerU JSON 内联压缩包图片字节等问题。\n- 模型与工具侧修复 Anthropic 工具参数结构 JSON Schema、模型请求上下文取消、模型目录并发发布竞态，以及 DeepL/QWeather 凭据从节点配置或环境变量读取。\n- 其他修复包括 Dropbox 下载失败保留检查点、datasets API 错误响应体结构、PaddleOCR 提交请求错误处理、工具 HTTP 响应体限制 4 MiB、Dify 空元数据条件保持检索不限定范围等。\n\n**破坏性变更**\n- 发布说明未明确标注破坏性变更。\n\n**升级建议**\n- 本次包含较多功能新增和稳定性修复，涉及解析、模型接入、管理端与工具调用的用户建议升级；升级前仍应结合自身部署的元数据库、模型提供商和解析流程做回归验证。",
+          "summarySource": "model"
+        },
+        {
+          "id": 202195868,
+          "tag": "nightly",
+          "name": "nightly",
+          "kind": "release",
+          "publishedAt": "2025-12-01T13:17:42Z",
+          "url": "https://github.com/infiniflow/ragflow/releases/tag/nightly",
+          "prerelease": true,
+          "draft": false,
+          "bodyExcerpt": "Release nightly created from 3c6d2255af06164f0818d0959af10de0afd8b8fa at 2026-11-06 13:15:23+00:00\n",
+          "summary": "本版本为 nightly 构建，未提供变更说明，无法判断具体内容。\n\n**主要变更**\n- 版本说明仅记录该 nightly 由提交 3c6d2255af06164f0818d0959af10de0afd8b8fa 构建生成。\n- 未列出任何新增功能、改进或缺陷修复条目。\n\n**破坏性变更**\n- 说明中未提及破坏性变更，但因缺少变更清单，无法确认是否存在不兼容调整。\n\n**升级建议**\n- 该版本为夜间构建，且无变更说明可供评估；不建议在生产环境直接升级。\n- 如需采用，建议先核对对应提交的代码差异并在测试环境验证。",
+          "summarySource": "model"
+        },
+        {
+          "id": 428974489,
+          "tag": "v1.0.0-rc3",
+          "name": "v1.0.0-rc3",
+          "kind": "release",
+          "publishedAt": "2026-10-30T11:53:15Z",
+          "url": "https://github.com/infiniflow/ragflow/releases/tag/v1.0.0-rc3",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "1.0.0-rc3 is the third and final release candidate before the official v1.0.0 release. It fixes several issues found in rc2 and introduces new features and enhancements.\r\n\r\n## Key updates:\r\n1. Introduced the decision model for evidence sufficiency judgment within the agentic tool loop, and the Categorize component for agents.\r\n2. Added support for multiple versions of ingestion pipeline DSL.\r\n3. Chat history now stores and displays prompts, token usage, and execution time.\r\n4. Compatible with existing v1.0.0-rc2 schema, allowing a direct upgrade.\r\n\r\n\r\n## What's Changed\r\n* Fix: An additional retrieval node has appeared in the agent created using the CAJAL Scientific Paper Assistant template. by @cike8899 in https://github.com/infiniflow/ragflow/pull/21079\r\n* fix(agent): preserve and resolve webhook header fields by @T1mn in https://github.com/infiniflow/ragflow/pull/20696\r\n* fix(agent): migrate chunk_summary and title_chunker templates to modular Extractor params by @12britz in https://github.com/infiniflow/ragflow/pull/20754\r\n* fix(s3): honor signature_version and addressing_style for S3-compatible stores by @yaoper in https://github.com/infiniflow/ragflow/pull/20815\r\n* fix(agent): retain webhook completion across incremental polls by @T1mn in https://github.com/infiniflow/ragflow/pull/20697\r\n* fix(mcp): return a private cacheScope from tools/list by @leilei3167 in https://github.com/infiniflow/ragflow/pull/20539\r\n* Fix: The quoted content in agent messages is not displayed correctly. by @cike8899 in https://github.com/infiniflow/ragflow/pull/21070\r\n* fix: use id and kb_id when deleting dataset metadata by @aniketkrs in https://github.com/infiniflow/ragflow/pull/20880\r\n* feat(go): complete the Mistral /v1/ocr client and list mistral-ocr-latest as an ocr model by @Xavierando in https://github.com/infiniflow/ragflow/pull/20531\r\n* fix: expose compile_kwd in dataset search results by @liang0417 in https://github.com/infiniflow/ragflow/pull/20859\r\n* fix(chunker): keep structured tables and images in the title family by @jay77721 in https://github.com/infiniflow/ragflow/pull/21040\r\n* Fix: Error related to the 'UserFillUpForm' type by @cike8899 in https://github.com/infiniflow/ragflow/pull/21062\r\n* Test:migrate router contracts api by @flyingwhit in https://github.com/infiniflow/ragflow/pull/21046\r\n* Test:migrate langfuse routes api by @flyingwhit in https://github.com/infiniflow/ragflow/pull/21050\r\n* fix(metadata): preserve string arrays in in-memory filters by @QAQadws in https://github.com/infiniflow/ragflow/pull/21065\r\n* ci(tests): run migrated Go API tests by @6ba3i in https://github.com/infiniflow/ragflow/pull/21077\r\n* Support jev model interface, part1 by @JinHai-CN in https://github.com/infiniflow/ragflow/pull/21087\r\n* fix(kvrocks): propagate SetNX errors by @eleven914 in https://github.com/infiniflow/ragflow/pull/20746\r\n* refactor(parser): introduce typed Position API for DocItem positions by @xugangqiang in https://github.com/infiniflow/ragflow/pull/21049\r\n* Remove RowsToHTML; render PDF tables via canonical RenderTableHTML by @xugangqiang in https://github.com/infiniflow/ragflow/pull/21083\r\n* feat(parser): extract SVG text in Go picture ingestion by @errmakov in https://github.com/infiniflow/ragflow/pull/20523\r\n* fix(agent): bound the self-managed error body drain by @Tong-bit-art in https://github.com/infiniflow/ragflow/pull/21058\r\n* test(api): migrate and improve search API tests, make the Go API suite self-sufficient by @qinling0210 in https://github.com/infiniflow/ragflow/pull/21086\r\n* fix(ingestion): document and validate extractor timeout env by @jay77721 in https://github.com/infiniflow/ragflow/pull/21119\r\n* Add more server types by @JinHai-CN in https://github.com/infiniflow/ragflow/pull/21127\r\n* feat: migrate permission schema fields by @buua436 in https://github.com/infiniflow/ragflow/pull/21085\r\n* Add token usage for agentic rag by @yingfeng in https://github.com/infiniflow/ragflow/pull/21134\r\n* feat(pipeline): ",
+          "summary": "v1.0.0-rc3 是 v1.0.0 正式版前的第三个也是最后一个候选版本，在修复 rc2 问题的同时补充了新的 Agent 能力与管道兼容性。\n\n**主要变更**\n- 为 Agent 工具循环引入用于判断证据是否充分的决策模型，并新增 Categorize 组件。\n- 摄入管道 DSL 支持多个版本。\n- 聊天历史现在会存储并展示提示词、token 使用量与执行时间。\n- Go 侧补全 Mistral /v1/ocr 客户端，并将 mistral-ocr-latest 列为 OCR 模型。\n- 解析器引入类型化的 DocItem Position API，图片摄入支持抽取 SVG 文本。\n- 其他增强包括权限 schema 字段迁移、agentic RAG 的 token 使用统计等。\n\n**主要修复**\n- 修复使用 CAJAL 科学论文助手模板创建的 Agent 多出检索节点的问题。\n- 修复 Agent webhook 头字段的保留与解析，以及增量轮询下 webhook 完成状态的保留。\n- 修复 Agent 消息中引用内容显示不正确的问题，以及 UserFillUpForm 类型相关报错。\n- 修复 S3 兼容存储未遵循 signature_version 与 addressing_style 的问题。\n- 修复 MCP tools/list 未返回私有 cacheScope、按 id 与 kb_id 删除数据集元数据、数据集搜索结果未暴露 compile_kwd 等问题。\n- 修复 chunker 在 title 家族中未保留结构化表格和图片、内存过滤未保留字符串数组、kvrocks 未传播 SetNX 错误等问题。\n- 统一 PDF 表格渲染路径，移除 RowsToHTML，改用 RenderTableHTML；并补充摄入提取器超时环境变量的文档与校验。\n\n**破坏性变更**\n- 说明中未提及破坏性变更，且明确兼容 v1.0.0-rc2 schema。\n\n**升级建议**\n- 已使用 rc2 的环境可直接升级，无需迁移。\n- 作为正式版前最后一个候选版本，建议在升级前于测试环境验证 Agent、摄入管道与聊天历史相关功能。",
+          "summarySource": "model"
+        }
+      ]
+    },
     {
       "fullName": "deepseek-ai/deepseek-harness",
       "url": "https://github.com/deepseek-ai/deepseek-harness",
@@ -16,7 +65,6 @@
       "newCount": 1,
       "periodStart": "2026-11-02",
       "periodEnd": "2026-11-08",
-      "summaryZh": "本周发布 1 个版本 dsh-v0.2.2-rc.1，它是 0.2.2 系列的首个候选版本，主要涉及移动端体验、插件生态、实验性工作流和稳定性修复。\n\n**主要变更**\n- 完善手机和平板适配，优化软键盘、导航与窄屏布局；新增聊天文本引用、历史会话复制为 Markdown、统一右键与键盘菜单、文件预览目录树等交互能力。\n- 插件管理支持富文本详情、第三方插件包更新；热更新失败时会尝试恢复旧版本。另新增日语、西班牙语、法语、德语、俄语和巴西葡萄牙语文案。\n- 新增多项实验性能力：subagent_oar 工具可将独立任务交给本机 Codex 或 Claude CLI；新增个性化推荐、开发者工具统计插件；新增变更请求与 Git 工作树差异审阅流程。\n\n**修复与优化**\n- 改进会话发送确认、草稿保留、图片上传、侧栏与标签操作、运行状态展示，以及模型选择与排序等体验。\n- 修复 AGENTS.md 预算分配、切换小上下文模型前压缩历史、Gemini 兼容接口工具调用签名、系统提示词缓存复用、图片数量超限、权限策略被意外改为完全访问、OpenCode 路由自动审核失败、后台任务等待与插话、技能目录读取失败等问题。\n- 优化远程连接 WebSocket 压缩、Web 静态资源 ETag 缓存、会话状态更新和长回复流式组装开销，并改善 macOS Computer Use 权限引导。\n\n**破坏性变更**\n- 版本说明未提及破坏性变更，但该版本为候选版本，仍需按预发布版本对待。\n\n**升级建议**\n- 希望测试移动端、插件管理、工作树差异审阅和统计能力的用户可以试用；生产环境建议等待正式版，并重点验证插件热更新回滚、权限策略、长会话恢复和第三方模型兼容性。",
       "releases": [
         {
           "id": 433935433,

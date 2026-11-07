@@ -2,13 +2,62 @@
   "schema": 2,
   "date": "2026-11-08",
   "period": "weekly",
-  "contentHash": "sha256:05d4f02cf12f2e3b6a851ab2e2b1ab34e9c80fbf8e8d0bdade94de777c534ba7",
+  "contentHash": "sha256:f92e80ec91496ebb5c7aaeadc3b11b346e2864ca2f8fef29c80357a678b345b6",
   "contentHashAlgo": "jcs-sha256-v1",
-  "coreVersion": "0.12.0",
-  "generatedAt": "2026-11-06T17:16:42.443302Z",
-  "count": 4,
+  "coreVersion": "0.12.2",
+  "generatedAt": "2026-11-07T00:31:20.012266Z",
+  "count": 7,
   "degraded": false,
   "repos": [
+    {
+      "fullName": "morehao/dsh-github-trending",
+      "url": "https://github.com/morehao/dsh-github-trending",
+      "latestTag": "v0.9.14",
+      "newCount": 3,
+      "periodStart": "2026-11-02",
+      "periodEnd": "2026-11-08",
+      "releases": [
+        {
+          "id": 437199054,
+          "tag": "v0.9.14",
+          "name": "v0.9.14",
+          "kind": "release",
+          "publishedAt": "2026-11-07T00:09:11Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.14",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n核心版本前移到 0.12.2，带上游两个发版订阅修复。\n\n### 改进\n\n- **core**：`dsh.core.version` 0.12.0 → 0.12.2。首次运行自动下载并校验 0.12.2，包含「订阅仓库的变更分析因 legacy 游标被滚动 tag 卡死而从不落盘」与「补发改按发布日期选取、滚动预发布不再混入」两个修复；最低核心要求仍为 0.12.0\n- **docs**：`docs/reference.md` 同步到 0.9.14\n\n\u003e 原文层中的 `#152`（可配置摘要输出语言）属于 v0.9.13 已发布内容；v0.9.13 的 tag 提交不在 `main` 的提交历史上，自动汇总会重复列出。\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Features\n\n- **settings**: configurable summary output language (#152)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.13...v0.9.14\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.14 是一次以核心版本前移为主的小版本，自身功能无新增，主要把内置核心升级到 0.12.2 并同步文档。\n\n**主要变更**\n- 核心版本 dsh.core.version 由 0.12.0 提升到 0.12.2；首次运行会自动下载并校验 0.12.2，最低核心要求仍保持 0.12.0 不变。\n- 随 0.12.2 带入上游两个发版订阅相关修复：一是订阅仓库的变更分析此前因 legacy 游标被滚动 tag 卡住而从不落盘，现已修复；二是补发改按发布日期选取，滚动预发布不再混入。\n- 文档 docs/reference.md 同步更新到 0.9.14。\n- 自动生成的变更记录中出现的「可配置摘要输出语言」（#152）属于 v0.9.13 已发布内容，因该版本 tag 提交不在 main 历史中而被自动汇总重复列出，并非本版新增。\n\n**破坏性变更**\n- 未提及破坏性变更；最低核心版本要求未提高，仍为 0.12.0。\n\n**升级建议**\n- 若正受订阅仓库变更分析不落盘、或补发结果混入滚动预发布的问题影响，建议升级；其余用户升级风险较低，属常规跟进版本。",
+          "summarySource": "model"
+        },
+        {
+          "id": 436711685,
+          "tag": "v0.9.13",
+          "name": "v0.9.13",
+          "kind": "release",
+          "publishedAt": "2026-11-06T16:07:44Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.13",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "新增「摘要语言」设置：日报 / 订阅摘要的输出语言不再固定中文。默认跟随宿主 locale（`zh`→中文、`en`→英文，中英之外一律回落中文），也可在「设置 → 摘要与用量」显式选中文 / English。\n\n- **摘要语言**：`settings.outputLanguage`（`''`=跟随宿主）。解析顺序「显式设置 \u003e 宿主 locale.preference（归一主标签）\u003e 中文兜底」，每次运行现读宿主偏好；运行时写入核心 YAML `language.outputLanguage`。设置页新增下拉，`/state` 增 `language:{hostLanguage,resolvedLanguage,outputLanguageSource}`。\n- **AC-P-14**：显式 en 端到端产出英文摘要；默认跟随宿主回落中文。\n\n- **核心**：最低版本 0.12.0（低于判 `CORE_INCOMPATIBLE` 并给下载引导）；核心 0.12.0 起支持 `language.outputLanguage` 与 `digest.summary`/`summaryLang`。\n- **契约**：`@morehao/trendradar-contract` 升级到 0.7.0（wire `ipcSchema=4` / `digestSchema=3` / `contractVersion=0.7.0`）；摘要字段 `summaryZh` → `summary` + `summaryLang`。\n- 顺带修正：「榜单(scope)」tab 内 summarize/schedule 编辑不持久化的问题。\n",
+          "summary": "v0.9.13 主要新增了可配置的「摘要语言」，同时把核心与契约的配套版本要求一起抬高。\n\n**主要变更**\n- 新增「摘要语言」设置：日报与订阅摘要的输出语言不再固定为中文。默认跟随宿主 locale（zh 输出中文、en 输出英文，中英之外一律回落中文），也可在「设置 → 摘要与用量」里显式选择中文或 English。\n- 语言解析顺序为「显式设置 \u003e 宿主 locale.preference（归一主标签）\u003e 中文兜底」，每次运行实时读取宿主偏好，并在运行时写入核心 YAML 的 language.outputLanguage。\n- 设置页新增语言下拉项；/state 新增 language 信息，包含 hostLanguage、resolvedLanguage、outputLanguageSource。\n- 修复「榜单(scope)」tab 内 summarize / schedule 编辑不持久化的问题。\n\n**破坏性变更**\n- 核心最低版本提升至 0.12.0，低于该版本会判定为 CORE_INCOMPATIBLE 并给出下载引导；核心 0.12.0 起才支持 language.outputLanguage 与 digest.summary / summaryLang。\n- 契约包 @morehao/trendradar-contract 升级到 0.7.0，wire 层为 ipcSchema=4、digestSchema=3、contractVersion=0.7.0；摘要字段由 summaryZh 改为 summary 加 summaryLang，消费旧字段的下游需要同步适配。\n\n**升级建议**\n- 升级本版本时需同时把核心升到 0.12.0 及以上，并按契约 0.7.0 调整摘要字段的读取逻辑，否则可能遇到不兼容判定或字段缺失。\n- 有英文摘要需求、或受 scope tab 编辑不持久化影响的用户值得升级；纯中文场景且下游尚未适配新契约的，可等核心与消费方一并就绪后再升。",
+          "summarySource": "model"
+        },
+        {
+          "id": 436615793,
+          "tag": "v0.9.12",
+          "name": "v0.9.12",
+          "kind": "release",
+          "publishedAt": "2026-11-06T14:44:53Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.12",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n修复发版注记正文的组装缺陷，并以 0.9.12 重新发版补齐 Release。\n\n### 修复\n- **release**：新增 `make-tag-notes.mjs`，打 tag 前组装并校验注记正文（首行 `release: \u003ctag\u003e`、正文非空、拒绝把文件路径当正文），与 `release-notes.mjs` 互为镜像，并纳入 `npm run check`；避免注记正文出错要等 CI 失败才发现、而 tag 已不可改（#151）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Fixes\n\n- **release**: add validated tag-notes assembler and bump to 0.9.12 (#151)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.11...v0.9.12\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.12 是一个修复发行流程缺陷的补丁版本：它修复了发版注记正文的组装问题，并重新发布以补齐 Release。\n\n**主要变更**\n- 新增 `make-tag-notes.mjs`，在打 tag 前组装并校验注记正文，检查三项：首行为 `release: `、正文非空、拒绝把文件路径当作正文。\n- 该脚本与 `release-notes.mjs` 互为镜像，并纳入 `npm run check`，从而在本地阶段就能发现注记正文错误。\n- 解决了过去要等 CI 失败才发现问题、而 tag 已不可更改的痛点（#151）。\n\n**破坏性变更**\n- 说明中未提及任何破坏性变更，属于内部发版工具链与校验流程的调整。\n\n**升级建议**\n- 对使用者无 API 或功能影响，无需强制升级；若你关注发版流程的可靠性，可跟进此版本。",
+          "summarySource": "model"
+        }
+      ]
+    },
     {
       "fullName": "infiniflow/ragflow",
       "url": "https://github.com/infiniflow/ragflow",

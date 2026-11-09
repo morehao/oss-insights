@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "date": "2026-11-15",
+  "period": "weekly",
+  "contentHash": "sha256:cac29d9d42b71026191a65df6186332080ebf642b335fa06ab56b6de0e2465e8",
+  "contentHashAlgo": "jcs-sha256-v1",
+  "coreVersion": "0.12.3",
+  "generatedAt": "2026-11-09T00:16:39.460726Z",
+  "count": 1,
+  "degraded": false,
+  "repos": [
+    {
+      "fullName": "morehao/dsh-github-trending",
+      "url": "https://github.com/morehao/dsh-github-trending",
+      "latestTag": "v0.9.15",
+      "newCount": 1,
+      "periodStart": "2026-11-02",
+      "periodEnd": "2026-11-08",
+      "releases": [
+        {
+          "id": 437264787,
+          "tag": "v0.9.15",
+          "name": "v0.9.15",
+          "kind": "release",
+          "publishedAt": "2026-11-07T02:22:03Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.15",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n核心版本前移到 0.12.3。\n\n### 改进\n\n- **core**：`dsh.core.version` 0.12.2 → 0.12.3。首次运行自动下载并校验 0.12.3，包含「多周补发的发版文档改按最新版本所在周标注周段」修复；最低核心要求仍为 0.12.0\n- **docs**：`docs/reference.md` 同步到 0.9.15\n",
+          "summary": "v0.9.15 是一次小版本更新，主要将核心版本提升至 0.12.3，并同步文档。\n\n**主要变更**\n- **core**：核心版本由 0.12.2 升至 0.12.3；首次运行会自动下载并校验 0.12.3。\n- 该核心版本包含一项修复：多周补发的发版文档，改为按最新版本所在周标注周段。\n- **docs**：docs/reference.md 已同步到 0.9.15。\n\n**破坏性变更**\n- 无。最低核心要求仍为 0.12.0，未提高门槛。\n\n**升级建议**\n- 属于低风险的小幅更新，建议升级；若在意发版文档的周段标注准确性，可优先更新。升级后首次运行会触发核心的自动下载与校验。",
+          "summarySource": "model"
+        }
+      ]
+    }
+  ]
+}

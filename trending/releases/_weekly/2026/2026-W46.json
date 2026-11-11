@@ -2,13 +2,36 @@
   "schema": 2,
   "date": "2026-11-15",
   "period": "weekly",
-  "contentHash": "sha256:cac29d9d42b71026191a65df6186332080ebf642b335fa06ab56b6de0e2465e8",
+  "contentHash": "sha256:a57a237ba0782d8bf90215279fe337458e4901468ba61666eb6ff1aa7f30549c",
   "contentHashAlgo": "jcs-sha256-v1",
-  "coreVersion": "0.12.3",
-  "generatedAt": "2026-11-09T00:16:39.460726Z",
-  "count": 1,
+  "coreVersion": "0.12.4",
+  "generatedAt": "2026-11-11T10:40:49.882491Z",
+  "count": 2,
   "degraded": false,
   "repos": [
+    {
+      "fullName": "infiniflow/ragflow",
+      "url": "https://github.com/infiniflow/ragflow",
+      "latestTag": "nightly",
+      "newCount": 1,
+      "periodStart": "2025-12-01",
+      "periodEnd": "2025-12-07",
+      "releases": [
+        {
+          "id": 202195868,
+          "tag": "nightly",
+          "name": "nightly",
+          "kind": "release",
+          "publishedAt": "2025-12-01T13:17:42Z",
+          "url": "https://github.com/infiniflow/ragflow/releases/tag/nightly",
+          "prerelease": true,
+          "draft": false,
+          "bodyExcerpt": "Release nightly created from b65b7ec3ece1a52ae71f1d967b9142fa90fa8383 at 2026-11-10 13:14:33+00:00\n",
+          "summary": "该 nightly 版本未提供具体变更说明，仅标注为基于提交 b65b7ec3 构建的每日快照。\n\n**主要变更**\n- 说明中未列出任何新增功能、修复或优化内容，因此无法判断实际改动范围。\n- 除构建来源和构建时间外，没有可供核对的细节信息。\n\n**破坏性变更**\n- 未提供相关信息，因此无法确认是否存在不兼容改动。\n\n**升级建议**\n- 信息不足，暂时无法评估升级收益与风险。\n- 该版本属于 nightly 构建，稳定性没有保证，不建议用于生产环境；建议等正式版本发布，或直接查看对应提交记录后再决定是否升级。",
+          "summarySource": "model"
+        }
+      ]
+    },
     {
       "fullName": "morehao/dsh-github-trending",
       "url": "https://github.com/morehao/dsh-github-trending",

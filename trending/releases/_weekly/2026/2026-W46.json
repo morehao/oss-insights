@@ -2,13 +2,98 @@
   "schema": 2,
   "date": "2026-11-15",
   "period": "weekly",
-  "contentHash": "sha256:a57a237ba0782d8bf90215279fe337458e4901468ba61666eb6ff1aa7f30549c",
+  "contentHash": "sha256:27c9ef99799887c8e0fe438f44673ffd18ffe0acc6b86ac65304359e80c76ef4",
   "contentHashAlgo": "jcs-sha256-v1",
-  "coreVersion": "0.12.4",
-  "generatedAt": "2026-11-11T10:40:49.882491Z",
-  "count": 2,
+  "coreVersion": "0.12.5",
+  "generatedAt": "2026-11-12T03:20:25.118173Z",
+  "count": 6,
   "degraded": false,
   "repos": [
+    {
+      "fullName": "deepseek-ai/deepseek-harness",
+      "url": "https://github.com/deepseek-ai/deepseek-harness",
+      "latestTag": "dsh-v0.2.2-rc.2",
+      "newCount": 1,
+      "periodStart": "2026-11-09",
+      "periodEnd": "2026-11-15",
+      "releases": [
+        {
+          "id": 441607356,
+          "tag": "dsh-v0.2.2-rc.2",
+          "name": "v0.2.2-rc.2",
+          "kind": "release",
+          "publishedAt": "2026-11-11T11:33:06Z",
+          "url": "https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.2",
+          "prerelease": true,
+          "draft": false,
+          "bodyExcerpt": "[中文](#cn-v0.2.2-rc.2) | [English](#en-v0.2.2-rc.2)\r\n\r\n\u003ch3 id=\"cn-v0.2.2-rc.2\"\u003e新增功能\u003c/h3\u003e\r\n\r\n- Git Worktree 支持按分支、提交和文件类型审阅改动，并直接处理 GitHub 评审、同步已审阅进度和更新分支。 @LegGasai\r\n- SubAgent 支持具名与多层协作，AgentTeam 可按会话开启，共用成员与任务面板。 @Dudu-0223, @Yifffan\r\n- 桌面端支持在设置中切换正式版与开发版更新渠道。 @winewill\r\n\r\n### 体验优化\r\n\r\n- 改善代码审阅时的评论、文件导航与窄屏布局，减少查看大型改动时的卡顿，并放宽大型仓库创建工作树的等待时间。 @LegGasai\r\n- 改善多层子代理的浏览与任务协调，优先展示任务描述，支持逐层展开和读取失败后重试。 @Dudu-0223\r\n- 优化左侧栏插件入口的收纳，不常用入口可移入“更多”，重新固定时保持原顺序。 @Yifffan\r\n- 简化个性化页面安装后的操作，移除“保留”按钮，统一使用撤销与恢复。 @ZiyaZhang\r\n- 改善自定义主题对通知、卡片、计划和任务等界面颜色的覆盖。 @turtle2099\r\n- 改善页面缩放、平移及长列表场景下的菜单定位，保持菜单与触发位置对齐；自定义浮层需适配新定位接口。 @Stevring, @LegGasai\r\n- 改善暗色模式下文件树浮层的显示，使用背景层次区分面板，避免白色投影。 @turtle2099\r\n- 改善在侧栏查找文件的体验，支持按名称或路径搜索，并可调整排除规则与隐藏文件显示。 @yudshj\r\n- 改善侧栏长列表的浏览与拖动体验，插件导航和会话列表共用滚动区域，工作区工具栏保持可见。 @Yifffan\r\n- 优化从会话打开工作目录的操作，统一“在应用中打开”菜单，并改善窄屏使用体验。 @Yifffan\r\n- 加快文件右键菜单的打开；关联应用查询较慢时，先提供默认应用入口。 @yudshj\r\n- 向上回看聊天时自动加载更早消息，优先保持阅读位置，并保留手动加载和重试入口。 @imccyu\r\n- 改善聊天过程的可查看性，可展开工作区指令、技能目录等信息，了解模型收到的上下文。 @turtle2099\r\n- 改善补丁编辑的回执，折叠状态下也可查看修改的文件，并在成功后直接打开。 @sjw1231\r\n- 优化会话首页的交互动画。 @ZiyaZhang\r\n- 改善会话恢复或压缩后的上下文提示，明确当前运行信息与旧信息的替换关系。 @kermanx\r\n- 改善聊天中代码差异的阅读，显示增删行颜色，并按文件语言高亮。 @mektpoy\r\n- 改善粘贴图片和文件的体验，未聚焦输入框时也可粘贴到最近使用的可用输入框或主对话。 @std4453\r\n- 改善暂停、恢复定时任务时的操作反馈，保持按钮焦点与显示稳定，避免重复操作。 @turtle2099\r\n- 优化目标栏的操作排列与按钮间距，统一为“编辑、清除、暂停或恢复”。 @turtle2099\r\n- 优化模型请求失败后的重试设置，可在模型设置中选择重试条件、次数和等待时间。 @turtle2099\r\n- 改善临时请求失败后的恢复操作，可直接点击“继续生成”，无需另写消息。 @LegGasai\r\n- 改善 API Key 的管理，已保存密钥以掩码显示，支持整体替换或清除，不显示完整旧密钥。 @Magolor\r\n- 优化多问题检索，单次网页搜索默认支持最多 10 个查询和 10 个来源。 @turtle2099\r\n- 改善 Agent 终端的可见性与接管体验，命令在侧栏终端运行，用户输入即可接管；允许读取的用户终端内容会进入模型与会话记录。 @LegGasai\r\n- 优化批量查询文件、任务和资源时的执行效率，更多只读工具可并行运行，结果仍按调用顺序返回。 @turtle2099\r\n- 改善桌面更新下载时的进度显示，可点击下载百分比或“检查更新”查看状态。 @winewill\r\n\r\n### 问题修复\r\n\r\n- 修复 PR 更新后审阅差异与提交行号不一致的问题，并改善大量评审讨论的统计。 @LegGasai\r\n- 修复只有 SSH 凭据时无法查看私有 Git 插件详情的问题。 @turtle2099\r\n- 修复可选插件加载失败导致整个 Web 页面无法启动的问题；必需插件失败仍会提示。 @imccyu\r\n- 修复已启用但未成功加载的插件容易被误认为正在运行的问题，明确显示“未运行”及原因。 @turtle1999\r\n- 修复 PTC 中重复等待子代理消息时，同一条消息反复触发唤醒的问题。 @Dudu-0223\r\n- 修复浏览特殊文件名或扩展名时，文件树视图崩溃的问题。 @LegGasai\r\n- 修复“未分组”会话中显示无效“新建会话”按钮的问题。 @turtle2099\r\n- 修复复制聊天公式时出现乱码的问题，同一条 Markdown 内容中的公式可复制为 TeX 源码。 @turtle2099\r\n- 修复查看 Perl 代码时，正则表达式导致后续内容高亮错误的问题。 @turtle2099\r\n- 修复聊天更新出错后，历史加载和新消息显示持续卡住的问题。 @Magolor\r\n- 改善重复创建会话分支时的标题编号，跳过已用编号，减少同名会话。 @turtle2099\r\n- 修复停止任务或关闭会话时，部分错误导致任务未中止或资源提前释放的问题。 @liukx0205\r\n- 修复发送消息或准备附件期间重试请求，导致同一消息被重复提交的问题。 @liukx0205\r\n- 修复中文目标栏混淆“待继续”与“已暂停”状态的问题。 @imccyu\r\n- 修复桌面端多次启动后，因鉴权信息累积而无法启动的问题。 @turtle2099\r\n- 修复 Windows 通过短路径启动命令行时，无法保存欢迎页确认的问题。 @winewill\r\n- 修复 macOS 窗口拖动与粘贴快捷键问题，以及 Windows 暗色模式启动白闪。 @yxy72, @winewill, @turtle2099\r\n- 改善 Windows 更新安装期间的反馈，显示安装状态窗口，减少重启过程中的无提示等待。 @winewill\r\n- 修复移动端 Safari 在展开屏幕或切换视口后，聊天文字被额外放大的问题，保留用户主动缩放。 @Saafo\r\n- 修复 Linux 存在长期后台进程时，会话加载与新建变慢的问题。 @turtle2099\r\n- 修复会话中移除或替换工具后，部分模型拒绝继续请求的问题。 @Tuyixiang\r\n- 通过 Anthropic Messages 接入时，历史前缀变化后省略失效的签名 thinking，减少压缩后持续请求失败。 @turtle2099\r\n- 修复部分模型网关错误被误报为“API 密钥无效”的问题，使重试按实际响应状态处理。 @LegGasai\r\n- 修复在 DSH 用户目录中配置 DeepSeek 端点后无法启动的问题；项目目录中的环境配置仍不能覆盖端点。 @LegGasai\r\n- 修复连续浏览多页 PDF 时加载越来越慢、快速翻页卡顿的问题。 @turtle2099\r\n- 修复使用 Inspector 查看较大的 Cordis 树时，快照接近上限可能导致服务退出的问题。 @turtle2099\r\n\r\n### 其他变更\r\n\r\n- 网页搜索默认改用 DeepSeek Search API，搜索与获取可分别选择计费账号或 API Key；旧提供方和自定义配置需按升级指南调整。 @yudshj\r\n- 归档会话默认清理符合条件的 Git 工作树，保留分支与提交；需保留本地目录时请关闭清理，自定义配置与 Forge 插件需迁移。 @LegGasai\r\n- AgentTeam 改用统一的具名子代理，中断工具默认关闭；自定义插件与 SDK 集成需迁移，共享会话的进程须同步升级。 @Dudu-0223\r\n- SDK 可通过配置为新会话默认开启团队协作，恢复已有会话时保留原选择。 @Dudu-0223\r\n- 允许插件动态注册和移除 MCP 服务，并查询状态、重启或探测连接，无需用户逐项维护服务配置。 @LegGasai\r\n- 插件可按语言扩展聊天代码块的显示，未匹配或渲染失败时回退为普通代码块。 @imccyu\r\n- 插件索引可提供 GitHub Star 和 npm 周下载量，默认仍按索引提供的顺序排列。 @turtle1999\r\n- Creator 的开发指引统一到 dsh-doc，用于定制 DSH 并查阅当前版本资料；引用旧技能名称或路径的扩展需迁移。 @turtle1999\r\n- 自定义模型提供方支持 Gemini 原生接口，可获取模型列表并设置推理等级。 @turtle2099\r\n- 模型请求的 User-Agent 增加启动配置标记，便于服务端区分桌面端、Web、命令行与 SDK 请求。 @imccyu\r\n- 调整账号通知，支持产品公告等消息并随界面语言更新；已有登录保留，自定义账号插件与配置需迁移。 @lsdsjy\r\n- PTC 按运行时限限制工具调用总量，超限会终止代码并清空保留状态，已完成的操作不会撤销。 @kermanx\r\n- Session 支持批量追加事件，日志格式不变；自定义追加接口的包装代码需适配批量调用。 @liukx0205\r\n- 工具失败提供更明确的错误类型与代码，便于定位问题；依赖旧错误分类的插件和 SDK 集成需同步适配。 @sjw1231\r\n- 调整 Computer Use 的窗口",
+          "summary": "这是 dsh-v0.2.2 的候选版本，主要改进 Git Worktree 审阅、多层 SubAgent 协作、多项交互体验与稳定性修复；同时包含若干需要迁移适配的破坏性变更。\n\n**主要变更**\n- Git Worktree 支持按分支、提交和文件类型审阅改动，可直接处理 GitHub 评审、同步已审阅进度和更新分支。\n- SubAgent 支持具名与多层协作，AgentTeam 可按会话开启并共用成员与任务面板；SDK 可为新会话默认开启团队协作。\n- 桌面端可在设置中切换正式版与开发版更新渠道，并可通过下载百分比查看更新进度。\n- 聊天体验增强：向上回看自动加载更早消息、可展开查看模型收到的上下文、代码差异按语言高亮并显示增删行颜色、粘贴图片更灵活、请求失败后可直接继续生成。\n- 侧栏文件查找、菜单定位、暗色模式浮层、窄屏布局与长列表滚动等交互均有优化。\n- 插件可动态注册与移除 MCP 服务，并可按语言扩展代码块显示；新增 Gemini 原生接口与账号通知支持。\n\n**问题修复**\n- 修复 PR 更新后审阅差异与提交行号不一致、仅有 SSH 凭据时无法查看私有插件详情、可选插件加载失败导致整个 Web 页面无法启动等问题。\n- 修复会话更新出错后历史加载卡住、消息重复提交、停止任务未中止、桌面端多次启动后无法启动、连续浏览 PDF 逐渐变慢等稳定性问题。\n- 修复 Anthropic Messages 接入下失效签名 thinking、部分网关错误被误报为 API 密钥无效等问题。\n\n**破坏性变更与迁移**\n- 网页搜索默认改用 DeepSeek Search API，旧提供方与自定义配置需按升级指南调整。\n- 归档会话默认清理符合条件的 Git 工作树（保留分支与提交），自定义配置与 Forge 插件需迁移。\n- AgentTeam 改用统一的具名子代理，中断工具默认关闭；自定义插件与 SDK 集成需迁移，共享会话的进程须同步升级。\n- 自定义浮层需适配新的菜单定位接口；Creator 开发指引统一到 dsh-doc，引用旧技能名称或路径的扩展需迁移。\n- 工具失败的错误类型与代码有调整，依赖旧错误分类的插件和 SDK 集成需适配；Session 批量追加事件的包装代码也需适配。\n\n**升级建议**\n- 该版本为候选版且含多项迁移项，建议先在测试环境验证，并按升级指南完成搜索、工作树清理与 AgentTeam 相关配置迁移后再推广。",
+          "summarySource": "model"
+        }
+      ]
+    },
+    {
+      "fullName": "morehao/dsh-github-trending",
+      "url": "https://github.com/morehao/dsh-github-trending",
+      "latestTag": "v0.9.18",
+      "newCount": 4,
+      "periodStart": "2026-11-09",
+      "periodEnd": "2026-11-15",
+      "releases": [
+        {
+          "id": 442438543,
+          "tag": "v0.9.18",
+          "name": "v0.9.18",
+          "kind": "release",
+          "publishedAt": "2026-11-12T02:51:34Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.18",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n修正 observe 限流错误的归类与提示，并适配核心 v0.12.5 的抓取修复。\n\n### 修复\n- 错误归类：核心返回的 `403 / FETCH_RATE_LIMITED` 不再被误判为「模型限流」，改归为抓取限流；提示覆盖「已配 token 但核心抓取未携带」的情形（#162）\n- 适配核心 v0.12.5：observe/backfill 抓取携带 `GITHUB_TOKEN`，不再因匿名额度耗尽而 403、进而超时（#162）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Fixes\n\n- **errors**: observe 403 归类修正 + 适配核心 v0.12.5（0.9.18） (#162)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.17...v0.9.18\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.18 是一个以修复为主的小版本，重点修正 observe 的限流错误归类，并适配核心 v0.12.5 的抓取修复。\n\n**主要变更**\n- 错误归类修正：核心返回的 403 / FETCH_RATE_LIMITED 不再被误判为「模型限流」，改归为抓取限流，避免提示误导。\n- 提示补全：覆盖「已配置 token 但核心抓取未携带」的情形，便于定位限流来源。\n- 适配核心 v0.12.5：observe/backfill 抓取会携带 GITHUB_TOKEN，不再因匿名额度耗尽而 403、进而超时。\n\n**破坏性变更**\n- 未提及破坏性变更。\n\n**升级建议**\n- 建议使用 observe/backfill 或曾遇到 403 后超时问题的用户升级，并配合核心 v0.12.5 使用；其他用户可按需跟进。",
+          "summarySource": "model"
+        },
+        {
+          "id": 441414869,
+          "tag": "v0.9.17",
+          "name": "v0.9.17",
+          "kind": "release",
+          "publishedAt": "2026-11-11T08:33:14Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.17",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "run.timeoutMs 可配 + CORE_TIMEOUT 挂起归因；核心 0.12.3 → 0.12.4（修复核心忽略 HTTP(S)_PROXY 的根因，issue #155）。\n",
+          "summary": "v0.9.17 主要增加超时配置与挂起归因，并升级核心以修复代理环境变量被忽略的问题。\n\n**主要变更**\n- 支持配置 run.timeoutMs，便于按需调整运行超时。\n- 增加 CORE_TIMEOUT 挂起归因，帮助定位相关挂起问题。\n- 核心版本由 0.12.3 升级至 0.12.4，修复核心忽略 HTTP(S)_PROXY 的根因，对应 issue #155。\n\n**破坏性变更**\n- 说明中未提及破坏性变更。\n\n**升级建议**\n- 若需要超时配置、挂起归因，或受代理环境变量不生效问题影响，建议升级到 v0.9.17。",
+          "summarySource": "model"
+        },
+        {
+          "id": 441349789,
+          "tag": "v0.9.16",
+          "name": "v0.9.16",
+          "kind": "release",
+          "publishedAt": "2026-11-11T07:26:02Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.16",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n修复 `browse` 目录选择后端下「选择目录」按钮失效、`repo.path` 无从填写的问题。\n\n### 修复\n- 设置页「仓库路径」改为可直接输入（并用上已有的 placeholder），不再只有「选择目录」一个入口\n- 「选择目录」失败时给出可读提示，不再出现控制台未捕获异常、界面毫无反应\n- 探测到当前宿主不支持系统目录选择（browse 后端）时，按钮置灰并提示直接填写绝对路径\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Fixes\n\n- **settings**: make repo path editable and degrade directory picker on browse hosts (#158)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.15...v0.9.16\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.16 是一次针对设置页仓库路径填写体验的修复版本，重点解决 browse 目录选择后端下「选择目录」按钮失效、导致 repo.path 无法填写的问题。\n\n**主要变更**\n- 设置页「仓库路径」改为可直接输入，并启用了已有的 placeholder，不再只依赖「选择目录」一个入口。\n- 「选择目录」失败时会给出可读提示，避免此前控制台出现未捕获异常、界面毫无反应的情况。\n- 当探测到当前宿主不支持系统目录选择（browse 后端）时，按钮会置灰，并提示用户直接填写绝对路径。\n\n**破坏性变更**\n- 未提及破坏性变更，属于兼容性修复。\n\n**升级建议**\n- 若你使用 browse 目录选择后端，或曾遇到「选择目录」无效、无法填写仓库路径的问题，建议升级到该版本；改动范围集中在设置页交互与降级提示，风险较低。",
+          "summarySource": "model"
+        },
+        {
+          "id": 437264787,
+          "tag": "v0.9.15",
+          "name": "v0.9.15",
+          "kind": "release",
+          "publishedAt": "2026-11-07T02:22:03Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.15",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n核心版本前移到 0.12.3。\n\n### 改进\n\n- **core**：`dsh.core.version` 0.12.2 → 0.12.3。首次运行自动下载并校验 0.12.3，包含「多周补发的发版文档改按最新版本所在周标注周段」修复；最低核心要求仍为 0.12.0\n- **docs**：`docs/reference.md` 同步到 0.9.15\n",
+          "summary": "v0.9.15 是一次小版本更新，主要将核心版本提升至 0.12.3，并同步文档。\n\n**主要变更**\n- **core**：核心版本由 0.12.2 升至 0.12.3；首次运行会自动下载并校验 0.12.3。\n- 该核心版本包含一项修复：多周补发的发版文档，改为按最新版本所在周标注周段。\n- **docs**：docs/reference.md 已同步到 0.9.15。\n\n**破坏性变更**\n- 无。最低核心要求仍为 0.12.0，未提高门槛。\n\n**升级建议**\n- 属于低风险的小幅更新，建议升级；若在意发版文档的周段标注准确性，可优先更新。升级后首次运行会触发核心的自动下载与校验。",
+          "summarySource": "model"
+        }
+      ]
+    },
     {
       "fullName": "infiniflow/ragflow",
       "url": "https://github.com/infiniflow/ragflow",
@@ -28,29 +113,6 @@
           "draft": false,
           "bodyExcerpt": "Release nightly created from b65b7ec3ece1a52ae71f1d967b9142fa90fa8383 at 2026-11-10 13:14:33+00:00\n",
           "summary": "该 nightly 版本未提供具体变更说明，仅标注为基于提交 b65b7ec3 构建的每日快照。\n\n**主要变更**\n- 说明中未列出任何新增功能、修复或优化内容，因此无法判断实际改动范围。\n- 除构建来源和构建时间外，没有可供核对的细节信息。\n\n**破坏性变更**\n- 未提供相关信息，因此无法确认是否存在不兼容改动。\n\n**升级建议**\n- 信息不足，暂时无法评估升级收益与风险。\n- 该版本属于 nightly 构建，稳定性没有保证，不建议用于生产环境；建议等正式版本发布，或直接查看对应提交记录后再决定是否升级。",
-          "summarySource": "model"
-        }
-      ]
-    },
-    {
-      "fullName": "morehao/dsh-github-trending",
-      "url": "https://github.com/morehao/dsh-github-trending",
-      "latestTag": "v0.9.15",
-      "newCount": 1,
-      "periodStart": "2026-11-02",
-      "periodEnd": "2026-11-08",
-      "releases": [
-        {
-          "id": 437264787,
-          "tag": "v0.9.15",
-          "name": "v0.9.15",
-          "kind": "release",
-          "publishedAt": "2026-11-07T02:22:03Z",
-          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.15",
-          "prerelease": false,
-          "draft": false,
-          "bodyExcerpt": "## 本次发布\n\n核心版本前移到 0.12.3。\n\n### 改进\n\n- **core**：`dsh.core.version` 0.12.2 → 0.12.3。首次运行自动下载并校验 0.12.3，包含「多周补发的发版文档改按最新版本所在周标注周段」修复；最低核心要求仍为 0.12.0\n- **docs**：`docs/reference.md` 同步到 0.9.15\n",
-          "summary": "v0.9.15 是一次小版本更新，主要将核心版本提升至 0.12.3，并同步文档。\n\n**主要变更**\n- **core**：核心版本由 0.12.2 升至 0.12.3；首次运行会自动下载并校验 0.12.3。\n- 该核心版本包含一项修复：多周补发的发版文档，改为按最新版本所在周标注周段。\n- **docs**：docs/reference.md 已同步到 0.9.15。\n\n**破坏性变更**\n- 无。最低核心要求仍为 0.12.0，未提高门槛。\n\n**升级建议**\n- 属于低风险的小幅更新，建议升级；若在意发版文档的周段标注准确性，可优先更新。升级后首次运行会触发核心的自动下载与校验。",
           "summarySource": "model"
         }
       ]

@@ -4,7 +4,7 @@
 
 | 日期 | 数量 | 降级 | 摘要 |
 |---|---|---|---|
-| 2026-11-22 | 5 | false | [2026-W47](trending/releases/_weekly/2026/2026-W47.md) |
+| 2026-11-22 | 177 | true | [2026-W47](trending/releases/_weekly/2026/2026-W47.md) |
 | 2026-11-15 | 7 | false | [2026-W46](trending/releases/_weekly/2026/2026-W46.md) |
 | 2026-11-08 | 7 | false | [2026-W45](trending/releases/_weekly/2026/2026-W45.md) |
 | 2026-11-01 | 1 | false | [2026-W44](trending/releases/_weekly/2026/2026-W44.md) |

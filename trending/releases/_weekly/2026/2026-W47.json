@@ -1,0 +1,88 @@
+{
+  "schema": 2,
+  "date": "2026-11-22",
+  "period": "weekly",
+  "contentHash": "sha256:0138f69443fa5f7ce9943dc46a8e2639c258afb1a3bc5fde3c3fa67d1cc19bdc",
+  "contentHashAlgo": "jcs-sha256-v1",
+  "coreVersion": "0.12.6",
+  "generatedAt": "2026-11-16T00:00:44.637715Z",
+  "count": 5,
+  "degraded": false,
+  "repos": [
+    {
+      "fullName": "morehao/dsh-github-trending",
+      "url": "https://github.com/morehao/dsh-github-trending",
+      "latestTag": "v0.9.23",
+      "newCount": 5,
+      "periodStart": "2026-11-09",
+      "periodEnd": "2026-11-15",
+      "releases": [
+        {
+          "id": 445982262,
+          "tag": "v0.9.23",
+          "name": "v0.9.23",
+          "kind": "release",
+          "publishedAt": "2026-11-15T10:42:41Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.23",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n修复备选模型「沿用 DSH」在来源来回切换后保存报 hostProvider 缺失的问题。\n\n### 修复\n\n- 切换备选来源时保留已定格的宿主路由，只有全新空项首次切到沿用态才清空；同时在弹窗内对未选定 / 代理缺宿主路由即时提示（#172）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Fixes\n\n- **settings**: keep pinned hostProvider when toggling fallback source (#172)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.22...v0.9.23\n\n\u003c/details\u003e\n",
+          "summary": "本次发布聚焦修复备选模型「沿用 DSH」在来源切换后的保存异常。\n\n**主要变更**\n- 修复备选模型选择「沿用 DSH」时，来源来回切换后保存提示 hostProvider 缺失的问题。\n- 切换备选来源时保留已定格的宿主路由，仅全新空项首次切换到沿用态时清空。\n- 在弹窗内对未选定、代理缺少宿主路由的情况增加即时提示。\n\n**破坏性变更**\n- 无。\n\n**升级建议**\n- 使用备选模型或曾在来源切换后遇到保存异常的用户建议升级；本次为修复性小版本，升级风险较低。",
+          "summarySource": "model"
+        },
+        {
+          "id": 445972814,
+          "tag": "v0.9.22",
+          "name": "v0.9.22",
+          "kind": "release",
+          "publishedAt": "2026-11-15T10:25:39Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.22",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n备选模型的设置界面改为「摘要列表 + 独立编辑弹窗」，不再把每项的全部字段挤在设置页里。\n\n### 改进\n\n- 备选模型区改为紧凑列表：每项只显示顺位、模型名、来源、直传/代理、温度与 Tokens、预检结果，可在列表内排序与删除\n- 点「查看 / 编辑」在独立弹窗里编辑完整字段，改动即时回写、随「保存设置」统一提交（#170）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Refactors\n\n- **settings**: render fallback models as list with edit modal (#170)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.21...v0.9.22\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.22 发布，重点重构了备选模型的设置界面交互，将原本集中展示的字段改为「摘要列表 + 独立编辑弹窗」。\n\n**主要变更**\n- 备选模型区改为紧凑列表，每项只显示顺位、模型名、来源、直传/代理、温度与 Tokens、预检结果，不再把全部字段直接显示在设置页\n- 列表内支持直接排序与删除\n- 点击「查看 / 编辑」在独立弹窗中编辑完整字段，改动即时回写，并随「保存设置」统一提交（#170）\n- 该改动属于设置模块的重构（refactor），不涉及新增功能或缺陷修复\n\n**破坏性变更**\n- 变更说明中未提及任何破坏性变更，仅为设置页展示与编辑方式的调整\n\n**升级建议**\n- 本次只涉及界面组织方式，未见兼容性风险，升级成本较低；经常配置备选模型的用户可以升级，以获得更清晰的列表与独立编辑体验。",
+          "summarySource": "model"
+        },
+        {
+          "id": 445952511,
+          "tag": "v0.9.21",
+          "name": "v0.9.21",
+          "kind": "release",
+          "publishedAt": "2026-11-15T09:48:15Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.21",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n备选模型现在也支持「连通性预检」：设置页可为备选链上的每一项单独测试连通性，就地显示能否连通、密钥是否正确、模型是否存在。\n\n### 新增\n- 备选模型支持连通性预检，每项独立预检并就地显示结果（#168）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Features\n\n- **model**: add connectivity preflight for fallback models (#168)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.20...v0.9.21\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.21 是一个以模型配置体验为主的小版本，核心是为备选模型增加连通性预检。\n\n**主要变更**\n- 设置页的备选链支持逐项连通性预检：每个备选项可单独测试，并在原位置显示结果。\n- 预检结果可反映三类情况：是否能连通、密钥是否正确、模型是否存在，便于在切换前定位配置问题。\n- 该能力对应 issue/PR #168，属于新增功能，不涉及既有配置结构的调整。\n\n**破坏性变更**\n- 本次发布说明未提及任何破坏性变更，现有备选模型配置可继续沿用。\n\n**升级建议**\n- 推荐升级：如果你使用备选模型链，并曾因密钥错误或模型名不存在而排查困难，这个版本能明显降低调试成本。\n- 若未使用备选模型，升级收益有限，但风险同样较低，可按常规节奏跟进。",
+          "summarySource": "model"
+        },
+        {
+          "id": 445790816,
+          "tag": "v0.9.20",
+          "name": "v0.9.20",
+          "kind": "release",
+          "publishedAt": "2026-11-15T03:44:05Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.20",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n备选模型现在支持「沿用 DSH 配置」：可从 DSH 已配置的模型目录直接选择，凭据、端点与代理自动落值。\n\n### 新增\n- 备选模型项支持「自定义」与「沿用 DSH 配置」两种来源；沿用项保存时定格为具体模型，仅温度 / 最大 Tokens 可微调（#166）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Features\n\n- **model**: support custom and DSH-reused fallback models (#166)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.19...v0.9.20\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.20 主要改进了备选模型的来源选择，让备选模型可以直接复用 DSH 中已配置的模型。\n\n**主要变更**\n- 备选模型项现在支持「自定义」和「沿用 DSH 配置」两种来源。\n- 选择「沿用 DSH 配置」时，可以从 DSH 已配置的模型目录中直接选择，凭据、端点和代理会自动带入。\n- 沿用项在保存时会固定为具体模型，之后只能调整温度与最大 Tokens。\n\n**破坏性变更**\n- 说明中未提及破坏性变更。\n\n**升级建议**\n- 本次为功能增强，未提示不兼容改动；需要使用 DSH 已配置备选模型的用户可以升级体验。",
+          "summarySource": "model"
+        },
+        {
+          "id": 445420895,
+          "tag": "v0.9.19",
+          "name": "v0.9.19",
+          "kind": "release",
+          "publishedAt": "2026-11-14T16:14:13Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.19",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n模型配置新增「备选模型」列表：主模型不可用（凭据失效、模型下线、key 缺失、超时/网络）时自动按顺序切换备选模型，避免整份榜单退化为英文原文；全部失败才落回原有降级路径。运行详情新增「本次使用模型」，可看到实际是哪个模型产出了本次摘要。未配置备选模型时行为与旧版完全一致。\n\n### 新增\n- 备选模型链：设置 → 模型 → 备选模型，可加/删/排序；每项独立凭据、proxy/direct 可混用 (#165)\n- 运行记录展示「本次使用模型」（来自核心 `Usage.usedModel`）(#165)\n\n### 改进\n- 核心升级至 v0.12.6、契约包升级至 0.7.1（新增非破坏性可选字段 `usedModel`/`usedProvider`）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Features\n\n- **model**: fallback model chain + show model actually used (#165)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.18...v0.9.19\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.19 主要为模型调用增加「备选模型」容错链，并让运行详情显示本次实际使用的模型。\n\n**主要变更**\n- 设置 → 模型 → 备选模型新增列表，可添加、删除、排序；主模型因凭据失效、模型下线、key 缺失、超时或网络问题不可用时，按顺序自动切换备选模型。\n- 每个备选模型可独立配置凭据，proxy/direct 模式可混用，便于在主模型故障时仍能产出中文摘要，避免整份榜单退化为英文原文。\n- 仅当全部模型都失败时，才落回原有降级路径。\n- 运行记录新增「本次使用模型」，数据取自核心 Usage.usedModel，可直观确认是哪个模型产出了本次摘要。\n\n**破坏性变更**\n- 无。未配置备选模型时，行为与旧版完全一致。\n\n**升级建议**\n- 核心已升级至 v0.12.6、契约包升级至 0.7.1，仅新增非破坏性可选字段 usedModel/usedProvider。\n- 建议升级；若对摘要产出稳定性有要求，升级后可在设置中补齐备选模型列表。",
+          "summarySource": "model"
+        }
+      ]
+    }
+  ]
+}

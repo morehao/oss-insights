@@ -1,0 +1,111 @@
+{
+  "schema": 2,
+  "date": "2026-11-29",
+  "period": "weekly",
+  "contentHash": "sha256:b96fb3aa78c87c5bb8aed7726520605ac1b746bb8be588041278c1acb4e46102",
+  "contentHashAlgo": "jcs-sha256-v1",
+  "coreVersion": "0.13.4",
+  "generatedAt": "2026-11-23T01:02:36.854881Z",
+  "count": 6,
+  "degraded": false,
+  "repos": [
+    {
+      "fullName": "morehao/dsh-github-trending",
+      "url": "https://github.com/morehao/dsh-github-trending",
+      "latestTag": "v0.9.33",
+      "newCount": 2,
+      "periodStart": "2026-11-16",
+      "periodEnd": "2026-11-22",
+      "releases": [
+        {
+          "id": 452467677,
+          "tag": "v0.9.33",
+          "name": "v0.9.33",
+          "kind": "release",
+          "publishedAt": "2026-11-20T09:02:14Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.33",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n修复使用 opencode-go 等按会话路由的模型网关时，预检直接 400 导致无法运行的问题。\n\n### 修复\n- **模型链路**：预检与回环代理转发补上 `sessionId`，修复 `opencode-go` 网关因缺少 `x-opencode-session` 头返回 400 MissingSessionID、进而被误判为模型不可用而拒跑的问题（#192）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Fixes\n\n- **model**: 预检与回环代理补 sessionId，修复 opencode-go 网关 400 MissingSessionID (#192)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.32...v0.9.33\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.33 是一次针对模型网关兼容性的小型修复版本。\n\n**主要变更**\n- 修复预检与回环代理转发未携带 sessionId 的问题，为相关请求补上会话标识，解决 opencode-go 等按会话路由的模型网关因缺少 x-opencode-session 头而返回 400 MissingSessionID 的情况（#192）。\n- 此前该 400 错误会被误判为模型不可用，直接导致运行被拒绝；本次修复后，使用此类网关时可正常通过预检并完成转发。\n\n**破坏性变更**\n- 无。本次仅补充请求字段，未改动配置或接口行为。\n\n**升级建议**\n- 若使用 opencode-go 或其他依赖会话头路由的模型网关，建议升级；其他用户升级风险低，可按常规节奏跟进。",
+          "summarySource": "model"
+        },
+        {
+          "id": 449484806,
+          "tag": "v0.9.32",
+          "name": "v0.9.32",
+          "kind": "release",
+          "publishedAt": "2026-11-18T03:24:31Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.32",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n设置页「测试认证」能区分失败原因：不再把所有错误都笼统显示为「认证失败」。\n\n### 修复\n- GitHub 认证探测出错时按类型分类（TLS 证书 / 网络 / 超时 / token 无效），提示指向对应的排查方向（#189）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Fixes\n\n- **auth**: classify github auth probe errors (tls/network/timeout) (#189)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.31...v0.9.32\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.32 是一个以修复为主的小版本，重点是让设置页的「测试认证」在失败时给出更准确的错误分类，而不是统一显示「认证失败」。\n\n**主要变更**\n- 设置页「测试认证」在 GitHub 认证探测出错时会按类型分类，包括 TLS 证书、网络、超时、token 无效四类。\n- 不同错误类型的提示会指向对应的排查方向，便于用户定位问题（#189）。\n\n**破坏性变更**\n- 本次发布未提及破坏性变更。\n\n**升级建议**\n- 属于错误提示体验改进，风险低，遇到认证探活排查困难的用户可以升级。",
+          "summarySource": "model"
+        }
+      ]
+    },
+    {
+      "fullName": "deepseek-ai/deepseek-harness",
+      "url": "https://github.com/deepseek-ai/deepseek-harness",
+      "latestTag": "dsh-v0.2.3-alpha.2",
+      "newCount": 4,
+      "periodStart": "2026-11-16",
+      "periodEnd": "2026-11-22",
+      "releases": [
+        {
+          "id": 454383540,
+          "tag": "dsh-v0.2.3-alpha.2",
+          "name": "v0.2.3-alpha.2",
+          "kind": "release",
+          "publishedAt": "2026-11-22T11:00:39Z",
+          "url": "https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.3-alpha.2",
+          "prerelease": true,
+          "draft": false,
+          "bodyExcerpt": "[中文](#cn-v0.2.3-alpha.2) | [English](#en-v0.2.3-alpha.2)\r\n\r\n\u003ch3 id=\"cn-v0.2.3-alpha.2\"\u003e其他变更\u003c/h3\u003e\r\n\r\n- 调整 Node.js 版本要求为 24.22.3，26.13.1 及以上版本。 @imccyu\r\n\r\n\u003ch3 id=\"en-v0.2.3-alpha.2\"\u003eChores\u003c/h3\u003e\r\n\r\n- DSH now requires Node.js 24.22.3 or later in the 24.x series, or 26.13.1 or later. by @imccyu\r\n\r\nFull Changelog: https://github.com/deepseek-ai/deepseek-harness/compare/dsh-v0.2.3-alpha.1...dsh-v0.2.3-alpha.2",
+          "summary": "这是一个预发布的小版本，只调整了运行环境要求，没有功能层面的改动。\n\n**主要变更**\n- 调整 Node.js 版本要求：24.x 系列需使用 24.22.3 及以上，或 26.x 系列需使用 26.13.1 及以上（贡献者 @imccyu）。\n\n**破坏性变更**\n- 对仍在使用较旧 Node.js 版本的用户来说，这次调整版本要求可能造成兼容性影响：低于上述版本的 Node.js 环境将不再满足运行条件，升级前需先升级 Node.js。\n\n**升级建议**\n- 如果你当前使用的 Node.js 版本已经满足新的最低版本要求，升级基本没有额外成本；如果版本较低，建议先把 Node.js 升级到符合要求的版本，再升级本版本。",
+          "summarySource": "model"
+        },
+        {
+          "id": 454164291,
+          "tag": "dsh-v0.2.3-alpha.1",
+          "name": "v0.2.3-alpha.1",
+          "kind": "release",
+          "publishedAt": "2026-11-22T03:19:36Z",
+          "url": "https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.3-alpha.1",
+          "prerelease": true,
+          "draft": false,
+          "bodyExcerpt": "[中文](#cn-v0.2.3-alpha.1) | [English](#en-v0.2.3-alpha.1)\n\n\u003ch3 id=\"cn-v0.2.3-alpha.1\"\u003e新增功能\u003c/h3\u003e\n\n- 插件市场支持添加 Git 仓库作为插件来源，私有仓库中的插件也能浏览和安装。 @acehinnnqru\n- 新增实验性时间线插件，可查看智能体任务树、阻塞事项和进展报告，点击进度条可展开任务树，任务与报告语言可选跟随对话。 @Magolor\n- 新增代码审阅页面，可集中查看本人相关的 GitHub PR，浏览描述和变更，并在页内与智能体协作审阅。 @LegGasai\n- 代码审阅插件新增扩展机制，插件可添加自己的审阅视图和行注解，并在工具栏、文件菜单和评论框中加入自定义操作；同时支持评审和合并 GitLab。 @LegGasai\n- 新增会话状态区域，可集中查看工作目录、变更请求、子智能体、任务和插件状态，支持在较窄窗口停靠及拖动调整分区顺序。 @LegGasai\n- 新增会话已读/未读状态，完成后提醒未读，可用菜单或快捷键切换；改善最近会话切换并保留侧栏状态。 @Saafo, @imccyu\n- Web 连接模式新增远程登录，可使用独立登录链接或设备配对方式访问，并提供标准化连接鉴权 API 供插件注册 @EricMoin, @imccyu\n- 插件页支持统一管理连接器账号，MCP 支持 OAuth 授权与凭据自动刷新；CLI 应用插件共用账号管理和上游技能下载能力。 @grllll\n- 新增可选的 Linear、Notion、腾讯文档、飞书、企业微信、腾讯会议和钉钉连接器插件，可在插件页连接或授权后在对话中使用相应服务。 @grllll\n\n### 体验优化\n\n- 简化模型菜单中的智能体团队入口，开关与开销说明移到二级面板。 @Yifffan\n- 修复子智能体模型选择与消息来源识别，授权设置及时生效，并完善结果汇报和关键发现通知。 @Dudu-0223\n- 改善子代理、分支会话阅读与创建体验，继承历史与新消息之间显示分隔线 @turtle2099, @Yifffan, @imccyu\n- 加快会话列表与 @ 引用候选的加载。 @turtle2099, @turtle1999\n- 优化搜索列表的模糊与跨语言匹配，例如输入 cpt 可找到 /compact；新建会话时可按名称或目录路径搜索工作区。 @turtle1999, @acehinnnqru\n- 优化自动化任务的推荐、删除确认和会话标记，新增「每周回顾」推荐。 @ZiyaZhang, @turtle2099, @turtle1999\n- 优化 DeepSeek 图片上传，多张图片并发上传，遇到限流时自动重试。 @CreatixChu\n- 改善 web_fetch 网络失败时的提示，显示可读的失败原因和处理建议。 @turtle2099, @Elevator14B\n- 优化代码审阅与工作树体验，变更请求列表更紧凑、可折叠，GitHub PR 状态更新更及时，变更浏览更清晰；工作树可自定义分支名、从远端分支创建，并在首条消息发出后创建。 @LegGasai, @imccyu, @turtle2099\n- 改善长会话中流式输出、轮次导航和拖动右侧栏时的响应，减少大型 Markdown 表格和列表在对话与文档预览中的卡顿。 @turtle2099, @imccyu, @std-microblock\n- 优化界面显示与列表交互，统一图标、对齐和间距，改善侧栏滚动与拖动排序，修复多处显示问题。 @turtle2099, @grllll, @yixiangihsiang, @shigma, @std4453, @oraluben, @winewill, @07akioni\n- Office 技能统一通过 /office 提供 Word、PowerPoint 和 Excel 指引，旧格式命令和自定义配置需迁移；内置 Python 提供 pypdf，Office 指引也说明如何用它处理已有 PDF。 @yudshj\n- 可从对话中的压缩记录在右侧栏预览手动或自动生成的上下文压缩摘要。 @yudshj\n- 桌面版可从应用菜单直接打开「设置」，菜单同步显示当前生效的单步快捷键。 @lsdsjy\n- 在空白输入框按 ↑ 可召回本会话已发送的消息文本，再用 ↑/↓ 浏览，不覆盖正在编辑的草稿。 @std4453\n- 文件右键菜单新增「添加到对话」，可直接插入引用并继续编辑，不会自动发送。 @Kaige-Gao\n- 可将普通会话从列表拖到右侧栏打开并继续对话，无需离开当前会话。 @turtle2099, @Yifffan, @liukx0205\n- 可在「模型」设置中自定义内置目录模型的推理档位，关闭自定义后沿用目录默认档位。 @LegGasai\n- 优化共享会话在各功能中的支持度，读者可以参与更多操作。 @mektpoy\n\n### 问题修复\n\n- 修复切换模型后首个请求超出上下文时会话卡住的问题，自动恢复和 /compact 改用最近回答的模型生成摘要。 @LegGasai\n- 修复 DeepSeek 图片上传问题：服务无响应时不再每次请求都长时间等待，取消上传不再导致运行时退出。 @CreatixChu, @LegGasai\n- 修复在 Python wheel 等单文件运行时中恢复旧版会话失败的问题。 @Magolor\n- 修复在 PTC 程序中通过 gh 或 git push 操作的 PR 不出现在代码审阅面板的问题。 @LegGasai\n- 修复 macOS 上输入框按 Home/End 会滚动对话的问题，现在移到当前行首或行末。 @ZiyaZhang\n- 修复浏览器拒绝剪贴板写入时复制按钮无效的问题。 @turtle2099, @turtle1999\n- 修复 Windows 安装完成时拖动导致输入卡住和关闭按钮失效，以及卸载后残留系统登记、清理失败未报告的问题。 @winewill\n- 修复 Windows 桌面版用「在应用中打开」启动 VS Code、Cursor 等编辑器失败的问题。 @turtle2099, @huoyaoyuan, @turtle1999\n- 修复桌面版打开用量、充值页面后 Cmd+W 无法关闭窗口的问题。 @turtle2099, @turtle1999\n- 修复只创建或编辑过自动化任务的会话也显示时钟标记的问题。 @Magolor\n- 修复切换会话时草稿附件丢失的问题，上传和图片预览也会保留。 @mektpoy\n- 修正插件管理的重启指引，变更已生效时不再要求重启。 @turtle2099, @turtle1999\n- 修复不存在的 @ 路径被显示为文件引用的问题。 @LegGasai\n- 修复实验性个性化页面无法在后台创建的问题。 @Dudu-0223\n- 修复 read 和 glob 在处理大文件或大量结果后持续占用过多内存的问题。 @turtle2099, @imccyu\n- 修复新建文件引用和文件标签在会话切换工作目录后可能指向错误文件的问题；依赖 fileAddressFor 返回相对地址的插件需适配。 @LegGasai\n- 修复智能体团队任务领取失败时提示不明确的问题，已完成或删除的任务不再提示写入范围重叠。 @Dudu-0223\n- 修复 Web 应用通用安装图标显示为直角方块的问题，改用透明圆角。 @EricMoin\n- 修复桌面诊断历史因文件身份误判或 Windows 临时打开失败而遗漏部分操作记录的问题。 @Chinesezjc\n- 修复手动输入 @ 路径时字符顺序打乱、光标位置错误的问题。 @LegGasai\n- 修复经 pi 接入的模型发送超限图片时未正确缩图的问题，发送前按尺寸和字节上限缩图，原始附件不变；自定义图片配置需按升级指南适配。 @CreatixChu\n- 修复在同一主机的多个端口登录 Web 版后，旧登录状态累积可能导致页面打不开的问题。 @LegGasai\n- 修复点击模型选择菜单里的分组标题或空白处时，菜单意外关闭的问题。 @shigma\n\n### 其他变更\n\n- 调整系统提示词与 SDK 时区处理：系统指令按来源增量更新，压缩后重建；SDK 普通提示可逐条指定时区，未指定时使用可识别的运行时时区，自定义集成需按升级指南适配。 @Tuyixiang, @yudshj\n- 同步 Cordis 上游至 4.0.0-rc.12，并更新 Loader 与 Include；调整相关 API、YAML 解析和配置校验，插件与自定义配置需按升级指南迁移。 @shigma\n- 调整 Cordis 检查工具，将创造模式的多个工具合并为 cordis_inspect，并在标准模式默认启用，支持查询运行中的 DSH 版本。 @turtle1999, @turtle2099, @Dudu-0223\n- 原 Cordis 插件配置由仅支持后端读取调整为同时支持前端读取，并对 volatile 类型配置支持实时同步 @imccyu\n- 启用 HMR 时，--patch 覆盖文件修改后无需重启即可生效。 @shigma\n- 调整插件设置与启停入口，插件页可直接打开设置，「内置插件」设置跳转到插件管理。 @turtle2099, @LegGasai, @turtle1999\n- 调整 Computer Use，macOS 统一系统键鼠输入授权，Windows 新增实验性支持；并改善操作稳定性与设置指引。 @huoyaoyuan, @agicy, @CreatixChu, @D",
+          "summary": "dsh-v0.2.3-alpha.1 是一个以插件生态和会话体验为主的大版本更新，同时包含若干需要迁移适配的破坏性变更。\n\n**主要变更**\n- 插件市场支持添加 Git 仓库（含私有仓库）作为插件来源；插件页可直接打开设置，并统一管理连接器账号，MCP 支持 OAuth 授权与凭据自动刷新。\n- 新增实验性时间线插件，可查看任务树、阻塞事项和进展报告；新增代码审阅页面与审阅插件扩展机制，支持 GitHub PR 与 GitLab 评审合并。\n- 新增会话状态区域、会话已读/未读状态；Web 连接模式新增远程登录（独立链接或设备配对）。\n- 新增 Linear、Notion、腾讯文档、飞书、企业微信、腾讯会议、钉钉等可选连接器插件。\n- 修复切换模型后首个请求超出上下文导致会话卡住、Python wheel 等单文件运行时恢复旧会话失败、read/glob 处理大文件占用过多内存等问题；Windows 安装拖动卡输入、编辑器启动失败等多项桌面端问题也一并修复。\n\n**破坏性变更**\n- Office 技能统一通过 /office 提供，旧格式命令和自定义配置需迁移。\n- 系统提示词改为按来源增量更新、压缩后重建；SDK 时区处理调整，自定义集成需按升级指南适配。\n- 同步 Cordis 上游至 4.0.0-rc.12，相关 API、YAML 解析和配置校验有调整，插件与自定义配置需迁移。\n- 图片缩图逻辑调整，自定义图片配置需适配；依赖 fileAddressFor 返回相对地址的插件需适配。\n\n**升级建议**\n- 该版本功能增量明显，插件作者和重度用户值得升级；但涉及 Cordis、Office 技能、系统提示词与时区等多处迁移，升级前应阅读升级指南并预留适配时间。当前为 alpha 版本，建议先在非关键环境验证。",
+          "summarySource": "model"
+        },
+        {
+          "id": 449981867,
+          "tag": "dsh-v0.2.2-rc.5",
+          "name": "v0.2.2-rc.5",
+          "kind": "release",
+          "publishedAt": "2026-11-18T12:51:39Z",
+          "url": "https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.5",
+          "prerelease": true,
+          "draft": false,
+          "bodyExcerpt": "[中文](#cn-v0.2.2-rc.5) | [English](#en-v0.2.2-rc.5)\r\n\r\n\u003ch3 id=\"cn-v0.2.2-rc.5\"\u003e体验优化\u003c/h3\u003e\r\n\r\n- DeepSeek 模型使用 DeepSeek 服务端搜索，搜索不按次收费；其他模型默认使用 DeepSeek Search API。 @LegGasai\r\n\r\n\u003ch3 id=\"en-v0.2.2-rc.5\"\u003eImprovements\u003c/h3\u003e\r\n\r\n- DeepSeek models use DeepSeek server-side search with no per-search charge; other models default to DeepSeek Search API. by @LegGasai\r\n\r\nFull Changelog: https://github.com/deepseek-ai/deepseek-harness/compare/dsh-v0.2.2-rc.4...dsh-v0.2.2-rc.5",
+          "summary": "本周主要发布 dsh-v0.2.2-rc.5，属于小范围体验优化版本，仅调整搜索服务的调用策略。\n\n**主要变更**\n- DeepSeek 模型改用 DeepSeek 服务端搜索，搜索不按次收费。\n- 其他模型默认使用 DeepSeek Search API。\n\n**破坏性变更**\n- 本版本说明未提及任何破坏性变更。\n\n**升级建议**\n- 变更仅涉及搜索后端选择，影响面小；使用 DeepSeek 模型且关心搜索计费的用户可考虑升级，其余用户可按需跟进。",
+          "summarySource": "model"
+        },
+        {
+          "id": 448996768,
+          "tag": "dsh-v0.2.2-rc.4",
+          "name": "v0.2.2-rc.4",
+          "kind": "release",
+          "publishedAt": "2026-11-17T17:53:41Z",
+          "url": "https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.4",
+          "prerelease": true,
+          "draft": false,
+          "bodyExcerpt": "[中文](#cn-v0.2.2-rc.4) | [English](#en-v0.2.2-rc.4)\r\n\r\n\u003ch3 id=\"cn-v0.2.2-rc.4\"\u003e问题修复\u003c/h3\u003e\r\n\r\n- 优化模型请求收到异常消息响应时的表现。 @turtle2099\r\n- 修复 LiveShare 在桌面端无法创建分享的问题。 @mektpoy\r\n\r\n\u003ch3 id=\"en-v0.2.2-rc.4\"\u003eBug Fixes\u003c/h3\u003e\r\n\r\n- Improve handling of unexpected model responses. by @turtle2099\r\n- Fix LiveShare failing to create shares in the desktop app. by @mektpoy\r\n\r\nFull Changelog: https://github.com/deepseek-ai/deepseek-harness/compare/dsh-v0.2.2-rc.3...dsh-v0.2.2-rc.4",
+          "summary": "dsh-v0.2.2-rc.4 是一个以修复缺陷为主的候选版本，共包含两项问题修复。\n\n**主要变更**\n- 优化模型请求在收到异常消息响应时的处理表现，由 @turtle2099 提交。\n- 修复 LiveShare 在桌面端无法创建分享的问题，由 @mektpoy 提交。\n\n**破坏性变更**\n- 版本说明中未提及任何破坏性变更。\n\n**升级建议**\n- 本次改动均为修复性内容，风险较低；若使用桌面端 LiveShare 分享功能或关注模型异常响应处理，建议升级到该版本验证。",
+          "summarySource": "model"
+        }
+      ]
+    }
+  ]
+}

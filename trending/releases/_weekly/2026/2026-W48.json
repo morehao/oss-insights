@@ -2,13 +2,49 @@
   "schema": 2,
   "date": "2026-11-29",
   "period": "weekly",
-  "contentHash": "sha256:53d2f9c2e3be508812253344ae05fd552977f5e22c88528a4b200b31ab42b377",
+  "contentHash": "sha256:b96fb3aa78c87c5bb8aed7726520605ac1b746bb8be588041278c1acb4e46102",
   "contentHashAlgo": "jcs-sha256-v1",
   "coreVersion": "0.13.4",
-  "generatedAt": "2026-11-23T00:16:10.674972Z",
+  "generatedAt": "2026-11-23T01:02:36.854881Z",
   "count": 6,
   "degraded": false,
   "repos": [
+    {
+      "fullName": "morehao/dsh-github-trending",
+      "url": "https://github.com/morehao/dsh-github-trending",
+      "latestTag": "v0.9.33",
+      "newCount": 2,
+      "periodStart": "2026-11-16",
+      "periodEnd": "2026-11-22",
+      "releases": [
+        {
+          "id": 452467677,
+          "tag": "v0.9.33",
+          "name": "v0.9.33",
+          "kind": "release",
+          "publishedAt": "2026-11-20T09:02:14Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.33",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n修复使用 opencode-go 等按会话路由的模型网关时，预检直接 400 导致无法运行的问题。\n\n### 修复\n- **模型链路**：预检与回环代理转发补上 `sessionId`，修复 `opencode-go` 网关因缺少 `x-opencode-session` 头返回 400 MissingSessionID、进而被误判为模型不可用而拒跑的问题（#192）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Fixes\n\n- **model**: 预检与回环代理补 sessionId，修复 opencode-go 网关 400 MissingSessionID (#192)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.32...v0.9.33\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.33 是一次针对模型网关兼容性的小型修复版本。\n\n**主要变更**\n- 修复预检与回环代理转发未携带 sessionId 的问题，为相关请求补上会话标识，解决 opencode-go 等按会话路由的模型网关因缺少 x-opencode-session 头而返回 400 MissingSessionID 的情况（#192）。\n- 此前该 400 错误会被误判为模型不可用，直接导致运行被拒绝；本次修复后，使用此类网关时可正常通过预检并完成转发。\n\n**破坏性变更**\n- 无。本次仅补充请求字段，未改动配置或接口行为。\n\n**升级建议**\n- 若使用 opencode-go 或其他依赖会话头路由的模型网关，建议升级；其他用户升级风险低，可按常规节奏跟进。",
+          "summarySource": "model"
+        },
+        {
+          "id": 449484806,
+          "tag": "v0.9.32",
+          "name": "v0.9.32",
+          "kind": "release",
+          "publishedAt": "2026-11-18T03:24:31Z",
+          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.32",
+          "prerelease": false,
+          "draft": false,
+          "bodyExcerpt": "## 本次发布\n\n设置页「测试认证」能区分失败原因：不再把所有错误都笼统显示为「认证失败」。\n\n### 修复\n- GitHub 认证探测出错时按类型分类（TLS 证书 / 网络 / 超时 / token 无效），提示指向对应的排查方向（#189）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Fixes\n\n- **auth**: classify github auth probe errors (tls/network/timeout) (#189)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.31...v0.9.32\n\n\u003c/details\u003e\n",
+          "summary": "v0.9.32 是一个以修复为主的小版本，重点是让设置页的「测试认证」在失败时给出更准确的错误分类，而不是统一显示「认证失败」。\n\n**主要变更**\n- 设置页「测试认证」在 GitHub 认证探测出错时会按类型分类，包括 TLS 证书、网络、超时、token 无效四类。\n- 不同错误类型的提示会指向对应的排查方向，便于用户定位问题（#189）。\n\n**破坏性变更**\n- 本次发布未提及破坏性变更。\n\n**升级建议**\n- 属于错误提示体验改进，风险低，遇到认证探活排查困难的用户可以升级。",
+          "summarySource": "model"
+        }
+      ]
+    },
     {
       "fullName": "deepseek-ai/deepseek-harness",
       "url": "https://github.com/deepseek-ai/deepseek-harness",
@@ -67,42 +103,6 @@
           "draft": false,
           "bodyExcerpt": "[中文](#cn-v0.2.2-rc.4) | [English](#en-v0.2.2-rc.4)\r\n\r\n\u003ch3 id=\"cn-v0.2.2-rc.4\"\u003e问题修复\u003c/h3\u003e\r\n\r\n- 优化模型请求收到异常消息响应时的表现。 @turtle2099\r\n- 修复 LiveShare 在桌面端无法创建分享的问题。 @mektpoy\r\n\r\n\u003ch3 id=\"en-v0.2.2-rc.4\"\u003eBug Fixes\u003c/h3\u003e\r\n\r\n- Improve handling of unexpected model responses. by @turtle2099\r\n- Fix LiveShare failing to create shares in the desktop app. by @mektpoy\r\n\r\nFull Changelog: https://github.com/deepseek-ai/deepseek-harness/compare/dsh-v0.2.2-rc.3...dsh-v0.2.2-rc.4",
           "summary": "dsh-v0.2.2-rc.4 是一个以修复缺陷为主的候选版本，共包含两项问题修复。\n\n**主要变更**\n- 优化模型请求在收到异常消息响应时的处理表现，由 @turtle2099 提交。\n- 修复 LiveShare 在桌面端无法创建分享的问题，由 @mektpoy 提交。\n\n**破坏性变更**\n- 版本说明中未提及任何破坏性变更。\n\n**升级建议**\n- 本次改动均为修复性内容，风险较低；若使用桌面端 LiveShare 分享功能或关注模型异常响应处理，建议升级到该版本验证。",
-          "summarySource": "model"
-        }
-      ]
-    },
-    {
-      "fullName": "morehao/dsh-github-trending",
-      "url": "https://github.com/morehao/dsh-github-trending",
-      "latestTag": "v0.9.33",
-      "newCount": 2,
-      "periodStart": "2026-11-16",
-      "periodEnd": "2026-11-22",
-      "releases": [
-        {
-          "id": 452467677,
-          "tag": "v0.9.33",
-          "name": "v0.9.33",
-          "kind": "release",
-          "publishedAt": "2026-11-20T09:02:14Z",
-          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.33",
-          "prerelease": false,
-          "draft": false,
-          "bodyExcerpt": "## 本次发布\n\n修复使用 opencode-go 等按会话路由的模型网关时，预检直接 400 导致无法运行的问题。\n\n### 修复\n- **模型链路**：预检与回环代理转发补上 `sessionId`，修复 `opencode-go` 网关因缺少 `x-opencode-session` 头返回 400 MissingSessionID、进而被误判为模型不可用而拒跑的问题（#192）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Fixes\n\n- **model**: 预检与回环代理补 sessionId，修复 opencode-go 网关 400 MissingSessionID (#192)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.32...v0.9.33\n\n\u003c/details\u003e\n",
-          "summary": "v0.9.33 是一次针对模型网关兼容性的小型修复版本。\n\n**主要变更**\n- 修复预检与回环代理转发未携带 sessionId 的问题，为相关请求补上会话标识，解决 opencode-go 等按会话路由的模型网关因缺少 x-opencode-session 头而返回 400 MissingSessionID 的情况（#192）。\n- 此前该 400 错误会被误判为模型不可用，直接导致运行被拒绝；本次修复后，使用此类网关时可正常通过预检并完成转发。\n\n**破坏性变更**\n- 无。本次仅补充请求字段，未改动配置或接口行为。\n\n**升级建议**\n- 若使用 opencode-go 或其他依赖会话头路由的模型网关，建议升级；其他用户升级风险低，可按常规节奏跟进。",
-          "summarySource": "model"
-        },
-        {
-          "id": 449484806,
-          "tag": "v0.9.32",
-          "name": "v0.9.32",
-          "kind": "release",
-          "publishedAt": "2026-11-18T03:24:31Z",
-          "url": "https://github.com/morehao/dsh-github-trending/releases/tag/v0.9.32",
-          "prerelease": false,
-          "draft": false,
-          "bodyExcerpt": "## 本次发布\n\n设置页「测试认证」能区分失败原因：不再把所有错误都笼统显示为「认证失败」。\n\n### 修复\n- GitHub 认证探测出错时按类型分类（TLS 证书 / 网络 / 超时 / token 无效），提示指向对应的排查方向（#189）\n\n\u003cdetails\u003e\u003csummary\u003e原始变更记录（自动生成，未改写）\u003c/summary\u003e\n\n### Fixes\n\n- **auth**: classify github auth probe errors (tls/network/timeout) (#189)\n\n**Full Changelog**: https://github.com/morehao/dsh-github-trending/compare/v0.9.31...v0.9.32\n\n\u003c/details\u003e\n",
-          "summary": "v0.9.32 是一个以修复为主的小版本，重点是让设置页的「测试认证」在失败时给出更准确的错误分类，而不是统一显示「认证失败」。\n\n**主要变更**\n- 设置页「测试认证」在 GitHub 认证探测出错时会按类型分类，包括 TLS 证书、网络、超时、token 无效四类。\n- 不同错误类型的提示会指向对应的排查方向，便于用户定位问题（#189）。\n\n**破坏性变更**\n- 本次发布未提及破坏性变更。\n\n**升级建议**\n- 属于错误提示体验改进，风险低，遇到认证探活排查困难的用户可以升级。",
           "summarySource": "model"
         }
       ]

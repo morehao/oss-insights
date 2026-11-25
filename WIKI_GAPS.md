@@ -1,7 +1,7 @@
 # OSS Insights Wiki 建设清单
 
 > 基线：`main@fc2a980`（2026-10-28）  
-> 核对时间：2026-10-29  
+> 核对时间：2026-11-25
 > 范围：`/Users/morehao/Documents/study/ai-agent`、`/Users/morehao/Documents/study/ai-infra` 下的本地克隆
 
 ## 判定口径
@@ -16,16 +16,16 @@
 
 | 状态 | 数量 |
 |------|------|
-| 已建 wiki | 10 |
+| 已建 wiki | 11 |
 | 已有解读、缺 wiki | 38 |
 | 仓库内无任何文档 | 15 |
-| **合计（去重）** | **63** |
+| **合计（去重）** | **64** |
 
-> 本机共 64 个源码目录，其中 `openclaw` 在 `ai-agent` 与 `ai-infra` 各有一份克隆，去重后为 63 个项目。
+> 本机共 65 个源码目录，其中 `openclaw` 在 `ai-agent` 与 `ai-infra` 各有一份克隆，去重后为 64 个项目。新增 `ai-agent/LoopForge` 为最初核对后新出现的本地克隆（已有 wiki，无独立解读目录）。
 
 路径说明：已建 wiki 的条目，`·` 后是仓库内的文档目录；待建条目的 `·` 后默认是本机源码目录，文档入口在链接里；跨分类条目额外标注了源码路径。
 
-## 已建 wiki（10）
+## 已建 wiki（11）
 
 - [DeepSeek-Reasonix](ai-agent/DeepSeek-Reasonix-wiki/README.md) · `ai-agent/DeepSeek-Reasonix-wiki`
 - [DeepSeek Harness](ai-agent/deepseek-harness-wiki/README.md) · `ai-agent/deepseek-harness-wiki`
@@ -37,6 +37,7 @@
 - [EverOS](ai-infra/EverOS-wiki/README.md) · `ai-infra/EverOS-wiki`
 - [Engram](ai-infra/engram-wiki/README.md) · `ai-infra/engram-wiki`
 - [MOVO](ai-agent/movo-wiki/README.md) · `ai-agent/movo-wiki`
+- [LoopForge](ai-agent/loopforge-wiki/README.md) · `ai-agent/loopforge-wiki` · 基线 `main@2ad5659`（源码 `ai-agent/LoopForge`）
 
 ## 待建：已有解读（38）
 
